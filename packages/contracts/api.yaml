@@ -1,26 +1,79 @@
 openapi: "3.1.0"
 info:
   title: PAM API
-  version: 0.0.1
-  description: Privileged Access Management system API
+  version: 0.1.0
+  description: Privileged Access Management system API (development mode currently uses local auth provider; LDAP is deferred).
 
 servers:
   - url: http://localhost:8080
     description: Local development
 
+tags:
+  - name: health
+    description: Liveness and readiness probes.
+  - name: version
+    description: Service build/version metadata.
+  - name: auth
+    description: Authentication/session endpoints (local dev provider for now; LDAP planned later via provider boundary).
+  - name: assets
+    description: Asset inventory endpoints (planned).
+  - name: access
+    description: Access grant and policy endpoints (planned).
+  - name: sessions
+    description: Session launch and lifecycle endpoints (planned).
+  - name: audit
+    description: Audit query endpoints (planned).
+
 paths:
-  /health:
+  /health/live:
     get:
-      summary: Health check
-      operationId: healthCheck
+      summary: Liveness check
+      operationId: getHealthLive
+      tags: [health]
       responses:
         "200":
-          description: Service is healthy
+          description: Service process is alive.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+
+  /health/ready:
+    get:
+      summary: Readiness check
+      operationId: getHealthReady
+      tags: [health]
+      responses:
+        "200":
+          description: Service dependencies are ready.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+        "503":
+          description: Service dependencies are not ready.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+
+  /version:
+    get:
+      summary: Service version metadata
+      operationId: getVersion
+      tags: [version]
+      responses:
+        "200":
+          description: Service version payload.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VersionResponse"
 
   /auth/login:
     post:
-      summary: Authenticate via LDAP
-      operationId: login
+      summary: Login with local development credentials
+      operationId: postAuthLogin
       tags: [auth]
       requestBody:
         required: true
@@ -30,19 +83,129 @@ paths:
               $ref: "#/components/schemas/LoginRequest"
       responses:
         "200":
-          description: Authentication successful
+          description: Login successful.
+          headers:
+            Set-Cookie:
+              description: HTTP-only session cookie.
+              schema:
+                type: string
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/LoginResponse"
         "401":
-          description: Invalid credentials
+          description: Invalid credentials.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
 
-  # Remaining endpoints to be defined as implementation progresses.
-  # See packages/contracts/README.md for the full planned endpoint list.
+  /auth/logout:
+    post:
+      summary: Logout current session
+      operationId: postAuthLogout
+      tags: [auth]
+      responses:
+        "204":
+          description: Logged out; session cookie cleared.
+
+  /me:
+    get:
+      summary: Get current authenticated user
+      operationId: getMe
+      tags: [auth]
+      security:
+        - sessionCookie: []
+      responses:
+        "200":
+          description: Current user profile.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "401":
+          description: Missing or invalid session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /auth/ping:
+    get:
+      summary: Authenticated test endpoint
+      operationId: getAuthPing
+      tags: [auth]
+      security:
+        - sessionCookie: []
+      responses:
+        "200":
+          description: Authenticated request succeeded.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PingResponse"
+        "401":
+          description: Missing or invalid session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /admin/ping:
+    get:
+      summary: Admin-only test endpoint
+      operationId: getAdminPing
+      tags: [auth]
+      security:
+        - sessionCookie: []
+      responses:
+        "200":
+          description: Admin request succeeded.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PingResponse"
+        "401":
+          description: Missing or invalid session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Authenticated but not authorized.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
 
 components:
   schemas:
+    HealthResponse:
+      type: object
+      required: [status, timestamp]
+      properties:
+        status:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+
+    VersionResponse:
+      type: object
+      required: [service, version, commit, built_at, timestamp]
+      properties:
+        service:
+          type: string
+        version:
+          type: string
+        commit:
+          type: string
+        built_at:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+
     LoginRequest:
       type: object
       required: [username, password]
@@ -51,19 +214,54 @@ components:
           type: string
         password:
           type: string
+          format: password
 
     LoginResponse:
       type: object
+      required: [user]
       properties:
-        access_token:
+        user:
+          $ref: "#/components/schemas/User"
+
+    User:
+      type: object
+      required: [id, username, roles]
+      properties:
+        id:
           type: string
-        refresh_token:
+          format: uuid
+        username:
           type: string
-        expires_in:
-          type: integer
+        email:
+          type: string
+          format: email
+        display_name:
+          type: string
+        roles:
+          type: array
+          items:
+            type: string
+
+    PingResponse:
+      type: object
+      required: [status, scope]
+      properties:
+        status:
+          type: string
+        scope:
+          type: string
+        user:
+          type: string
+
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
 
   securitySchemes:
-    bearerAuth:
-      type: http
-      scheme: bearer
-      bearerFormat: JWT
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: pam_session

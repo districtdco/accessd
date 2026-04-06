@@ -2,15 +2,15 @@
 
 ## 1. Executive Summary
 
-We are building a lean Privileged Access Management (PAM) system that centralizes access to infrastructure assets (Linux servers, databases, Redis, file transfer endpoints). Users authenticate via LDAP into PAM, which brokers all connections — users never receive raw credentials. Every session is audited. The system ships as a modular monolith: Go backend, React+TailAdmin UI, and a desktop connector/launcher.
+We are building a lean Privileged Access Management (PAM) system that centralizes access to infrastructure assets (Linux servers, databases, Redis, file transfer endpoints). Users authenticate into PAM, which brokers all connections — users never receive raw credentials. Every session is audited. The system ships as a modular monolith: Go backend, React+TailAdmin UI, and a desktop connector/launcher.
 
-v1 delivers: LDAP auth, asset inventory, access assignments, centrally managed credentials, SSH proxy with session recording, brokered DB access via DBeaver, managed file transfer via FileZilla/WinSCP, managed Redis shell, and a reviewable audit trail.
+Development mode (current): local auth provider first, with LDAP deferred but planned as an additional provider. Authorization, session handling, policy enforcement, and audit remain provider-agnostic from day one.
 
 ## 2. Product Scope
 
 ### In scope (v1)
-- LDAP authentication
-- Local user/group/role model with minimal LDAP attribute sync
+- Local authentication provider for development/POC
+- Local user/group/role model
 - Asset inventory (servers, databases, Redis instances, file transfer endpoints)
 - Access policy: assign assets to users/groups
 - Central credential vault (encrypted at rest in PostgreSQL)
@@ -22,6 +22,17 @@ v1 delivers: LDAP auth, asset inventory, access assignments, centrally managed c
 - Audit trail: who, when, what asset, session duration, activity
 - Session history and review UI
 - Desktop connector/launcher for client enforcement
+
+### Development mode overrides (effective now)
+- LDAP integration is deferred during foundation and early feature slices.
+- Auth is implemented as a provider model: `local` first, `ldap` later.
+- Authorization is unchanged and fully enforced server-side:
+  - users, groups, roles, access grants
+  - policy checks
+  - session token lifecycle
+  - audit event model
+- Seed a default development admin user on first bootstrap/seed path.
+- LDAP onboarding later must plug into the same auth-provider interface without rewriting authorization, policy, or session/audit logic.
 
 ### Out of scope (v1)
 See section 3.
@@ -36,12 +47,12 @@ See section 3.
 - Multi-tenancy
 - Microservices architecture
 - Kubernetes-specific control plane
-- SAML / OIDC federation (LDAP only for v1)
+- SAML / OIDC federation
 - Compliance framework automation (SOX, PCI checklists, etc.)
 - High-availability / clustering (single-instance deployment for v1)
 - DB statement-level capture (connection/session audit only in v1)
 - Connector device registration / admin approval
-- Full LDAP sync engine (v1 is auth-first with minimal attribute mapping)
+- Full LDAP sync engine
 - External KMS / HashiCorp Vault integration (v1 uses app-level master key)
 - Mobile UI
 - API for third-party integrations
@@ -54,7 +65,7 @@ pam/
 │   ├── api/              # Go backend (HTTP API + SSH proxy + DB broker + audit)
 │   │   ├── cmd/          # Entry points (server, migrate, seed)
 │   │   ├── internal/
-│   │   │   ├── auth/     # LDAP auth, session/token management
+│   │   │   ├── auth/     # Auth providers (local first, LDAP later), session/token management
 │   │   │   ├── user/     # User/group/role domain
 │   │   │   ├── asset/    # Asset inventory domain
 │   │   │   ├── policy/   # Access assignments, policy evaluation
@@ -87,7 +98,7 @@ pam/
 │       └── types/        # Shared type definitions
 ├── scripts/              # Dev tooling, docker-compose, etc.
 ├── deploy/               # Systemd unit files, production config templates
-├── docker-compose.yml    # PostgreSQL, LDAP (dev only — not production)
+├── docker-compose.yml    # PostgreSQL (+ optional LDAP for later integration tests)
 ├── Makefile
 ├── PLAN.md
 ├── CHECKLIST.md
@@ -104,7 +115,7 @@ Go modules: `apps/api` and `apps/connector` are separate Go modules. They share 
 │  React UI   │  HTTP  │                                          │
 └─────────────┘       │  ┌──────────┐ ┌────────┐ ┌───────────┐  │
                       │  │ Auth     │ │ Policy │ │ Vault     │  │
-┌─────────────┐       │  │ (LDAP)   │ │ Engine │ │ (creds)   │  │
+┌─────────────┐       │  │Provider  │ │ Engine │ │ (creds)   │  │
 │  Connector  │◄─────►│  └──────────┘ └────────┘ └───────────┘  │
 │  (desktop)  │  HTTP  │                                          │
 └─────────────┘       │  ┌──────────────────────────────────────┐│
@@ -143,17 +154,18 @@ Key architectural decisions:
 ## 6. Backend Module Breakdown
 
 ### `auth`
-- LDAP bind for login verification
+- Provider-oriented authentication (`local` in dev mode, `ldap` later)
 - JWT token issuance (short-lived access + refresh)
 - Session management
 - Middleware for route protection
-- Minimal LDAP attribute sync on login: username, email, display name, group membership. Not a full sync engine — just enough to populate local user/group records on authentication. No scheduled background sync in v1.
+- Default seeded admin user for development/POC bootstrap
+- LDAP provider later: minimal attribute sync on login (username, email, display name, group membership). Not a full sync engine.
 
 ### `user`
 - CRUD for users, groups, roles
 - Group membership
 - Role definitions: `admin`, `operator`, `viewer` (v1 roles)
-- LDAP attribute mapping bookkeeping (last login sync timestamp)
+- Provider metadata bookkeeping (including future LDAP sync fields)
 
 ### `asset`
 - Asset CRUD (servers, databases, Redis, file-transfer endpoints)
@@ -223,7 +235,7 @@ Key architectural decisions:
 ### Pages
 | Page | Path | Purpose |
 |------|------|---------|
-| Login | `/login` | LDAP username/password form |
+| Login | `/login` | Username/password form (provider-backed; local in dev mode) |
 | Dashboard | `/` | Overview: recent sessions, assigned asset count, alerts |
 | My Assets | `/assets` | Table of assets assigned to current user with launch actions |
 | Asset Detail | `/assets/:id` | Asset info, connection history for that asset |
@@ -272,8 +284,8 @@ The connector is a lightweight desktop binary (Go, cross-compiled for Windows/ma
 ### 9.1 Login Flow
 ```
 User → UI login form → POST /auth/login {username, password}
-  → API binds to LDAP with provided credentials
-  → On success: sync user/groups from LDAP to local DB
+  → API authenticates via active provider (dev mode: local provider)
+  → On success: load user/groups/roles from local DB
   → Issue JWT (access token: 15min, refresh token: 8h)
   → Return tokens to UI
   → UI stores tokens, redirects to dashboard
@@ -421,8 +433,8 @@ Connector launches terminal with: redis-cli -h <pam_host> -p <pam_redis_port> -a
 
 | Table | Purpose |
 |-------|---------|
-| `users` | Local user records (id, username, email, display_name, ldap_dn, status, created/updated) |
-| `groups` | Groups (id, name, description, ldap_cn, created/updated) |
+| `users` | Local user records (id, username, email, display_name, auth_provider, external_subject, status, created/updated) |
+| `groups` | Groups (id, name, description, external_ref, created/updated) |
 | `user_groups` | Many-to-many user ↔ group membership |
 | `roles` | Role definitions (admin, operator, viewer) |
 | `user_roles` | User ↔ role assignment |
@@ -450,13 +462,13 @@ Connector launches terminal with: redis-cli -h <pam_host> -p <pam_redis_port> -a
 2. **Connector ↔ PAM API**: semi-trusted. Connector authenticates with user's JWT. API validates every request.
 3. **PAM proxy ↔ target infrastructure**: trusted network path assumed in v1. (TLS to targets where supported.)
 4. **PAM API ↔ PostgreSQL**: trusted. Same host or private network in v1.
-5. **PAM API ↔ LDAP**: trusted network path. LDAPS or StartTLS required.
+5. **PAM API ↔ external auth provider**: trusted network path when enabled (e.g., LDAP over LDAPS/StartTLS).
 
 ### Security assumptions
 - PAM server is deployed in a secured network segment
 - PostgreSQL is not publicly accessible
 - The `PAM_VAULT_KEY` environment variable is protected by OS-level access controls
-- LDAP is the source of truth for authentication; PAM does not store passwords
+- PAM authentication is provider-based. In development mode, PAM stores local password hashes; with LDAP enabled, LDAP becomes external source of truth for identity verification.
 - JWT tokens are signed with a strong secret/key pair; short-lived access tokens minimize impact of theft
 - The connector is installed on authorized workstations; it is not a security boundary itself (the proxy is)
 - All proxy connections require a valid, unexpired session token — even if someone reaches the proxy port directly
@@ -478,7 +490,7 @@ Connector launches terminal with: redis-cli -h <pam_host> -p <pam_redis_port> -a
 | SFTP relay complexity | Medium | Use `pkg/sftp` Go library. Proxying SFTP is well-understood but needs careful testing. |
 | Session recording storage growth | Low (v1) | Compress recordings. Monitor disk usage. Object storage deferred. |
 | Single encryption key for vault | Medium | Temporary v1 approach, clearly documented. Upgrade to external KMS/Vault required post-v1. |
-| LDAP-only auth limits some orgs | Low | Sufficient for v1 target users. OIDC/SAML can be added later without major rearchitecture. |
+| Auth provider expansion complexity | Low | Keep provider interface explicit from the start (`local` + future `ldap`), so adding providers does not impact authorization/session/policy paths. |
 | Redis RESP parsing for command logging | Low | Include if simple within proxy design; otherwise defer. Connection audit guaranteed. |
 | Connector deployment/updates | Medium | Ship as a single binary. Auto-update mechanism deferred to post-v1. |
 
@@ -489,7 +501,7 @@ Connector launches terminal with: redis-cli -h <pam_host> -p <pam_redis_port> -a
 - **Asciicast for SSH recording over video**: lightweight, text-searchable, good enough for v1. Video replay deferred.
 - **Keyboard-interactive for SSH session auth**: well-supported across all target clients, avoids username-field hacks.
 - **Systemd on Linux VM for production**: simple, proven, single-server deployment. Docker Compose for dev/test only.
-- **Auth-first LDAP, not full sync**: reduces complexity, avoids building a generalized LDAP sync engine for v1.
+- **Provider-first auth architecture**: local provider now for rapid development/POC, LDAP added later on same interface without changing authorization/session/policy internals.
 - **Temporary app-level vault key**: ships fast, clearly documented as requiring KMS migration post-v1.
 
 ## 15. Recommended Implementation Order
@@ -502,10 +514,11 @@ Connector launches terminal with: redis-cli -h <pam_host> -p <pam_redis_port> -a
 5. Shared contracts (API spec)
 
 ### Phase 2: Core Identity & Inventory (weeks 2-3)
-6. LDAP authentication
+6. Local auth provider + JWT auth flow
 7. User/group/role model + admin UI
 8. Asset inventory CRUD + UI
 9. Access policy model + assignment UI
+10. LDAP provider integration on same auth-provider interface (after local auth is stable)
 
 ### Phase 3: Credential Vault (week 3)
 10. Credential storage with encryption
@@ -539,7 +552,7 @@ Connector launches terminal with: redis-cli -h <pam_host> -p <pam_redis_port> -a
 
 ## 16. v1 Acceptance Criteria
 
-1. A user can log in to PAM using their LDAP credentials
+1. A user can log in to PAM using the active auth provider (development mode: local auth)
 2. An admin can add/edit/remove users, groups, and roles
 3. An admin can add/edit/remove infrastructure assets (SSH, DB, SFTP, Redis)
 4. An admin can assign access: user/group → asset with allowed actions
@@ -558,3 +571,4 @@ Connector launches terminal with: redis-cli -h <pam_host> -p <pam_redis_port> -a
 17. All policy enforcement happens server-side — bypassing the UI does not grant access
 18. The system runs as a single deployable unit (one Go binary + static UI assets + PostgreSQL) deployed via systemd on a Linux VM
 19. Credential encryption uses AES-256-GCM with documented temporary key management approach
+20. LDAP can be introduced as an additional auth provider without reworking authorization, policy enforcement, session handling, or audit model

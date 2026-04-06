@@ -18,9 +18,13 @@ Shared API contract definitions used by the backend (apps/api), frontend (apps/u
 
 ## Planned Endpoint Groups
 
-- `POST /auth/login` — LDAP authentication
+- `GET /health/live` — liveness
+- `GET /health/ready` — readiness
+- `GET /version` — build/version metadata
+- `POST /auth/login` — Authentication (provider-backed: local now, LDAP later)
 - `POST /auth/refresh` — Token refresh
 - `POST /auth/logout` — Logout
+- `GET /me` — Current authenticated user (session cookie)
 - `GET /users`, `POST /users`, etc. — User management
 - `GET /groups`, `POST /groups`, etc. — Group management
 - `GET /assets`, `GET /assets/mine` — Asset inventory
