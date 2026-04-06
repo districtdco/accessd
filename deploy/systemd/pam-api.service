@@ -1,0 +1,25 @@
+[Unit]
+Description=PAM API Service
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pam
+Group=pam
+WorkingDirectory=/opt/pam/apps/api
+EnvironmentFile=/etc/pam/pam-api.env
+ExecStartPre=/opt/pam/bin/pam-api migrate up
+ExecStart=/opt/pam/bin/pam-api server
+Restart=on-failure
+RestartSec=5s
+TimeoutStartSec=60s
+TimeoutStopSec=30s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/var/lib/pam /var/log/pam
+
+[Install]
+WantedBy=multi-user.target

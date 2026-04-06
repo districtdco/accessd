@@ -1,4 +1,4 @@
-.PHONY: build dev-api dev-ui test lint migrate clean
+.PHONY: build dev-api dev-ui test lint migrate clean smoke-api validate-contract
 
 # --- Build ---
 
@@ -34,6 +34,11 @@ test-connector:
 test-ui:
 	cd apps/ui && npm test
 
+# --- Contracts ---
+
+validate-contract:
+	npx --yes @apidevtools/swagger-cli validate packages/contracts/api.yaml
+
 # --- Lint ---
 
 lint: lint-api lint-ui
@@ -51,6 +56,11 @@ migrate:
 
 migrate-down:
 	cd apps/api && go run ./cmd/server migrate-down
+
+# --- Smoke ---
+
+smoke-api:
+	./scripts/smoke_api.sh
 
 # --- Docker (dev only) ---
 

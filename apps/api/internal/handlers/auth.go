@@ -3,6 +3,7 @@ package handlers
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 
 	"github.com/districtd/pam/api/internal/auth"
 )
@@ -39,8 +40,17 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, cookie, err := h.authService.Login(r.Context(), req.Username, req.Password)
+	result, cookie, err := h.authService.LoginWithContext(r.Context(), auth.LoginRequest{
+		Username:  req.Username,
+		Password:  req.Password,
+		SourceIP:  clientIP(r),
+		UserAgent: r.UserAgent(),
+	})
 	if err != nil {
+		if err == auth.ErrRateLimited {
+			writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "too many failed login attempts, please wait"})
+			return
+		}
 		if err == auth.ErrInvalidCredentials {
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid credentials"})
 			return
@@ -51,6 +61,19 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 
 	http.SetCookie(w, cookie)
 	writeJSON(w, http.StatusOK, loginResponse{User: mapUser(result.User)})
+}
+
+func clientIP(r *http.Request) string {
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		if parts := strings.SplitN(xff, ",", 2); len(parts) > 0 {
+			ip := strings.TrimSpace(parts[0])
+			if ip != "" {
+				return ip
+			}
+		}
+	}
+	host, _, _ := strings.Cut(r.RemoteAddr, ":")
+	return host
 }
 
 func (h *AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {

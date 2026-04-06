@@ -1,0 +1,1411 @@
+package handlers
+
+import (
+	"bytes"
+	"encoding/base64"
+	"encoding/csv"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http"
+	"strconv"
+	"strings"
+	"time"
+	"unicode/utf8"
+
+	"github.com/districtd/pam/api/internal/access"
+	"github.com/districtd/pam/api/internal/assets"
+	"github.com/districtd/pam/api/internal/auth"
+	"github.com/districtd/pam/api/internal/credentials"
+	"github.com/districtd/pam/api/internal/sessions"
+)
+
+type SessionsHandler struct {
+	assetsService      *assets.Service
+	accessService      *access.Service
+	credentialsService *credentials.Service
+	sessionsService    *sessions.Service
+}
+
+type launchRequest struct {
+	AssetID string `json:"asset_id"`
+	Action  string `json:"action"`
+}
+
+type sessionEventRequest struct {
+	EventType string         `json:"event_type"`
+	Metadata  map[string]any `json:"metadata,omitempty"`
+}
+
+type sessionsListResponse struct {
+	Items []sessionSummaryResponse `json:"items"`
+}
+
+type sessionDetailResponse struct {
+	SessionID       string                  `json:"session_id"`
+	User            sessionSummaryUser      `json:"user"`
+	Asset           sessionSummaryAsset     `json:"asset"`
+	Action          string                  `json:"action"`
+	LaunchType      string                  `json:"launch_type"`
+	Protocol        string                  `json:"protocol"`
+	Status          string                  `json:"status"`
+	LaunchedVia     string                  `json:"launched_via"`
+	StartedAt       string                  `json:"started_at,omitempty"`
+	EndedAt         string                  `json:"ended_at,omitempty"`
+	CreatedAt       string                  `json:"created_at"`
+	DurationSeconds *int64                  `json:"duration_seconds,omitempty"`
+	Lifecycle       sessionLifecycleSummary `json:"lifecycle"`
+}
+
+type sessionEventsResponse struct {
+	Items       []sessionEventResponse `json:"items"`
+	NextAfterID int64                  `json:"next_after_id,omitempty"`
+}
+
+type sessionEventResponse struct {
+	ID         int64                   `json:"id"`
+	EventType  string                  `json:"event_type"`
+	EventTime  string                  `json:"event_time"`
+	ActorUser  *sessionEventUser       `json:"actor_user,omitempty"`
+	Payload    map[string]any          `json:"payload"`
+	Transcript *sessionTranscriptChunk `json:"transcript,omitempty"`
+}
+
+type sessionReplayResponse struct {
+	SessionID   string               `json:"session_id"`
+	Supported   bool                 `json:"supported"`
+	Approximate bool                 `json:"approximate"`
+	Items       []sessionReplayChunk `json:"items"`
+	NextAfterID int64                `json:"next_after_id,omitempty"`
+}
+
+type sessionReplayChunk struct {
+	EventID   int64  `json:"event_id"`
+	EventTime string `json:"event_time"`
+	Direction string `json:"direction"`
+	Stream    string `json:"stream,omitempty"`
+	Size      int    `json:"size,omitempty"`
+	Text      string `json:"text"`
+}
+
+type sessionEventUser struct {
+	ID       string `json:"id,omitempty"`
+	Username string `json:"username,omitempty"`
+}
+
+type adminSummaryResponse struct {
+	WindowDays  int                   `json:"window_days"`
+	GeneratedAt string                `json:"generated_at"`
+	Metrics     adminSummaryMetrics   `json:"metrics"`
+	ByAction    []adminActionCountRow `json:"by_action"`
+}
+
+type adminSummaryMetrics struct {
+	RecentSessions  int64 `json:"recent_sessions"`
+	ActiveSessions  int64 `json:"active_sessions"`
+	FailedSessions  int64 `json:"failed_sessions"`
+	ShellLaunches   int64 `json:"shell_launches"`
+	DBeaverLaunches int64 `json:"dbeaver_launches"`
+}
+
+type adminActionCountRow struct {
+	Action string `json:"action"`
+	Count  int64  `json:"count"`
+}
+
+type adminAuditRecentResponse struct {
+	Items []adminAuditItemResponse `json:"items"`
+}
+
+type adminAuditEventsResponse struct {
+	Items []adminAuditItemResponse `json:"items"`
+}
+
+type adminAuditEventDetailResponse struct {
+	Item adminAuditItemResponse `json:"item"`
+}
+
+type adminAuditItemResponse struct {
+	ID        int64              `json:"id"`
+	EventTime string             `json:"event_time"`
+	EventType string             `json:"event_type"`
+	Action    string             `json:"action,omitempty"`
+	Outcome   string             `json:"outcome,omitempty"`
+	ActorUser *sessionEventUser  `json:"actor_user,omitempty"`
+	Asset     *adminAuditAsset   `json:"asset,omitempty"`
+	Session   *adminAuditSession `json:"session,omitempty"`
+	SessionID string             `json:"session_id,omitempty"`
+	Metadata  map[string]any     `json:"metadata"`
+}
+
+type adminAuditAsset struct {
+	ID        string `json:"id"`
+	Name      string `json:"name,omitempty"`
+	AssetType string `json:"asset_type,omitempty"`
+}
+
+type adminAuditSession struct {
+	ID        string `json:"id"`
+	Action    string `json:"action,omitempty"`
+	Status    string `json:"status,omitempty"`
+	CreatedAt string `json:"created_at,omitempty"`
+}
+
+type sessionSummaryResponse struct {
+	SessionID       string                  `json:"session_id"`
+	User            sessionSummaryUser      `json:"user"`
+	Asset           sessionSummaryAsset     `json:"asset"`
+	Action          string                  `json:"action"`
+	LaunchType      string                  `json:"launch_type"`
+	Status          string                  `json:"status"`
+	StartedAt       string                  `json:"started_at,omitempty"`
+	EndedAt         string                  `json:"ended_at,omitempty"`
+	CreatedAt       string                  `json:"created_at"`
+	DurationSeconds *int64                  `json:"duration_seconds,omitempty"`
+	Lifecycle       sessionLifecycleSummary `json:"lifecycle"`
+}
+
+type sessionSummaryUser struct {
+	ID       string `json:"id"`
+	Username string `json:"username"`
+}
+
+type sessionSummaryAsset struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	AssetType string `json:"asset_type"`
+}
+
+type sessionLifecycleSummary struct {
+	Started            bool   `json:"started"`
+	Ended              bool   `json:"ended"`
+	Failed             bool   `json:"failed"`
+	ShellStarted       bool   `json:"shell_started"`
+	ConnectorRequested bool   `json:"connector_requested"`
+	ConnectorSucceeded bool   `json:"connector_succeeded"`
+	ConnectorFailed    bool   `json:"connector_failed"`
+	EventCount         int64  `json:"event_count"`
+	FirstEventAt       string `json:"first_event_at,omitempty"`
+	LastEventAt        string `json:"last_event_at,omitempty"`
+}
+
+type sessionTranscriptChunk struct {
+	Direction string `json:"direction"`
+	Stream    string `json:"stream,omitempty"`
+	Size      int    `json:"size,omitempty"`
+	Text      string `json:"text,omitempty"`
+}
+
+type launchResponse struct {
+	SessionID      string             `json:"session_id"`
+	LaunchType     string             `json:"launch_type"`
+	ConnectorToken string             `json:"connector_token,omitempty"`
+	Launch         launchPayloadUnion `json:"launch"`
+}
+
+type launchPayloadUnion struct {
+	ProxyHost string `json:"proxy_host,omitempty"`
+	ProxyPort int    `json:"proxy_port,omitempty"`
+	Username  string `json:"username,omitempty"`
+	Token     string `json:"token,omitempty"`
+	Path      string `json:"path,omitempty"`
+
+	Engine   string `json:"engine,omitempty"`
+	Host     string `json:"host,omitempty"`
+	Port     int    `json:"port,omitempty"`
+	Database string `json:"database,omitempty"`
+	Password string `json:"password,omitempty"`
+	SSLMode  string `json:"ssl_mode,omitempty"`
+
+	RedisHost                  string `json:"redis_host,omitempty"`
+	RedisPort                  int    `json:"redis_port,omitempty"`
+	RedisUsername              string `json:"redis_username,omitempty"`
+	RedisPassword              string `json:"redis_password,omitempty"`
+	RedisDatabase              int    `json:"redis_database,omitempty"`
+	RedisTLS                   bool   `json:"redis_tls,omitempty"`
+	RedisInsecureSkipVerifyTLS bool   `json:"redis_insecure_skip_verify_tls,omitempty"`
+
+	ExpiresAt string `json:"expires_at"`
+}
+
+type dbAssetMetadata struct {
+	Engine   string `json:"engine"`
+	Database string `json:"database"`
+	SSLMode  string `json:"ssl_mode"`
+}
+
+type redisAssetMetadata struct {
+	Database              int  `json:"database"`
+	TLS                   bool `json:"tls"`
+	InsecureSkipVerifyTLS bool `json:"insecure_skip_verify_tls"`
+}
+
+type sftpAssetMetadata struct {
+	Path string `json:"path"`
+}
+
+func NewSessionsHandler(
+	assetsService *assets.Service,
+	accessService *access.Service,
+	credentialsService *credentials.Service,
+	sessionsService *sessions.Service,
+) *SessionsHandler {
+	return &SessionsHandler{
+		assetsService:      assetsService,
+		accessService:      accessService,
+		credentialsService: credentialsService,
+		sessionsService:    sessionsService,
+	}
+}
+
+func (h *SessionsHandler) Launch(w http.ResponseWriter, r *http.Request) {
+	currentUser, ok := auth.CurrentUserFromContext(r.Context())
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+
+	var req launchRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json body"})
+		return
+	}
+
+	req.AssetID = strings.TrimSpace(req.AssetID)
+	req.Action = strings.TrimSpace(req.Action)
+	if req.AssetID == "" || req.Action == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "asset_id and action are required"})
+		return
+	}
+
+	asset, err := h.assetsService.GetByID(r.Context(), req.AssetID)
+	if err != nil {
+		if err == assets.ErrAssetNotFound {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "asset not found"})
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to resolve asset"})
+		return
+	}
+
+	protocol, err := protocolForLaunch(asset.Type, req.Action)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+
+	allowed, err := h.accessService.CanUserPerform(r.Context(), currentUser.ID, req.AssetID, req.Action)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to check access"})
+		return
+	}
+	if !allowed {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "access denied"})
+		return
+	}
+
+	launch, err := h.sessionsService.CreateLaunch(r.Context(), sessions.CreateLaunchInput{
+		UserID:    currentUser.ID,
+		AssetID:   req.AssetID,
+		Action:    req.Action,
+		Protocol:  protocol,
+		ClientIP:  r.RemoteAddr,
+		UserAgent: r.UserAgent(),
+	})
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to create launch session"})
+		return
+	}
+
+	if asset.Type == assets.TypeDatabase && req.Action == access.ActionDBeaver {
+		cred, err := h.credentialsService.ResolveForAsset(r.Context(), asset.ID, credentials.TypeDBPassword)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to resolve database credential"})
+			return
+		}
+		meta, err := parseDBMetadata(asset.MetadataJSON)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "database asset metadata is invalid"})
+			return
+		}
+		launch = h.sessionsService.AttachDBeaverPayload(launch, sessions.DBeaverLaunchPayload{
+			Engine:   meta.Engine,
+			Host:     asset.Host,
+			Port:     asset.Port,
+			Database: meta.Database,
+			Username: strings.TrimSpace(cred.Username),
+			Password: cred.Secret,
+			SSLMode:  meta.SSLMode,
+		})
+	}
+	if asset.Type == assets.TypeLinuxVM && req.Action == access.ActionSFTP {
+		cred, err := h.credentialsService.ResolveForAsset(r.Context(), asset.ID, credentials.TypePassword)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to resolve sftp credential"})
+			return
+		}
+		meta, err := parseSFTPMetadata(asset.MetadataJSON)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "sftp asset metadata is invalid"})
+			return
+		}
+		launch = h.sessionsService.AttachSFTPPayload(launch, sessions.SFTPLaunchPayload{
+			Host:     asset.Host,
+			Port:     asset.Port,
+			Username: strings.TrimSpace(cred.Username),
+			Password: cred.Secret,
+			Path:     meta.Path,
+		})
+	}
+	if asset.Type == assets.TypeRedis && req.Action == access.ActionRedis {
+		cred, err := h.credentialsService.ResolveForAsset(r.Context(), asset.ID, credentials.TypePassword)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to resolve redis credential"})
+			return
+		}
+		meta, err := parseRedisMetadata(asset.MetadataJSON)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "redis asset metadata is invalid"})
+			return
+		}
+		launch = h.sessionsService.AttachRedisPayload(launch, sessions.RedisLaunchPayload{
+			Host:                  asset.Host,
+			Port:                  asset.Port,
+			Username:              strings.TrimSpace(cred.Username),
+			Password:              cred.Secret,
+			Database:              meta.Database,
+			UseTLS:                meta.TLS,
+			InsecureSkipVerifyTLS: meta.InsecureSkipVerifyTLS,
+		})
+	}
+
+	resp, err := buildLaunchResponse(launch)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to build launch response"})
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (h *SessionsHandler) RecordEvent(w http.ResponseWriter, r *http.Request) {
+	currentUser, ok := auth.CurrentUserFromContext(r.Context())
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+
+	sessionID := strings.TrimSpace(r.PathValue("sessionID"))
+	if sessionID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "session id is required"})
+		return
+	}
+
+	var req sessionEventRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json body"})
+		return
+	}
+
+	req.EventType = strings.TrimSpace(req.EventType)
+	if req.EventType == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "event_type is required"})
+		return
+	}
+
+	if err := h.sessionsService.RecordConnectorLaunchEvent(r.Context(), sessionID, currentUser.ID, req.EventType, req.Metadata); err != nil {
+		if err == sessions.ErrUnauthorizedLaunch {
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": "access denied"})
+			return
+		}
+		if strings.HasPrefix(err.Error(), "unsupported connector event type") {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to record session event"})
+		return
+	}
+
+	writeJSON(w, http.StatusAccepted, map[string]string{"status": "recorded", "session_id": sessionID})
+}
+
+func (h *SessionsHandler) MySessions(w http.ResponseWriter, r *http.Request) {
+	currentUser, ok := auth.CurrentUserFromContext(r.Context())
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+
+	filter, err := sessionFilterFromQuery(r, false)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+
+	items, err := h.sessionsService.ListForUser(r.Context(), currentUser.ID, filter)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, sessionsListResponse{Items: mapSessionSummaries(items)})
+}
+
+func (h *SessionsHandler) AdminSessions(w http.ResponseWriter, r *http.Request) {
+	filter, err := sessionFilterFromQuery(r, true)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+
+	items, err := h.sessionsService.ListForAdmin(r.Context(), filter)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, sessionsListResponse{Items: mapSessionSummaries(items)})
+}
+
+func (h *SessionsHandler) AdminSummary(w http.ResponseWriter, r *http.Request) {
+	windowDays := 7
+	windowRaw := strings.TrimSpace(r.URL.Query().Get("window_days"))
+	if windowRaw != "" {
+		parsedWindow, parseErr := strconv.Atoi(windowRaw)
+		if parseErr != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "window_days must be an integer"})
+			return
+		}
+		windowDays = parsedWindow
+	}
+
+	summary, err := h.sessionsService.GetAdminSummary(r.Context(), windowDays)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to build summary"})
+		return
+	}
+
+	rows := make([]adminActionCountRow, 0, len(summary.ByAction))
+	for _, item := range summary.ByAction {
+		rows = append(rows, adminActionCountRow{
+			Action: item.Action,
+			Count:  item.Count,
+		})
+	}
+
+	resp := adminSummaryResponse{
+		WindowDays:  summary.WindowDays,
+		GeneratedAt: time.Now().UTC().Format(time.RFC3339Nano),
+		Metrics: adminSummaryMetrics{
+			RecentSessions:  summary.RecentSessions,
+			ActiveSessions:  summary.ActiveSessions,
+			FailedSessions:  summary.FailedSessions,
+			ShellLaunches:   summary.ShellLaunches,
+			DBeaverLaunches: summary.DBeaverLaunches,
+		},
+		ByAction: rows,
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (h *SessionsHandler) AdminActiveSessions(w http.ResponseWriter, r *http.Request) {
+	limit := 100
+	limitRaw := strings.TrimSpace(r.URL.Query().Get("limit"))
+	if limitRaw != "" {
+		parsedLimit, parseErr := strconv.Atoi(limitRaw)
+		if parseErr != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "limit must be an integer"})
+			return
+		}
+		limit = parsedLimit
+	}
+
+	items, err := h.sessionsService.ListActiveForAdmin(r.Context(), limit)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, sessionsListResponse{Items: mapSessionSummaries(items)})
+}
+
+func (h *SessionsHandler) AdminRecentAudit(w http.ResponseWriter, r *http.Request) {
+	limit := 50
+	limitRaw := strings.TrimSpace(r.URL.Query().Get("limit"))
+	if limitRaw != "" {
+		parsedLimit, parseErr := strconv.Atoi(limitRaw)
+		if parseErr != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "limit must be an integer"})
+			return
+		}
+		limit = parsedLimit
+	}
+
+	items, err := h.sessionsService.ListRecentAudit(r.Context(), limit)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to list recent audit"})
+		return
+	}
+
+	resp := adminAuditRecentResponse{Items: make([]adminAuditItemResponse, 0, len(items))}
+	for _, item := range items {
+		resp.Items = append(resp.Items, mapAdminAuditItem(item))
+	}
+
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (h *SessionsHandler) AdminAuditEvents(w http.ResponseWriter, r *http.Request) {
+	filter, err := auditFilterFromQuery(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+
+	items, err := h.sessionsService.ListAuditEvents(r.Context(), filter)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+
+	resp := adminAuditEventsResponse{Items: make([]adminAuditItemResponse, 0, len(items))}
+	for _, item := range items {
+		resp.Items = append(resp.Items, mapAdminAuditItem(item))
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (h *SessionsHandler) AdminAuditEventDetail(w http.ResponseWriter, r *http.Request) {
+	eventRaw := strings.TrimSpace(r.PathValue("eventID"))
+	if eventRaw == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "event id is required"})
+		return
+	}
+	eventID, err := strconv.ParseInt(eventRaw, 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "event id must be an integer"})
+		return
+	}
+
+	item, err := h.sessionsService.GetAuditEventByID(r.Context(), eventID)
+	if err != nil {
+		if errors.Is(err, sessions.ErrAuditEventNotFound) {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "audit event not found"})
+			return
+		}
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, adminAuditEventDetailResponse{Item: mapAdminAuditItem(item)})
+}
+
+func (h *SessionsHandler) Detail(w http.ResponseWriter, r *http.Request) {
+	currentUser, ok := auth.CurrentUserFromContext(r.Context())
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+
+	sessionID := strings.TrimSpace(r.PathValue("sessionID"))
+	if sessionID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "session id is required"})
+		return
+	}
+
+	item, err := h.sessionsService.GetDetail(r.Context(), sessionID)
+	if err != nil {
+		if errors.Is(err, sessions.ErrSessionNotFound) {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "session not found"})
+			return
+		}
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+
+	if !canViewSession(currentUser, item.UserID) {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "forbidden"})
+		return
+	}
+
+	lifecycle, err := h.sessionsService.GetLifecycleSummary(r.Context(), sessionID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to build lifecycle summary"})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, mapSessionDetail(item, lifecycle))
+}
+
+func (h *SessionsHandler) Events(w http.ResponseWriter, r *http.Request) {
+	currentUser, ok := auth.CurrentUserFromContext(r.Context())
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+
+	sessionID := strings.TrimSpace(r.PathValue("sessionID"))
+	if sessionID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "session id is required"})
+		return
+	}
+
+	item, err := h.sessionsService.GetDetail(r.Context(), sessionID)
+	if err != nil {
+		if errors.Is(err, sessions.ErrSessionNotFound) {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "session not found"})
+			return
+		}
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+
+	if !canViewSession(currentUser, item.UserID) {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "forbidden"})
+		return
+	}
+
+	limit := 300
+	limitRaw := strings.TrimSpace(r.URL.Query().Get("limit"))
+	if limitRaw != "" {
+		parsedLimit, parseErr := strconv.Atoi(limitRaw)
+		if parseErr != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "limit must be an integer"})
+			return
+		}
+		limit = parsedLimit
+	}
+
+	var afterID int64
+	afterRaw := strings.TrimSpace(r.URL.Query().Get("after_id"))
+	if afterRaw != "" {
+		parsedAfter, parseErr := strconv.ParseInt(afterRaw, 10, 64)
+		if parseErr != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "after_id must be an integer"})
+			return
+		}
+		afterID = parsedAfter
+	}
+
+	events, err := h.sessionsService.ListEvents(r.Context(), sessionID, afterID, limit)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+
+	resp := sessionEventsResponse{
+		Items: mapSessionEvents(item.Action, events),
+	}
+	if len(events) > 0 {
+		resp.NextAfterID = events[len(events)-1].ID
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (h *SessionsHandler) Replay(w http.ResponseWriter, r *http.Request) {
+	currentUser, ok := auth.CurrentUserFromContext(r.Context())
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+
+	sessionID := strings.TrimSpace(r.PathValue("sessionID"))
+	if sessionID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "session id is required"})
+		return
+	}
+
+	item, err := h.sessionsService.GetDetail(r.Context(), sessionID)
+	if err != nil {
+		if errors.Is(err, sessions.ErrSessionNotFound) {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "session not found"})
+			return
+		}
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	if !canViewSession(currentUser, item.UserID) {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "forbidden"})
+		return
+	}
+
+	limit := 300
+	limitRaw := strings.TrimSpace(r.URL.Query().Get("limit"))
+	if limitRaw != "" {
+		parsedLimit, parseErr := strconv.Atoi(limitRaw)
+		if parseErr != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "limit must be an integer"})
+			return
+		}
+		limit = parsedLimit
+	}
+
+	var afterID int64
+	afterRaw := strings.TrimSpace(r.URL.Query().Get("after_id"))
+	if afterRaw != "" {
+		parsedAfter, parseErr := strconv.ParseInt(afterRaw, 10, 64)
+		if parseErr != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "after_id must be an integer"})
+			return
+		}
+		afterID = parsedAfter
+	}
+
+	resp := sessionReplayResponse{
+		SessionID:   sessionID,
+		Supported:   item.Action == "shell",
+		Approximate: item.Action == "shell",
+		Items:       []sessionReplayChunk{},
+	}
+	if item.Action != "shell" {
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
+
+	chunks, err := h.sessionsService.ListReplayChunks(r.Context(), sessionID, afterID, limit)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	resp.Items = mapReplayChunks(chunks)
+	if len(chunks) > 0 {
+		resp.NextAfterID = chunks[len(chunks)-1].EventID
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (h *SessionsHandler) ExportSessionSummary(w http.ResponseWriter, r *http.Request) {
+	currentUser, ok := auth.CurrentUserFromContext(r.Context())
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+
+	sessionID := strings.TrimSpace(r.PathValue("sessionID"))
+	if sessionID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "session id is required"})
+		return
+	}
+
+	item, err := h.sessionsService.GetDetail(r.Context(), sessionID)
+	if err != nil {
+		if errors.Is(err, sessions.ErrSessionNotFound) {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "session not found"})
+			return
+		}
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	if !canViewSession(currentUser, item.UserID) {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "forbidden"})
+		return
+	}
+
+	lifecycle, err := h.sessionsService.GetLifecycleSummary(r.Context(), sessionID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to build lifecycle summary"})
+		return
+	}
+	eventTypeCounts := map[string]int64{}
+	var afterID int64
+	for {
+		events, listErr := h.sessionsService.ListEvents(r.Context(), sessionID, afterID, 1000)
+		if listErr != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to build event timeline"})
+			return
+		}
+		if len(events) == 0 {
+			break
+		}
+		for _, event := range events {
+			eventTypeCounts[event.EventType]++
+		}
+		afterID = events[len(events)-1].ID
+	}
+	payload := map[string]any{
+		"session":           mapSessionDetail(item, lifecycle),
+		"event_type_counts": eventTypeCounts,
+		"event_count":       lifecycle.EventCount,
+	}
+
+	filename := fmt.Sprintf("session-%s-summary.json", sessionID)
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", filename))
+	writeJSON(w, http.StatusOK, payload)
+}
+
+func (h *SessionsHandler) ExportSessionTranscript(w http.ResponseWriter, r *http.Request) {
+	currentUser, ok := auth.CurrentUserFromContext(r.Context())
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+
+	sessionID := strings.TrimSpace(r.PathValue("sessionID"))
+	if sessionID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "session id is required"})
+		return
+	}
+
+	item, err := h.sessionsService.GetDetail(r.Context(), sessionID)
+	if err != nil {
+		if errors.Is(err, sessions.ErrSessionNotFound) {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "session not found"})
+			return
+		}
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	if !canViewSession(currentUser, item.UserID) {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "forbidden"})
+		return
+	}
+	if item.Action != "shell" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "transcript export is supported for shell sessions only"})
+		return
+	}
+
+	chunks := make([]sessions.ReplayChunk, 0)
+	var afterID int64
+	for {
+		page, pageErr := h.sessionsService.ListReplayChunks(r.Context(), sessionID, afterID, 1000)
+		if pageErr != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to build transcript export"})
+			return
+		}
+		if len(page) == 0 {
+			break
+		}
+		chunks = append(chunks, page...)
+		afterID = page[len(page)-1].EventID
+	}
+
+	var b strings.Builder
+	b.WriteString("# PAM session transcript (first-pass)\n")
+	b.WriteString(fmt.Sprintf("# session_id: %s\n", item.SessionID))
+	b.WriteString(fmt.Sprintf("# user: %s\n", item.Username))
+	b.WriteString(fmt.Sprintf("# asset: %s\n", item.AssetName))
+	b.WriteString(fmt.Sprintf("# generated_at: %s\n\n", time.Now().UTC().Format(time.RFC3339Nano)))
+
+	for _, chunk := range chunks {
+		prefix := "OUT"
+		if chunk.Direction == "in" {
+			prefix = "IN "
+		}
+		b.WriteString(fmt.Sprintf("[%s] %s ", chunk.EventTime.UTC().Format(time.RFC3339Nano), prefix))
+		b.WriteString(chunk.Text)
+		if !strings.HasSuffix(chunk.Text, "\n") {
+			b.WriteString("\n")
+		}
+	}
+	if len(chunks) == 0 {
+		b.WriteString("(no transcript chunks captured)\n")
+	}
+
+	filename := fmt.Sprintf("session-%s-transcript.txt", sessionID)
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", filename))
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(b.String()))
+}
+
+func (h *SessionsHandler) AdminExportSessionsCSV(w http.ResponseWriter, r *http.Request) {
+	filter, err := sessionFilterFromQuery(r, true)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+
+	items, err := h.sessionsService.ListForAdmin(r.Context(), filter)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+
+	var buf bytes.Buffer
+	writer := csv.NewWriter(&buf)
+	_ = writer.Write([]string{
+		"session_id",
+		"user_id",
+		"username",
+		"asset_id",
+		"asset_name",
+		"asset_type",
+		"action",
+		"launch_type",
+		"status",
+		"created_at",
+		"started_at",
+		"ended_at",
+		"duration_seconds",
+	})
+	for _, item := range items {
+		record := []string{
+			item.SessionID,
+			item.UserID,
+			item.Username,
+			item.AssetID,
+			item.AssetName,
+			item.AssetType,
+			item.Action,
+			item.LaunchType,
+			item.Status,
+			item.CreatedAt.UTC().Format(time.RFC3339Nano),
+			formatNullableTime(item.StartedAt),
+			formatNullableTime(item.EndedAt),
+			formatNullableInt64(item.DurationSeconds),
+		}
+		_ = writer.Write(record)
+	}
+	writer.Flush()
+	if writerErr := writer.Error(); writerErr != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to build csv export"})
+		return
+	}
+
+	filename := fmt.Sprintf("admin-sessions-%s.csv", time.Now().UTC().Format("20060102-150405"))
+	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", filename))
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(buf.Bytes())
+}
+
+func protocolForLaunch(assetType, action string) (string, error) {
+	switch {
+	case assetType == assets.TypeLinuxVM && action == access.ActionShell:
+		return sessions.ProtocolSSH, nil
+	case assetType == assets.TypeLinuxVM && action == access.ActionSFTP:
+		return sessions.ProtocolSFTP, nil
+	case assetType == assets.TypeDatabase && action == access.ActionDBeaver:
+		return sessions.ProtocolDB, nil
+	case assetType == assets.TypeRedis && action == access.ActionRedis:
+		return sessions.ProtocolRedis, nil
+	default:
+		return "", errUnsupportedLaunch(assetType, action)
+	}
+}
+
+func parseDBMetadata(raw json.RawMessage) (dbAssetMetadata, error) {
+	meta := dbAssetMetadata{}
+	if len(raw) == 0 {
+		return meta, nil
+	}
+	if err := json.Unmarshal(raw, &meta); err != nil {
+		return dbAssetMetadata{}, err
+	}
+	meta.Engine = strings.TrimSpace(meta.Engine)
+	meta.Database = strings.TrimSpace(meta.Database)
+	meta.SSLMode = strings.TrimSpace(meta.SSLMode)
+	if meta.Engine == "" {
+		meta.Engine = "postgres"
+	}
+	return meta, nil
+}
+
+func parseRedisMetadata(raw json.RawMessage) (redisAssetMetadata, error) {
+	meta := redisAssetMetadata{}
+	if len(raw) == 0 {
+		return meta, nil
+	}
+	if err := json.Unmarshal(raw, &meta); err != nil {
+		return redisAssetMetadata{}, err
+	}
+	if meta.Database < 0 {
+		meta.Database = 0
+	}
+	return meta, nil
+}
+
+func parseSFTPMetadata(raw json.RawMessage) (sftpAssetMetadata, error) {
+	meta := sftpAssetMetadata{}
+	if len(raw) == 0 {
+		return meta, nil
+	}
+	if err := json.Unmarshal(raw, &meta); err != nil {
+		return sftpAssetMetadata{}, err
+	}
+	meta.Path = strings.TrimSpace(meta.Path)
+	return meta, nil
+}
+
+func buildLaunchResponse(result sessions.LaunchResult) (launchResponse, error) {
+	resp := launchResponse{
+		SessionID:      result.SessionID,
+		LaunchType:     result.LaunchType,
+		ConnectorToken: result.ConnectorToken,
+	}
+
+	switch result.LaunchType {
+	case "shell":
+		if result.Shell == nil {
+			return launchResponse{}, errMissingLaunchPayload("shell")
+		}
+		resp.Launch = launchPayloadUnion{
+			ProxyHost: result.Shell.ProxyHost,
+			ProxyPort: result.Shell.ProxyPort,
+			Username:  result.Shell.Username,
+			Token:     result.Shell.Token,
+			ExpiresAt: result.ExpiresAt.Format("2006-01-02T15:04:05.999999999Z07:00"),
+		}
+	case "dbeaver":
+		if result.DBeaver == nil {
+			return launchResponse{}, errMissingLaunchPayload("dbeaver")
+		}
+		resp.Launch = launchPayloadUnion{
+			Engine:    result.DBeaver.Engine,
+			Host:      result.DBeaver.Host,
+			Port:      result.DBeaver.Port,
+			Database:  result.DBeaver.Database,
+			Username:  result.DBeaver.Username,
+			Password:  result.DBeaver.Password,
+			SSLMode:   result.DBeaver.SSLMode,
+			ExpiresAt: result.ExpiresAt.Format("2006-01-02T15:04:05.999999999Z07:00"),
+		}
+	case "sftp":
+		if result.SFTP == nil {
+			return launchResponse{}, errMissingLaunchPayload("sftp")
+		}
+		resp.Launch = launchPayloadUnion{
+			Host:      result.SFTP.Host,
+			Port:      result.SFTP.Port,
+			Username:  result.SFTP.Username,
+			Password:  result.SFTP.Password,
+			Path:      result.SFTP.Path,
+			ExpiresAt: result.ExpiresAt.Format("2006-01-02T15:04:05.999999999Z07:00"),
+		}
+	case "redis":
+		if result.Redis == nil {
+			return launchResponse{}, errMissingLaunchPayload("redis")
+		}
+		resp.Launch = launchPayloadUnion{
+			RedisHost:                  result.Redis.Host,
+			RedisPort:                  result.Redis.Port,
+			RedisUsername:              result.Redis.Username,
+			RedisPassword:              result.Redis.Password,
+			RedisDatabase:              result.Redis.Database,
+			RedisTLS:                   result.Redis.UseTLS,
+			RedisInsecureSkipVerifyTLS: result.Redis.InsecureSkipVerifyTLS,
+			ExpiresAt:                  result.ExpiresAt.Format("2006-01-02T15:04:05.999999999Z07:00"),
+		}
+	default:
+		return launchResponse{}, errMissingLaunchPayload(result.LaunchType)
+	}
+
+	return resp, nil
+}
+
+func errUnsupportedLaunch(assetType, action string) error {
+	return &launchValidationError{message: "unsupported launch combination for asset_type=" + assetType + " action=" + action}
+}
+
+func errMissingLaunchPayload(launchType string) error {
+	return &launchValidationError{message: "missing launch payload for launch_type=" + launchType}
+}
+
+type launchValidationError struct {
+	message string
+}
+
+func (e *launchValidationError) Error() string {
+	return e.message
+}
+
+func sessionFilterFromQuery(r *http.Request, allowAdminFields bool) (sessions.SessionListFilter, error) {
+	query := r.URL.Query()
+	filter := sessions.SessionListFilter{
+		Status:    strings.TrimSpace(query.Get("status")),
+		Action:    strings.TrimSpace(query.Get("action")),
+		AssetType: strings.TrimSpace(query.Get("asset_type")),
+	}
+
+	fromRaw := strings.TrimSpace(query.Get("from"))
+	if fromRaw != "" {
+		from, err := time.Parse(time.RFC3339, fromRaw)
+		if err != nil {
+			return sessions.SessionListFilter{}, errInvalidQuery("from must be RFC3339")
+		}
+		filter.From = &from
+	}
+
+	toRaw := strings.TrimSpace(query.Get("to"))
+	if toRaw != "" {
+		to, err := time.Parse(time.RFC3339, toRaw)
+		if err != nil {
+			return sessions.SessionListFilter{}, errInvalidQuery("to must be RFC3339")
+		}
+		filter.To = &to
+	}
+
+	limitRaw := strings.TrimSpace(query.Get("limit"))
+	if limitRaw != "" {
+		limit, err := strconv.Atoi(limitRaw)
+		if err != nil {
+			return sessions.SessionListFilter{}, errInvalidQuery("limit must be an integer")
+		}
+		filter.Limit = limit
+	}
+
+	if allowAdminFields {
+		filter.UserID = strings.TrimSpace(query.Get("user_id"))
+		filter.AssetID = strings.TrimSpace(query.Get("asset_id"))
+	}
+
+	return filter, nil
+}
+
+func auditFilterFromQuery(r *http.Request) (sessions.AuditListFilter, error) {
+	query := r.URL.Query()
+	filter := sessions.AuditListFilter{
+		EventType: strings.TrimSpace(query.Get("event_type")),
+		UserID:    strings.TrimSpace(query.Get("user_id")),
+		AssetID:   strings.TrimSpace(query.Get("asset_id")),
+		SessionID: strings.TrimSpace(query.Get("session_id")),
+		Action:    strings.TrimSpace(query.Get("action")),
+	}
+
+	fromRaw := strings.TrimSpace(query.Get("from"))
+	if fromRaw != "" {
+		from, err := time.Parse(time.RFC3339, fromRaw)
+		if err != nil {
+			return sessions.AuditListFilter{}, errInvalidQuery("from must be RFC3339")
+		}
+		filter.From = &from
+	}
+	toRaw := strings.TrimSpace(query.Get("to"))
+	if toRaw != "" {
+		to, err := time.Parse(time.RFC3339, toRaw)
+		if err != nil {
+			return sessions.AuditListFilter{}, errInvalidQuery("to must be RFC3339")
+		}
+		filter.To = &to
+	}
+	limitRaw := strings.TrimSpace(query.Get("limit"))
+	if limitRaw != "" {
+		limit, err := strconv.Atoi(limitRaw)
+		if err != nil {
+			return sessions.AuditListFilter{}, errInvalidQuery("limit must be an integer")
+		}
+		filter.Limit = limit
+	}
+
+	return filter, nil
+}
+
+func mapSessionSummaries(items []sessions.SessionSummary) []sessionSummaryResponse {
+	resp := make([]sessionSummaryResponse, 0, len(items))
+	for _, item := range items {
+		row := sessionSummaryResponse{
+			SessionID:       item.SessionID,
+			User:            sessionSummaryUser{ID: item.UserID, Username: item.Username},
+			Asset:           sessionSummaryAsset{ID: item.AssetID, Name: item.AssetName, AssetType: item.AssetType},
+			Action:          item.Action,
+			LaunchType:      item.LaunchType,
+			Status:          item.Status,
+			CreatedAt:       item.CreatedAt.UTC().Format(time.RFC3339Nano),
+			DurationSeconds: item.DurationSeconds,
+			Lifecycle: sessionLifecycleSummary{
+				Started:    item.StartedAt != nil,
+				Ended:      item.EndedAt != nil,
+				EventCount: 0,
+			},
+		}
+		if item.StartedAt != nil {
+			row.StartedAt = item.StartedAt.UTC().Format(time.RFC3339Nano)
+		}
+		if item.EndedAt != nil {
+			row.EndedAt = item.EndedAt.UTC().Format(time.RFC3339Nano)
+		}
+		resp = append(resp, row)
+	}
+	return resp
+}
+
+func mapAdminAuditItem(item sessions.AuditItem) adminAuditItemResponse {
+	row := adminAuditItemResponse{
+		ID:        item.ID,
+		EventTime: item.EventTime.UTC().Format(time.RFC3339Nano),
+		EventType: item.EventType,
+		Action:    item.Action,
+		Outcome:   item.Outcome,
+		Metadata:  item.Metadata,
+	}
+	if row.Metadata == nil {
+		row.Metadata = map[string]any{}
+	}
+	if item.ActorUserID != nil || item.ActorUser != nil {
+		row.ActorUser = &sessionEventUser{}
+		if item.ActorUserID != nil {
+			row.ActorUser.ID = *item.ActorUserID
+		}
+		if item.ActorUser != nil {
+			row.ActorUser.Username = *item.ActorUser
+		}
+	}
+	if item.AssetID != nil {
+		row.Asset = &adminAuditAsset{ID: *item.AssetID}
+		if item.AssetName != nil {
+			row.Asset.Name = *item.AssetName
+		}
+		if item.AssetType != nil {
+			row.Asset.AssetType = *item.AssetType
+		}
+	}
+	if item.SessionID != nil {
+		row.SessionID = *item.SessionID
+	}
+	if item.Session != nil {
+		row.Session = &adminAuditSession{
+			ID:        item.Session.ID,
+			Action:    item.Session.Action,
+			Status:    item.Session.Status,
+			CreatedAt: item.Session.CreatedAt.UTC().Format(time.RFC3339Nano),
+		}
+	}
+	return row
+}
+
+func errInvalidQuery(message string) error {
+	return &launchValidationError{message: message}
+}
+
+func canViewSession(currentUser auth.CurrentUser, sessionUserID string) bool {
+	if currentUser.ID == sessionUserID {
+		return true
+	}
+	return currentUser.HasRole("admin") || currentUser.HasRole("auditor")
+}
+
+func mapSessionDetail(item sessions.SessionDetail, lifecycle sessions.SessionLifecycleSummary) sessionDetailResponse {
+	lifecycleResp := sessionLifecycleSummary{
+		Started:            item.StartedAt != nil || lifecycle.ShellStarted,
+		Ended:              item.EndedAt != nil || lifecycle.Ended,
+		Failed:             lifecycle.Failed || item.Status == sessions.StatusFailed,
+		ShellStarted:       lifecycle.ShellStarted,
+		ConnectorRequested: lifecycle.ConnectorRequested,
+		ConnectorSucceeded: lifecycle.ConnectorSucceeded,
+		ConnectorFailed:    lifecycle.ConnectorFailed,
+		EventCount:         lifecycle.EventCount,
+	}
+	if lifecycle.FirstEventAt != nil {
+		lifecycleResp.FirstEventAt = lifecycle.FirstEventAt.UTC().Format(time.RFC3339Nano)
+	}
+	if lifecycle.LastEventAt != nil {
+		lifecycleResp.LastEventAt = lifecycle.LastEventAt.UTC().Format(time.RFC3339Nano)
+	}
+
+	resp := sessionDetailResponse{
+		SessionID:       item.SessionID,
+		User:            sessionSummaryUser{ID: item.UserID, Username: item.Username},
+		Asset:           sessionSummaryAsset{ID: item.AssetID, Name: item.AssetName, AssetType: item.AssetType},
+		Action:          item.Action,
+		LaunchType:      item.LaunchType,
+		Protocol:        item.Protocol,
+		Status:          item.Status,
+		LaunchedVia:     item.LaunchedVia,
+		CreatedAt:       item.CreatedAt.UTC().Format(time.RFC3339Nano),
+		DurationSeconds: item.DurationSeconds,
+		Lifecycle:       lifecycleResp,
+	}
+	if item.StartedAt != nil {
+		resp.StartedAt = item.StartedAt.UTC().Format(time.RFC3339Nano)
+	}
+	if item.EndedAt != nil {
+		resp.EndedAt = item.EndedAt.UTC().Format(time.RFC3339Nano)
+	}
+	return resp
+}
+
+func mapSessionEvents(action string, items []sessions.SessionEvent) []sessionEventResponse {
+	resp := make([]sessionEventResponse, 0, len(items))
+	shellSession := strings.TrimSpace(action) == "shell"
+	for _, item := range items {
+		row := sessionEventResponse{
+			ID:        item.ID,
+			EventType: item.EventType,
+			EventTime: item.EventTime.UTC().Format(time.RFC3339Nano),
+			Payload:   item.Payload,
+		}
+		if item.ActorUserID != nil || item.ActorUser != nil {
+			row.ActorUser = &sessionEventUser{}
+			if item.ActorUserID != nil {
+				row.ActorUser.ID = *item.ActorUserID
+			}
+			if item.ActorUser != nil {
+				row.ActorUser.Username = *item.ActorUser
+			}
+		}
+		if shellSession {
+			if transcript, ok := transcriptChunkFromEvent(item.EventType, item.Payload); ok {
+				row.Transcript = &transcript
+			}
+		}
+		resp = append(resp, row)
+	}
+	return resp
+}
+
+func mapReplayChunks(chunks []sessions.ReplayChunk) []sessionReplayChunk {
+	resp := make([]sessionReplayChunk, 0, len(chunks))
+	for _, chunk := range chunks {
+		resp = append(resp, sessionReplayChunk{
+			EventID:   chunk.EventID,
+			EventTime: chunk.EventTime.UTC().Format(time.RFC3339Nano),
+			Direction: chunk.Direction,
+			Stream:    chunk.Stream,
+			Size:      chunk.Size,
+			Text:      chunk.Text,
+		})
+	}
+	return resp
+}
+
+func formatNullableTime(value *time.Time) string {
+	if value == nil {
+		return ""
+	}
+	return value.UTC().Format(time.RFC3339Nano)
+}
+
+func formatNullableInt64(value *int64) string {
+	if value == nil {
+		return ""
+	}
+	return strconv.FormatInt(*value, 10)
+}
+
+func transcriptChunkFromEvent(eventType string, payload map[string]any) (sessionTranscriptChunk, bool) {
+	direction := ""
+	switch eventType {
+	case sessions.EventDataIn:
+		direction = "in"
+	case sessions.EventDataOut:
+		direction = "out"
+	default:
+		return sessionTranscriptChunk{}, false
+	}
+
+	encoded, _ := payload["data"].(string)
+	if strings.TrimSpace(encoded) == "" {
+		return sessionTranscriptChunk{}, false
+	}
+	decoded, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil || !utf8.Valid(decoded) {
+		return sessionTranscriptChunk{}, false
+	}
+	stream, _ := payload["stream"].(string)
+	size := 0
+	switch typed := payload["size"].(type) {
+	case float64:
+		size = int(typed)
+	case int:
+		size = typed
+	case int64:
+		size = int(typed)
+	}
+
+	return sessionTranscriptChunk{
+		Direction: direction,
+		Stream:    stream,
+		Size:      size,
+		Text:      string(decoded),
+	}, true
+}

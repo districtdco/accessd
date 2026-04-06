@@ -26,19 +26,37 @@ const (
 )
 
 type Service struct {
-	pool     *pgxpool.Pool
-	logger   *slog.Logger
-	cfg      config.AuthConfig
-	provider Provider
+	pool        *pgxpool.Pool
+	logger      *slog.Logger
+	cfg         config.AuthConfig
+	provider    Provider
+	rateLimiter *LoginRateLimiter
 }
 
-func NewService(pool *pgxpool.Pool, cfg config.AuthConfig, logger *slog.Logger) *Service {
-	return &Service{
-		pool:     pool,
-		cfg:      cfg,
-		logger:   logger.With("component", "auth"),
-		provider: NewLocalProvider(pool, logger),
+func NewService(pool *pgxpool.Pool, cfg config.AuthConfig, logger *slog.Logger) (*Service, error) {
+	provider, err := NewProvider(pool, cfg, logger)
+	if err != nil {
+		return nil, err
 	}
+
+	svc := &Service{
+		pool:        pool,
+		cfg:         cfg,
+		logger:      logger.With("component", "auth"),
+		provider:    provider,
+		rateLimiter: NewLoginRateLimiter(5*time.Minute, 10),
+	}
+
+	// Start periodic cleanup of expired rate limit entries.
+	go func() {
+		ticker := time.NewTicker(10 * time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			svc.rateLimiter.Cleanup()
+		}
+	}()
+
+	return svc, nil
 }
 
 func (s *Service) Bootstrap(ctx context.Context) error {
@@ -107,14 +125,76 @@ ON CONFLICT (user_id, role_id) DO NOTHING;`
 	return nil
 }
 
-func (s *Service) Login(ctx context.Context, username, password string) (LoginResult, *http.Cookie, error) {
-	user, err := s.provider.Authenticate(ctx, username, password)
+func (s *Service) GetUserByUsername(ctx context.Context, username string) (User, error) {
+	const query = `
+SELECT id, username, COALESCE(email, ''), COALESCE(display_name, ''), created_at
+FROM users
+WHERE username = $1
+LIMIT 1;`
+
+	var user User
+	if err := s.pool.QueryRow(ctx, query, strings.TrimSpace(username)).Scan(
+		&user.ID,
+		&user.Username,
+		&user.Email,
+		&user.DisplayName,
+		&user.CreatedAt,
+	); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return User{}, ErrUserNotFound
+		}
+		return User{}, fmt.Errorf("get user by username: %w", err)
+	}
+
+	roles, err := s.loadRoles(ctx, user.ID)
 	if err != nil {
-		if err == ErrInvalidCredentials {
+		return User{}, fmt.Errorf("load user roles: %w", err)
+	}
+	user.Roles = roles
+
+	return user, nil
+}
+
+// LoginRequest carries metadata about the login attempt for audit purposes.
+type LoginRequest struct {
+	Username  string
+	Password  string
+	SourceIP  string
+	UserAgent string
+}
+
+func (s *Service) Login(ctx context.Context, username, password string) (LoginResult, *http.Cookie, error) {
+	return s.LoginWithContext(ctx, LoginRequest{Username: username, Password: password})
+}
+
+func (s *Service) LoginWithContext(ctx context.Context, req LoginRequest) (LoginResult, *http.Cookie, error) {
+	username := strings.TrimSpace(req.Username)
+	rateLimitKey := "user:" + strings.ToLower(username)
+
+	if s.rateLimiter.IsBlocked(rateLimitKey) {
+		s.logger.Warn("login rate limited", "username", username, "source_ip", req.SourceIP)
+		s.recordLoginAudit(ctx, AuditLoginFailedRateLimited, username, nil, req.SourceIP, req.UserAgent, "rate_limited")
+		return LoginResult{}, nil, ErrRateLimited
+	}
+
+	user, err := s.provider.Authenticate(ctx, username, req.Password)
+	if err != nil {
+		s.rateLimiter.RecordFailure(rateLimitKey)
+		auditType, reason := classifyLoginFailure(err)
+		s.logger.Warn("login failed",
+			"username", username,
+			"provider", s.provider.Name(),
+			"reason", reason,
+			"source_ip", req.SourceIP,
+		)
+		s.recordLoginAudit(ctx, auditType, username, nil, req.SourceIP, req.UserAgent, reason)
+		if errors.Is(err, ErrInvalidCredentials) {
 			return LoginResult{}, nil, ErrInvalidCredentials
 		}
 		return LoginResult{}, nil, fmt.Errorf("authenticate with provider %s: %w", s.provider.Name(), err)
 	}
+
+	s.rateLimiter.Reset(rateLimitKey)
 
 	sessionToken, err := newSessionToken()
 	if err != nil {
@@ -126,18 +206,64 @@ func (s *Service) Login(ctx context.Context, username, password string) (LoginRe
 		return LoginResult{}, nil, err
 	}
 
+	s.logger.Info("login success",
+		"username", username,
+		"user_id", user.ID,
+		"provider", s.provider.Name(),
+		"source_ip", req.SourceIP,
+	)
+	s.recordLoginAudit(ctx, AuditLoginSuccess, username, &user.ID, req.SourceIP, req.UserAgent, "success")
+
 	cookie := &http.Cookie{
 		Name:     s.cfg.SessionCookieName,
 		Value:    sessionToken,
 		Path:     "/",
 		HttpOnly: true,
 		Secure:   s.cfg.SessionSecure,
-		SameSite: http.SameSiteLaxMode,
+		SameSite: parseSameSite(s.cfg.SessionSameSite),
 		Expires:  expiresAt,
 		MaxAge:   int(s.cfg.SessionTTL.Seconds()),
 	}
 
 	return LoginResult{User: user}, cookie, nil
+}
+
+func classifyLoginFailure(err error) (string, string) {
+	var ldapErr *ldapAuthError
+	if errors.As(err, &ldapErr) {
+		switch ldapErr.kind {
+		case ldapFailureUserNotFound:
+			return AuditLoginFailedUserNotFound, "user_not_found"
+		case ldapFailureInvalidPassword:
+			return AuditLoginFailedInvalidPass, "invalid_password"
+		case ldapFailureTLSOrConnectivity:
+			return AuditLoginFailedLDAPError, "ldap_tls_or_connectivity"
+		case ldapFailureBindSearchConfig:
+			return AuditLoginFailedLDAPError, "ldap_bind_or_search_config"
+		}
+	}
+	if errors.Is(err, ErrInvalidCredentials) {
+		return AuditLoginFailed, "invalid_credentials"
+	}
+	return AuditLoginFailed, "provider_error"
+}
+
+func (s *Service) recordLoginAudit(ctx context.Context, eventType, username string, userID *string, sourceIP, userAgent, outcome string) {
+	meta := map[string]any{
+		"username": username,
+		"provider": s.provider.Name(),
+	}
+	if err := writeAuditEvent(ctx, s.pool, AuditEvent{
+		EventType:   eventType,
+		Action:      "login",
+		Outcome:     outcome,
+		ActorUserID: userID,
+		SourceIP:    sourceIP,
+		UserAgent:   userAgent,
+		Metadata:    meta,
+	}); err != nil {
+		s.logger.Warn("failed to write login audit event", "event_type", eventType, "username", username, "error", err)
+	}
 }
 
 func (s *Service) Logout(ctx context.Context, sessionToken string) error {
@@ -200,7 +326,7 @@ func (s *Service) ClearSessionCookie() *http.Cookie {
 		Path:     "/",
 		HttpOnly: true,
 		Secure:   s.cfg.SessionSecure,
-		SameSite: http.SameSiteLaxMode,
+		SameSite: parseSameSite(s.cfg.SessionSameSite),
 		MaxAge:   -1,
 		Expires:  time.Unix(0, 0).UTC(),
 	}
@@ -323,6 +449,17 @@ func newSessionToken() (string, error) {
 		return "", err
 	}
 	return base64.RawURLEncoding.EncodeToString(raw), nil
+}
+
+func parseSameSite(raw string) http.SameSite {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "none":
+		return http.SameSiteNoneMode
+	case "strict":
+		return http.SameSiteStrictMode
+	default:
+		return http.SameSiteLaxMode
+	}
 }
 
 func hashSessionToken(token string) [32]byte {

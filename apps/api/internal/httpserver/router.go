@@ -8,10 +8,13 @@ import (
 )
 
 type RouteHandlers struct {
-	Health  *handlers.HealthHandler
-	Version *handlers.VersionHandler
-	Auth    *handlers.AuthHandler
-	AuthSvc *auth.Service
+	Health   *handlers.HealthHandler
+	Version  *handlers.VersionHandler
+	Auth     *handlers.AuthHandler
+	Access   *handlers.AccessHandler
+	Sessions *handlers.SessionsHandler
+	Admin    *handlers.AdminHandler
+	AuthSvc  *auth.Service
 }
 
 func NewRouter(h RouteHandlers) *http.ServeMux {
@@ -23,6 +26,41 @@ func NewRouter(h RouteHandlers) *http.ServeMux {
 	mux.HandleFunc("POST /auth/logout", h.Auth.Logout)
 	mux.Handle("GET /me", h.AuthSvc.Authenticated(http.HandlerFunc(h.Auth.Me)))
 	mux.Handle("GET /auth/ping", h.AuthSvc.Authenticated(http.HandlerFunc(h.Auth.AuthPing)))
+	mux.Handle("GET /access/my", h.AuthSvc.Authenticated(http.HandlerFunc(h.Access.MyAccess)))
+	mux.Handle("GET /sessions/my", h.AuthSvc.Authenticated(http.HandlerFunc(h.Sessions.MySessions)))
+	mux.Handle("GET /sessions/{sessionID}", h.AuthSvc.Authenticated(http.HandlerFunc(h.Sessions.Detail)))
+	mux.Handle("GET /sessions/{sessionID}/events", h.AuthSvc.Authenticated(http.HandlerFunc(h.Sessions.Events)))
+	mux.Handle("GET /sessions/{sessionID}/replay", h.AuthSvc.Authenticated(http.HandlerFunc(h.Sessions.Replay)))
+	mux.Handle("GET /sessions/{sessionID}/export/summary", h.AuthSvc.Authenticated(http.HandlerFunc(h.Sessions.ExportSessionSummary)))
+	mux.Handle("GET /sessions/{sessionID}/export/transcript", h.AuthSvc.Authenticated(http.HandlerFunc(h.Sessions.ExportSessionTranscript)))
+	mux.Handle("POST /sessions/launch", h.AuthSvc.Authenticated(http.HandlerFunc(h.Sessions.Launch)))
+	mux.Handle("POST /sessions/{sessionID}/events", h.AuthSvc.Authenticated(http.HandlerFunc(h.Sessions.RecordEvent)))
 	mux.Handle("GET /admin/ping", h.AuthSvc.RequireRoles(http.HandlerFunc(h.Auth.AdminPing), "admin"))
+	mux.Handle("GET /admin/users", h.AuthSvc.RequireRoles(http.HandlerFunc(h.Admin.ListUsers), "admin"))
+	mux.Handle("GET /admin/users/{userID}", h.AuthSvc.RequireRoles(http.HandlerFunc(h.Admin.GetUserDetail), "admin"))
+	mux.Handle("GET /admin/users/{userID}/effective-access", h.AuthSvc.RequireRoles(http.HandlerFunc(h.Admin.UserEffectiveAccess), "admin"))
+	mux.Handle("GET /admin/users/{userID}/grants", h.AuthSvc.RequireRoles(http.HandlerFunc(h.Admin.ListUserGrants), "admin"))
+	mux.Handle("POST /admin/users/{userID}/grants", h.AuthSvc.RequireRoles(http.HandlerFunc(h.Admin.AddUserGrant), "admin"))
+	mux.Handle("DELETE /admin/users/{userID}/grants/{assetID}/{action}", h.AuthSvc.RequireRoles(http.HandlerFunc(h.Admin.RemoveUserGrant), "admin"))
+	mux.Handle("POST /admin/users/{userID}/roles", h.AuthSvc.RequireRoles(http.HandlerFunc(h.Admin.AssignRoleToUser), "admin"))
+	mux.Handle("DELETE /admin/users/{userID}/roles/{roleName}", h.AuthSvc.RequireRoles(http.HandlerFunc(h.Admin.RemoveRoleFromUser), "admin"))
+	mux.Handle("GET /admin/roles", h.AuthSvc.RequireRoles(http.HandlerFunc(h.Admin.ListRoles), "admin"))
+	mux.Handle("GET /admin/groups", h.AuthSvc.RequireRoles(http.HandlerFunc(h.Admin.ListGroups), "admin"))
+	mux.Handle("GET /admin/groups/{groupID}/members", h.AuthSvc.RequireRoles(http.HandlerFunc(h.Admin.ListGroupMembers), "admin"))
+	mux.Handle("GET /admin/groups/{groupID}/grants", h.AuthSvc.RequireRoles(http.HandlerFunc(h.Admin.ListGroupGrants), "admin"))
+	mux.Handle("GET /admin/assets", h.AuthSvc.RequireRoles(http.HandlerFunc(h.Admin.ListAssets), "admin"))
+	mux.Handle("POST /admin/assets", h.AuthSvc.RequireRoles(http.HandlerFunc(h.Admin.CreateAsset), "admin"))
+	mux.Handle("GET /admin/assets/{assetID}", h.AuthSvc.RequireRoles(http.HandlerFunc(h.Admin.GetAssetDetail), "admin"))
+	mux.Handle("PUT /admin/assets/{assetID}", h.AuthSvc.RequireRoles(http.HandlerFunc(h.Admin.UpdateAsset), "admin"))
+	mux.Handle("GET /admin/assets/{assetID}/credentials", h.AuthSvc.RequireRoles(http.HandlerFunc(h.Admin.ListAssetCredentials), "admin"))
+	mux.Handle("PUT /admin/assets/{assetID}/credentials/{credentialType}", h.AuthSvc.RequireRoles(http.HandlerFunc(h.Admin.UpsertAssetCredential), "admin"))
+	mux.Handle("GET /admin/assets/{assetID}/grants", h.AuthSvc.RequireRoles(http.HandlerFunc(h.Admin.ListAssetGrants), "admin"))
+	mux.Handle("GET /admin/sessions", h.AuthSvc.RequireRoles(http.HandlerFunc(h.Sessions.AdminSessions), "admin", "auditor"))
+	mux.Handle("GET /admin/sessions/export", h.AuthSvc.RequireRoles(http.HandlerFunc(h.Sessions.AdminExportSessionsCSV), "admin", "auditor"))
+	mux.Handle("GET /admin/sessions/active", h.AuthSvc.RequireRoles(http.HandlerFunc(h.Sessions.AdminActiveSessions), "admin", "auditor"))
+	mux.Handle("GET /admin/audit/recent", h.AuthSvc.RequireRoles(http.HandlerFunc(h.Sessions.AdminRecentAudit), "admin", "auditor"))
+	mux.Handle("GET /admin/audit/events", h.AuthSvc.RequireRoles(http.HandlerFunc(h.Sessions.AdminAuditEvents), "admin", "auditor"))
+	mux.Handle("GET /admin/audit/events/{eventID}", h.AuthSvc.RequireRoles(http.HandlerFunc(h.Sessions.AdminAuditEventDetail), "admin", "auditor"))
+	mux.Handle("GET /admin/summary", h.AuthSvc.RequireRoles(http.HandlerFunc(h.Sessions.AdminSummary), "admin", "auditor"))
 	return mux
 }

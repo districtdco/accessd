@@ -2,9 +2,9 @@
 
 ## Current Status
 
-**Phase**: Phase 2 in progress — backend foundation spine implemented (startup, DB wiring, migrations, health/version), business features pending.
+**Phase**: Phase 17 (hardening) in progress — production readiness consolidation pass.
 
-**Last updated**: 2026-04-06
+**Last updated**: 2026-04-07
 
 ---
 
@@ -13,11 +13,11 @@
 - [x] Create monorepo directory structure (`apps/api`, `apps/ui`, `apps/connector`, `packages/contracts`)
 - [x] Initialize Go module for `apps/api`
 - [x] Initialize Go module for `apps/connector`
-- [ ] Initialize React + Vite project in `apps/ui` with TailAdmin *(shell created, npm install + TailAdmin integration pending)*
+- [x] Initialize React + Vite project in `apps/ui` *(minimal React shell flow active; TailAdmin deferred)*
 - [x] Set up `Makefile` with targets: `build`, `dev`, `test`, `lint`, `migrate`
 - [x] Create `docker-compose.yml` with PostgreSQL (LDAP service can be added later for provider integration tests)
 - [x] Add `.gitignore` for Go, Node, IDE files
-- [ ] Set up basic CI (lint + test) — GitHub Actions or equivalent
+- [x] Set up practical CI (GitHub Actions) for contract validation + API/connector Go test/build + UI install/build
 
 ## Phase 2: Backend Bootstrap
 
@@ -32,24 +32,24 @@
 - [ ] Implement CORS middleware
 - [x] Implement health check endpoints (`GET /health/live`, `GET /health/ready`)
 - [x] Implement version endpoint (`GET /version`)
-- [ ] Write first integration test (health check against real DB)
+- [x] Write first backend integration test slice against real DB handlers/services *(expanded beyond health: login/logout/me, RBAC authz checks, `/access/my`, launch happy/denied, sessions list filters, and export authz)*
 - [ ] Add `updated_at` trigger strategy (DB trigger vs app-managed writes)
 - [ ] Add migration test coverage in CI (fresh DB + idempotency checks)
 
 ## Phase 3: UI Bootstrap
 
 - [ ] Install TailAdmin template and integrate with Vite + React
-- [ ] Set up React Router with auth-guarded routes
-- [ ] Implement auth context (JWT storage, refresh, logout)
+- [x] Set up React Router with auth-guarded routes
+- [x] Implement auth context (cookie-session aware `/me` fetch + logout)
 - [ ] Create layout shell (sidebar, header, content area)
-- [ ] Create login page (form only — backend integration in Phase 5)
-- [ ] Set up API client module (`apps/ui/src/api/`)
-- [ ] Confirm dev proxy from Vite to Go backend works
+- [x] Create login page (form + backend local auth integration)
+- [x] Set up API client module (`apps/ui/src/api.ts`)
+- [x] Confirm dev proxy from Vite to Go backend works
 
 ## Phase 4: Shared Contracts
 
 - [x] Define initial OpenAPI spec in `packages/contracts/api.yaml`
-- [ ] Cover auth, users, assets, policies, sessions endpoints
+- [ ] Cover auth, users, assets, policies, sessions endpoints *(expanded with admin RBAC helper endpoints for users/roles/groups/assets/grants/effective access; broader CRUD still pending)*
 - [x] Add health/version endpoints and foundational route tags (`auth`, `assets`, `access`, `sessions`, `audit`)
 - [ ] Generate TypeScript types from OpenAPI (or maintain manually)
 - [x] Document contract update workflow in README
@@ -65,52 +65,54 @@
 - [x] Seed default development admin user
 - [x] Keep authorization provider-agnostic (users/groups/roles/access grants unchanged by auth provider choice)
 - [x] Add auth provider interface (`local` now, `ldap` later)
-- [ ] Add LDAP provider integration task (deferred, same provider interface)
-- [ ] Minimal LDAP attribute sync on login (username, email, display name, group membership) *(deferred with LDAP provider)*
-- [ ] Wire login page to backend
-- [ ] Handle auth errors in UI (invalid creds, provider unavailable, token expired)
-- [ ] Write tests: successful login, bad password, logout, expired session, provider-switch compatibility
+- [x] Add LDAP provider integration task (same provider interface; mode-configurable `local`/`ldap`/`hybrid`)
+- [x] Minimal LDAP attribute sync on login (username, email, display name; group-to-role mapping optional/additive)
+- [x] Refine LDAP defaults/diagnostics for Samba AD (`sAMAccountName`, AD-friendly user/group filters, clearer bind/search vs invalid-password vs connectivity logs)
+- [x] Support additive LDAP group-to-role mapping by group name (`cn`) or full group DN
+- [x] Wire login page to backend
+- [x] Handle auth errors in UI (minimal error display for login/access/launch failures)
+- [ ] Write tests: successful login, bad password, logout, expired session, provider-switch compatibility *(partial reliability slice now added: login/logout/me + admin authorization checks, plus LDAP config/mapping/fallback unit tests)*
 
 ## Phase 6: User / Group / Role Model
 
 - [ ] Implement user CRUD API (`GET/POST/PUT /users`, `GET /users/:id`)
 - [ ] Implement group CRUD API
-- [ ] Implement role assignment API (`POST /users/:id/roles`)
+- [x] Implement role assignment API *(admin helper endpoints: `GET /admin/roles`, `POST /admin/users/{id}/roles`, `DELETE /admin/users/{id}/roles/{role}`)*
 - [ ] Implement group membership API (`POST /groups/:id/members`)
 - [x] Implement RBAC middleware foundation (role checks in backend, used by `/admin/ping`)
-- [ ] Build admin users page (list, create, edit, assign roles/groups)
-- [ ] Build admin groups page
+- [x] Build admin users page *(minimal: list users, view roles, open detail, role/grant controls in detail view)*
+- [ ] Build admin groups page *(deferred; API visibility added via `GET /admin/groups`, `GET /admin/groups/{id}/members`, `GET /admin/groups/{id}/grants`)*
 - [ ] Write tests: CRUD operations, RBAC enforcement, group sync
 
 ## Phase 7: Asset Inventory
 
 - [x] Create migration: `assets` table *(included in foundational migration `000001_core_v1.up.sql`)*
 - [ ] Implement asset CRUD API (`GET/POST/PUT/DELETE /assets`)
-- [ ] Asset types: `ssh`, `database`, `redis`, `sftp`
-- [ ] Asset fields: name, type, host, port, engine (for DB), description, status
-- [ ] Build admin assets page (list, create, edit, delete)
-- [ ] Build "my assets" page (user-facing, filtered by policy — placeholder until policy is done)
+- [x] Asset types: `linux_vm`, `database`, `redis` *(service-level model implemented for this slice)*
+- [x] Asset fields: id, name, type, host, port, metadata_json, created_at *(service + migration `000003_assets_credentials_access_v1.up.sql`)*
+- [x] Build admin assets page *(minimal helper: list assets and inspect grants only; create/edit/delete deferred)*
+- [x] Build "my assets" page (user-facing table via `GET /access/my`, shell action only in this slice)
 - [ ] Write tests: CRUD, validation, type-specific fields
 
 ## Phase 8: Access Policy / Assignments
 
 - [ ] Create migration: `access_policies` table
 - [ ] Implement policy CRUD API
-- [ ] Policy model: subject (user or group) → asset → allowed actions
-- [ ] Implement policy evaluation function: `CanAccess(userID, assetID, action) → bool`
-- [ ] Apply policy filter to `GET /assets/mine` endpoint
-- [ ] Build admin policies page (assign users/groups to assets)
+- [x] Policy model: subject (user or group) → asset → allowed actions *(implemented via `access_grants` usage layer)*
+- [x] Implement policy evaluation function: `CanAccess(userID, assetID, action) → bool`
+- [x] Apply policy filter endpoint: `GET /access/my` *(replaces planned `GET /assets/mine` in this slice)*
+- [x] Build admin policies helper view *(user-focused direct allow-grant management on user detail; group policy editing deferred)*
 - [ ] Update "my assets" page to show only policy-allowed assets with permitted actions
 - [ ] Write tests: policy creation, evaluation (direct user, group membership, no access, multiple policies)
 
 ## Phase 9: Credential Storage
 
 - [x] Create migration: `credentials` table *(included in foundational migration `000001_core_v1.up.sql`)*
-- [ ] Implement AES-256-GCM encryption/decryption in vault module
-- [ ] Implement `PAM_VAULT_KEY` loading from environment
-- [ ] Implement credential CRUD (admin-only, API never returns plaintext)
-- [ ] Credential types: `ssh_password`, `ssh_keypair`, `db_password`, `redis_password`, `sftp_password`
-- [ ] Build admin credential management in asset detail page
+- [x] Implement AES-256-GCM encryption/decryption in vault module
+- [x] Implement `PAM_VAULT_KEY` loading from environment
+- [x] Implement credential create/resolve service (backend-only decrypted use; no plaintext API exposure)
+- [x] Credential types (this slice): `password`, `ssh_key`, `db_password`
+- [x] Build admin credential management in asset detail page *(minimal helper: write-only credential update + safe metadata visibility, no plaintext secret readback)*
 - [ ] Audit log credential access events
 - [ ] Write tests: encrypt/decrypt roundtrip, key missing error, credential CRUD, no plaintext in API responses
 
@@ -118,21 +120,21 @@
 
 This is the critical path — highest-value v1 feature.
 
-- [ ] Implement SSH server using `golang.org/x/crypto/ssh`
-- [ ] Accept connections on configurable port (e.g., 2222)
-- [ ] Authenticate incoming connections via keyboard-interactive auth (session token passed through challenge-response)
-- [ ] Map session token → user + asset + policy
-- [ ] Retrieve target SSH credential from vault
-- [ ] Establish upstream SSH connection to target host
-- [ ] Relay bidirectional I/O (PTY, shell, stdin/stdout/stderr)
+- [x] Implement SSH server using `golang.org/x/crypto/ssh`
+- [x] Accept connections on configurable port (e.g., 2222)
+- [x] Authenticate incoming connections via keyboard-interactive auth (session token passed through challenge-response) *(password auth fallback also supported in first pass)*
+- [x] Map session token → user + asset + policy *(policy checked at launch creation; token + session binding verified on proxy auth)*
+- [x] Retrieve target SSH credential from vault
+- [x] Establish upstream SSH connection to target host
+- [x] Relay bidirectional I/O (PTY, shell, stdin/stdout/stderr)
 - [ ] Record full session stream in asciicast v2 format
 - [ ] Compress and store recording to filesystem
-- [ ] Create session record in DB (status: active → completed/disconnected)
-- [ ] Handle disconnection, timeout, and error cases gracefully
-- [ ] Implement `POST /sessions/launch` for SSH assets
-- [ ] Write connector SSH launch logic:
-  - [ ] macOS/Linux: spawn `ssh` in native terminal pointed at PAM proxy
-  - [ ] Windows: spawn PuTTY pointed at PAM proxy
+- [x] Create session record in DB (status: active → completed/disconnected)
+- [x] Handle disconnection, timeout, and error cases gracefully
+- [x] Implement `POST /sessions/launch` for SSH assets
+- [x] Write connector SSH launch logic:
+  - [x] macOS/Linux: spawn `ssh` in native terminal pointed at PAM proxy
+  - [x] Windows: spawn PuTTY pointed at PAM proxy *(manual token entry first pass)*
 - [ ] End-to-end test: login → select SSH asset → launch → connect → type commands → disconnect → verify recording
 
 ## Phase 11: File Transfer Path
@@ -142,9 +144,9 @@ This is the critical path — highest-value v1 feature.
 - [ ] Connect upstream to target SFTP using stored credentials
 - [ ] Relay SFTP operations
 - [ ] Log file operations: upload, download, delete, rename (path, size, timestamp)
-- [ ] Create session record for SFTP sessions
-- [ ] Implement `POST /sessions/launch` for SFTP assets
-- [ ] Connector: launch FileZilla (macOS/Linux) or WinSCP (Windows) pointed at PAM SFTP endpoint
+- [x] Create session record for SFTP sessions (managed launch lifecycle via `sessions` + connector events)
+- [x] Implement `POST /sessions/launch` for SFTP assets
+- [x] Connector: launch FileZilla (macOS/Linux) or WinSCP (Windows) in managed connector flow
 - [ ] Test: upload file, download file, verify audit log entries
 
 ## Phase 12: DB Broker / DBeaver Path
@@ -152,21 +154,21 @@ This is the critical path — highest-value v1 feature.
 - [ ] Implement TCP proxy for database connections
 - [ ] Allocate ephemeral port per session (or multiplex on single port with session routing)
 - [ ] Authenticate session, retrieve DB credential from vault
-- [ ] Proxy TCP traffic to target database
-- [ ] Log connection events: open, close, duration, database name
-- [ ] Implement `POST /sessions/launch` for database assets
-- [ ] Connector: launch DBeaver with connection parameters (host=pam, port=ephemeral, db=target_db)
-- [ ] Connector creates temporary local DBeaver connection profile from launch payload
-- [ ] Clean up temporary connection material after session ends
-- [ ] Test: launch DBeaver, connect through PAM proxy, run query, verify audit log
+- [ ] Proxy TCP traffic to target database *(deferred in this slice)*
+- [x] Log connection/session lifecycle launch events for connector handoff (`launch_created`, `connector_launch_requested`, `connector_launch_succeeded`/`connector_launch_failed`, `session_ended`/`session_failed`)
+- [x] Implement `POST /sessions/launch` support for database assets (`action=dbeaver`)
+- [x] Connector: launch DBeaver with launch payload parameters (`/launch/dbeaver`)
+- [x] Connector creates temporary local DBeaver launch material from payload (temp manifest in OS temp dir)
+- [x] Clean up temporary connection material after session ends *(TTL-based auto cleanup + startup stale temp cleanup in connector)*
+- [ ] Test: launch DBeaver, connect through PAM DB proxy, run query, verify audit log *(DB proxy/query audit deferred)*
 
 ## Phase 13: Redis Path
 
 - [ ] Implement TCP proxy for Redis (RESP protocol)
 - [ ] Authenticate via session token, connect upstream with stored Redis password
-- [ ] Log connection events
-- [ ] Implement `POST /sessions/launch` for Redis assets
-- [ ] Connector: launch terminal with `redis-cli` pointed at PAM proxy
+- [x] Log connector/session lifecycle metadata events for Redis managed launch path (`launch_created`, `connector_launch_requested`, `connector_launch_succeeded`/`connector_launch_failed`, `session_ended`/`session_failed`)
+- [x] Implement `POST /sessions/launch` for Redis assets
+- [x] Connector: launch terminal with `redis-cli` in managed connector flow
 - [ ] Test: connect, run commands, verify audit log
 - [ ] Parse RESP protocol to log individual commands (include only if simple within proxy design; otherwise defer)
 
@@ -176,32 +178,35 @@ This is the critical path — highest-value v1 feature.
 - [x] Create migration: `sessions` table *(included in foundational migration `000001_core_v1.up.sql`)*
 - [ ] Implement audit event writer (called from all modules)
 - [ ] Event types: `login`, `logout`, `session_start`, `session_end`, `policy_check`, `credential_access`, `file_operation`, `admin_action`
-- [ ] Implement audit query API with filters (date range, user, event type, asset)
-- [ ] Implement session list API with filters
-- [ ] Implement session detail API (metadata + recording download)
+- [x] Implement audit query API with practical filters *(added `GET /admin/audit/events` with `event_type`, `user_id`, `asset_id`, `session_id`, `action`, `from`, `to`, `limit`; plus `GET /admin/audit/events/{id}` detail)*
+- [x] Implement session list API with filters *(added `GET /sessions/my` and `GET /admin/sessions` with practical status/action/asset/date/user filters + limit)*
+- [x] Implement session detail API *(added `GET /sessions/{id}` + `GET /sessions/{id}/events`; recording download still deferred)*
 - [ ] Ensure audit writes are non-blocking (don't slow down proxy traffic)
 - [ ] Add indexes for query performance
-- [ ] Write tests: audit event creation, query filters, session lifecycle
+- [ ] Write tests: audit event creation, query filters, session lifecycle *(partial reliability slice now added: launch/list/export authorization paths)*
 
 ## Phase 15: Session Review UI
 
-- [ ] Build session history page (table with filters: user, asset, date, type, status)
-- [ ] Build session detail page with metadata panel
-- [ ] Implement SSH session text replay (asciicast player — xterm.js + asciinema-player or custom)
+- [x] Build session history page (table with practical filters and list browsing for user/admin slices; session detail/replay deferred)
+- [x] Build session detail page with metadata panel
+- [x] Implement first-pass SSH session text replay *(approximate event-based replay from `data_in`/`data_out`; terminal-perfect emulation deferred)*
+- [x] Add DBeaver session detail metadata review *(connector launch lifecycle + final outcome, no transcript emulation)*
+- [x] Add practical session recap/export helpers *(summary JSON, shell transcript TXT, admin sessions CSV)*
 - [ ] Display SFTP session file operation log
 - [ ] Display DB/Redis session connection timeline
-- [ ] Build admin audit log page with full event search
+- [x] Build admin audit log page (practical filters + detail drilldown; heavier SIEM-style analytics/export deferred)
+- [x] Build lightweight admin recap/dashboard view *(added `/admin/dashboard` with summary cards, sessions-by-action, active sessions list, and recent audit activity feed from new admin summary endpoints)*
 - [ ] Test replay with real recorded sessions
 
 ## Phase 16: Connector / Launcher
 
-- [ ] Define connector ↔ API protocol (REST endpoints for launch instructions)
+- [x] Define connector launch protocol for this slice (`POST /launch/shell` request shape documented and implemented)
 - [ ] Implement connector authentication (JWT-based, login flow)
 - [ ] Implement connector config (PAM server URL, stored token)
 - [ ] Implement client launcher abstraction (per OS, per asset type)
-- [ ] macOS launcher: native terminal (SSH), FileZilla (SFTP), DBeaver (DB), terminal (Redis)
-- [ ] Linux launcher: native terminal (SSH), FileZilla (SFTP), DBeaver (DB), terminal (Redis)
-- [ ] Windows launcher: PuTTY (SSH), WinSCP (SFTP), DBeaver (DB), terminal (Redis)
+- [ ] macOS launcher: native terminal (SSH), FileZilla (SFTP), DBeaver (DB), terminal (Redis) *(DBeaver launch added in first pass)*
+- [ ] Linux launcher: native terminal (SSH), FileZilla (SFTP), DBeaver (DB), terminal (Redis) *(DBeaver launch added in first pass)*
+- [ ] Windows launcher: PuTTY (SSH), WinSCP (SFTP), DBeaver (DB), terminal (Redis) *(DBeaver launch added in first pass)*
 - [ ] Implement protocol handler registration (optional — `pam://` URI scheme)
 - [ ] Handle "client not installed" errors gracefully
 - [ ] Build connector binary (cross-compile for darwin-amd64, darwin-arm64, linux-amd64, windows-amd64)
@@ -210,11 +215,21 @@ This is the critical path — highest-value v1 feature.
 ## Phase 17: Hardening
 
 - [ ] Input validation on all API endpoints (reject malformed requests)
-- [ ] Rate limiting on auth endpoints
+- [x] Rate limiting on auth endpoints *(in-memory sliding window rate limiter: 10 attempts / 5min per username, with cleanup goroutine)*
 - [ ] JWT secret/key configuration for production
 - [ ] HTTPS/TLS configuration for API server
-- [ ] SSH host key management for PAM's SSH proxy
-- [ ] Enforce LDAPS or StartTLS for LDAP connections (when LDAP provider is enabled)
+- [x] SSH host key management for PAM's SSH proxy *(added persistent proxy host key file + upstream host-key modes: `known-hosts` (default), `accept-new`, `insecure`; unsafe modes gated outside development)*
+- [x] Enforce explicit LDAP transport mode controls (`PAM_LDAP_USE_TLS` or `PAM_LDAP_STARTTLS`; mutually exclusive)
+- [x] Harden session cookie defaults and controls (`PAM_AUTH_COOKIE_SECURE` env-aware default, `PAM_AUTH_COOKIE_SAMESITE`, production validation guards)
+- [x] Restrict unsafe mode use outside development (`PAM_ALLOW_UNSAFE_MODE` escape hatch required for insecure LDAP TLS, weak vault-key format, or permissive SSH host-key modes)
+- [x] Tighten connector local trust boundary (loopback-only callers by default + explicit unsafe overrides for remote access and wildcard CORS)
+- [x] Add audit events for admin credential updates (`event_type=admin_action`, `action=credential_upsert`)
+- [x] Add login audit events (`login_success`, `login_failed`, `login_failed_invalid_password`, `login_failed_user_not_found`, `login_failed_ldap_error`, `login_failed_rate_limited`)
+- [x] Connector trust model: HMAC-signed connector tokens (`PAM_CONNECTOR_SECRET`); connector verifies signature, session_id, and expiry before launching
+- [x] Samba AD-aligned LDAP defaults (`sAMAccountName`, `displayName`, `mail`, simplified user search filter)
+- [x] Structured login failure diagnostics (differentiate user_not_found, invalid_password, bind/config, TLS/connectivity in logs and audit)
+- [x] Hybrid auth mode clarity (explicit fallback logging with failure reason classification)
+- [x] Startup configuration summary log (provider mode, session settings, connector trust, unsafe mode status)
 - [ ] Ensure no credentials leak in logs, error messages, or API responses
 - [ ] Add request ID tracking across API and proxy layers
 - [ ] Timeout configuration for proxy connections (idle timeout, max session duration)
@@ -229,7 +244,7 @@ This is the critical path — highest-value v1 feature.
 - [ ] API documentation (from OpenAPI spec)
 - [ ] Admin guide: managing users, assets, policies, credentials
 - [ ] Connector installation guide (per OS)
-- [ ] Deployment guide (systemd on Linux VM for production, Docker Compose for dev)
+- [x] Deployment guide (systemd on Linux VM for production, Docker Compose for dev) *(added deploy assets + step-by-step `deploy/README.md`)*
 
 ## Phase 19: v1 Release Readiness
 
@@ -260,7 +275,7 @@ This is the critical path — highest-value v1 feature.
 
 - [ ] **Default dev admin bootstrap**: final defaults for username/email/password and rotation expectation in team workflow.
 - [ ] **LDAP schema details (deferred)**: what specific attributes/group structure does the target LDAP use? Need sample directory for integration.
-- [ ] **DBeaver temp profile format**: need to prototype the exact mechanism for creating/cleaning temporary DBeaver connection profiles across platforms.
+- [x] **DBeaver temp profile cleanup**: connector now auto-cleans temp launch material by TTL and removes stale temp dirs on startup.
 
 ## Deferred Beyond v1
 

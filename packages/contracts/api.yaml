@@ -2,7 +2,7 @@ openapi: "3.1.0"
 info:
   title: PAM API
   version: 0.1.0
-  description: Privileged Access Management system API (development mode currently uses local auth provider; LDAP is deferred).
+  description: Privileged Access Management system API (provider-based auth supports local, LDAP, and hybrid modes).
 
 servers:
   - url: http://localhost:8080
@@ -14,7 +14,7 @@ tags:
   - name: version
     description: Service build/version metadata.
   - name: auth
-    description: Authentication/session endpoints (local dev provider for now; LDAP planned later via provider boundary).
+    description: "Authentication/session endpoints (provider-backed auth: local, ldap, or hybrid fallback mode)."
   - name: assets
     description: Asset inventory endpoints (planned).
   - name: access
@@ -23,6 +23,8 @@ tags:
     description: Session launch and lifecycle endpoints (planned).
   - name: audit
     description: Audit query endpoints (planned).
+  - name: admin
+    description: Admin/operator helper endpoints for RBAC and access grant management.
 
 paths:
   /health/live:
@@ -72,7 +74,7 @@ paths:
 
   /auth/login:
     post:
-      summary: Login with local development credentials
+      summary: Login with configured auth provider mode (local, ldap, or hybrid)
       operationId: postAuthLogin
       tags: [auth]
       requestBody:
@@ -178,6 +180,1562 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
+  /admin/users:
+    get:
+      summary: List users for admin management
+      operationId: getAdminUsers
+      tags: [admin]
+      security:
+        - sessionCookie: []
+      responses:
+        "200":
+          description: List of users with assigned roles.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminUsersResponse"
+        "401":
+          description: Missing or invalid session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Authenticated but not authorized.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /admin/users/{user_id}:
+    get:
+      summary: Get admin detail view for a user
+      operationId: getAdminUserDetail
+      tags: [admin]
+      security:
+        - sessionCookie: []
+      parameters:
+        - in: path
+          name: user_id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: User detail including roles and groups.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminUserDetail"
+        "401":
+          description: Missing or invalid session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Authenticated but not authorized.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: User not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /admin/roles:
+    get:
+      summary: List available roles
+      operationId: getAdminRoles
+      tags: [admin]
+      security:
+        - sessionCookie: []
+      responses:
+        "200":
+          description: Available role catalog.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminRolesResponse"
+        "401":
+          description: Missing or invalid session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Authenticated but not authorized.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /admin/users/{user_id}/roles:
+    post:
+      summary: Assign role to user
+      operationId: postAdminUserRole
+      tags: [admin]
+      security:
+        - sessionCookie: []
+      parameters:
+        - in: path
+          name: user_id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdminAssignRoleRequest"
+      responses:
+        "204":
+          description: Role assigned (idempotent).
+        "400":
+          description: Invalid payload.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Missing or invalid session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Authenticated but not authorized.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: User or role not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /admin/users/{user_id}/roles/{role_name}:
+    delete:
+      summary: Remove role from user
+      operationId: deleteAdminUserRole
+      tags: [admin]
+      security:
+        - sessionCookie: []
+      parameters:
+        - in: path
+          name: user_id
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - in: path
+          name: role_name
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Role removed (idempotent).
+        "400":
+          description: Invalid request.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Missing or invalid session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Authenticated but not authorized.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: User or role not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /admin/groups:
+    get:
+      summary: List groups
+      operationId: getAdminGroups
+      tags: [admin]
+      security:
+        - sessionCookie: []
+      responses:
+        "200":
+          description: List of groups with member counts.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminGroupsResponse"
+        "401":
+          description: Missing or invalid session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Authenticated but not authorized.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /admin/groups/{group_id}/members:
+    get:
+      summary: List members in a group
+      operationId: getAdminGroupMembers
+      tags: [admin]
+      security:
+        - sessionCookie: []
+      parameters:
+        - in: path
+          name: group_id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Group members.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminGroupMembersResponse"
+        "401":
+          description: Missing or invalid session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Authenticated but not authorized.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Group not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /admin/groups/{group_id}/grants:
+    get:
+      summary: List group-related grants
+      operationId: getAdminGroupGrants
+      tags: [admin]
+      security:
+        - sessionCookie: []
+      parameters:
+        - in: path
+          name: group_id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Grants where the group is the subject.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminGrantsResponse"
+        "401":
+          description: Missing or invalid session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Authenticated but not authorized.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Group not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /admin/assets:
+    get:
+      summary: List assets for admin grant management
+      operationId: getAdminAssets
+      tags: [admin]
+      security:
+        - sessionCookie: []
+      responses:
+        "200":
+          description: Asset list with grant counts.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminAssetsResponse"
+        "401":
+          description: Missing or invalid session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Authenticated but not authorized.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    post:
+      summary: Create a managed asset
+      operationId: postAdminAsset
+      tags: [admin]
+      security:
+        - sessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdminUpsertAssetRequest"
+      responses:
+        "201":
+          description: Asset created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminAsset"
+        "400":
+          description: Invalid request payload.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Missing or invalid session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Authenticated but not authorized.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /admin/assets/{asset_id}:
+    get:
+      summary: Get admin detail for an asset
+      operationId: getAdminAssetDetail
+      tags: [admin]
+      security:
+        - sessionCookie: []
+      parameters:
+        - in: path
+          name: asset_id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Asset detail including credential metadata.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminAssetDetail"
+        "401":
+          description: Missing or invalid session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Authenticated but not authorized.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Asset not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    put:
+      summary: Update an existing asset
+      operationId: putAdminAsset
+      tags: [admin]
+      security:
+        - sessionCookie: []
+      parameters:
+        - in: path
+          name: asset_id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdminUpsertAssetRequest"
+      responses:
+        "200":
+          description: Asset updated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminAsset"
+        "400":
+          description: Invalid request payload.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Missing or invalid session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Authenticated but not authorized.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Asset not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /admin/assets/{asset_id}/credentials:
+    get:
+      summary: List safe credential metadata for an asset
+      operationId: getAdminAssetCredentials
+      tags: [admin]
+      security:
+        - sessionCookie: []
+      parameters:
+        - in: path
+          name: asset_id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Credential metadata list (no plaintext secrets).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminAssetCredentialListResponse"
+        "401":
+          description: Missing or invalid session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Authenticated but not authorized.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Asset not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /admin/assets/{asset_id}/credentials/{credential_type}:
+    put:
+      summary: Create or update credential material for an asset
+      operationId: putAdminAssetCredential
+      tags: [admin]
+      security:
+        - sessionCookie: []
+      parameters:
+        - in: path
+          name: asset_id
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - in: path
+          name: credential_type
+          required: true
+          schema:
+            type: string
+            enum: [password, ssh_key, db_password]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdminUpsertCredentialRequest"
+      responses:
+        "200":
+          description: Credential updated (metadata only).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminCredentialSummary"
+        "400":
+          description: Invalid request payload.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Missing or invalid session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Authenticated but not authorized.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Asset not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /admin/assets/{asset_id}/grants:
+    get:
+      summary: List grants for an asset
+      operationId: getAdminAssetGrants
+      tags: [admin]
+      security:
+        - sessionCookie: []
+      parameters:
+        - in: path
+          name: asset_id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Grants on the asset.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminGrantsResponse"
+        "401":
+          description: Missing or invalid session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Authenticated but not authorized.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Asset not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /admin/users/{user_id}/grants:
+    get:
+      summary: List direct grants for a user
+      operationId: getAdminUserGrants
+      tags: [admin]
+      security:
+        - sessionCookie: []
+      parameters:
+        - in: path
+          name: user_id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Direct user grants.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminGrantsResponse"
+        "401":
+          description: Missing or invalid session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Authenticated but not authorized.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: User not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    post:
+      summary: Add direct allow-grant for a user
+      operationId: postAdminUserGrant
+      tags: [admin]
+      security:
+        - sessionCookie: []
+      parameters:
+        - in: path
+          name: user_id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdminAddUserGrantRequest"
+      responses:
+        "204":
+          description: User grant added or updated.
+        "400":
+          description: Invalid payload.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Missing or invalid session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Authenticated but not authorized.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: User or asset not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /admin/users/{user_id}/grants/{asset_id}/{action}:
+    delete:
+      summary: Remove direct allow-grant for a user action on an asset
+      operationId: deleteAdminUserGrant
+      tags: [admin]
+      security:
+        - sessionCookie: []
+      parameters:
+        - in: path
+          name: user_id
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - in: path
+          name: asset_id
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - in: path
+          name: action
+          required: true
+          schema:
+            type: string
+            enum: [shell, sftp, dbeaver, redis]
+      responses:
+        "204":
+          description: User grant removed (idempotent).
+        "400":
+          description: Invalid request.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Missing or invalid session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Authenticated but not authorized.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: User not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /admin/users/{user_id}/effective-access:
+    get:
+      summary: Get practical effective access view for a user
+      operationId: getAdminUserEffectiveAccess
+      tags: [admin]
+      security:
+        - sessionCookie: []
+      parameters:
+        - in: path
+          name: user_id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Effective user access with action sources.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminEffectiveAccessResponse"
+        "401":
+          description: Missing or invalid session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Authenticated but not authorized.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: User not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /admin/summary:
+    get:
+      summary: Get lightweight admin/operator recap metrics
+      operationId: getAdminSummary
+      tags: [admin]
+      security:
+        - sessionCookie: []
+      parameters:
+        - in: query
+          name: window_days
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 90
+      responses:
+        "200":
+          description: Practical session recap metrics and action counts.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminSummaryResponse"
+        "400":
+          description: Invalid query params.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Missing or invalid session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Authenticated but not authorized.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /admin/audit/recent:
+    get:
+      summary: Get recent audit activity feed for admin operators
+      operationId: getAdminAuditRecent
+      tags: [admin]
+      security:
+        - sessionCookie: []
+      parameters:
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+      responses:
+        "200":
+          description: Recent audit items ordered newest-first.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminAuditRecentResponse"
+        "400":
+          description: Invalid query params.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Missing or invalid session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Authenticated but not authorized.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /admin/audit/events:
+    get:
+      summary: Search audit events with practical admin/auditor filters
+      operationId: getAdminAuditEvents
+      tags: [admin]
+      security:
+        - sessionCookie: []
+      parameters:
+        - in: query
+          name: event_type
+          schema:
+            type: string
+        - in: query
+          name: user_id
+          schema:
+            type: string
+            format: uuid
+        - in: query
+          name: asset_id
+          schema:
+            type: string
+            format: uuid
+        - in: query
+          name: session_id
+          schema:
+            type: string
+            format: uuid
+        - in: query
+          name: action
+          schema:
+            type: string
+        - in: query
+          name: from
+          schema:
+            type: string
+            format: date-time
+        - in: query
+          name: to
+          schema:
+            type: string
+            format: date-time
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+      responses:
+        "200":
+          description: Filtered audit events ordered newest-first.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminAuditEventsResponse"
+        "400":
+          description: Invalid query params.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Missing or invalid session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Authenticated but not authorized.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /admin/audit/events/{event_id}:
+    get:
+      summary: Get a single audit event detail for operator review
+      operationId: getAdminAuditEventDetail
+      tags: [admin]
+      security:
+        - sessionCookie: []
+      parameters:
+        - in: path
+          name: event_id
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      responses:
+        "200":
+          description: Audit event detail with metadata and linked summaries.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminAuditEventDetailResponse"
+        "400":
+          description: Invalid path param.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Missing or invalid session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Authenticated but not authorized.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Audit event not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /admin/sessions:
+    get:
+      summary: List sessions across users/assets for admin browsing
+      operationId: getAdminSessions
+      tags: [admin]
+      security:
+        - sessionCookie: []
+      parameters:
+        - in: query
+          name: user_id
+          schema:
+            type: string
+            format: uuid
+        - in: query
+          name: asset_id
+          schema:
+            type: string
+            format: uuid
+        - in: query
+          name: status
+          schema:
+            type: string
+            enum: [pending, active, completed, failed, terminated, expired]
+        - in: query
+          name: action
+          schema:
+            type: string
+            enum: [shell, sftp, dbeaver, redis]
+        - in: query
+          name: asset_type
+          schema:
+            type: string
+            enum: [linux_vm, database, redis]
+        - in: query
+          name: from
+          schema:
+            type: string
+            format: date-time
+        - in: query
+          name: to
+          schema:
+            type: string
+            format: date-time
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+      responses:
+        "200":
+          description: Session summaries.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionListResponse"
+        "400":
+          description: Invalid query params.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Missing or invalid session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Authenticated but not authorized.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /admin/sessions/export:
+    get:
+      summary: Export admin/auditor-visible session history as CSV
+      operationId: getAdminSessionsExport
+      tags: [admin]
+      security:
+        - sessionCookie: []
+      parameters:
+        - in: query
+          name: user_id
+          schema:
+            type: string
+            format: uuid
+        - in: query
+          name: asset_id
+          schema:
+            type: string
+            format: uuid
+        - in: query
+          name: status
+          schema:
+            type: string
+            enum: [pending, active, completed, failed, terminated, expired]
+        - in: query
+          name: action
+          schema:
+            type: string
+            enum: [shell, sftp, dbeaver, redis]
+        - in: query
+          name: asset_type
+          schema:
+            type: string
+            enum: [linux_vm, database, redis]
+        - in: query
+          name: from
+          schema:
+            type: string
+            format: date-time
+        - in: query
+          name: to
+          schema:
+            type: string
+            format: date-time
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+      responses:
+        "200":
+          description: CSV export of matching session summaries.
+          content:
+            text/csv:
+              schema:
+                type: string
+                format: binary
+        "400":
+          description: Invalid query params.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Missing or invalid session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Authenticated but not authorized.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /admin/sessions/active:
+    get:
+      summary: List currently active sessions for quick operator review
+      operationId: getAdminActiveSessions
+      tags: [admin]
+      security:
+        - sessionCookie: []
+      parameters:
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+      responses:
+        "200":
+          description: Active session summaries.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionListResponse"
+        "400":
+          description: Invalid query params.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Missing or invalid session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Authenticated but not authorized.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /access/my:
+    get:
+      summary: Get access points available to the current authenticated user
+      operationId: getMyAccess
+      tags: [access]
+      security:
+        - sessionCookie: []
+      responses:
+        "200":
+          description: Access points and actions resolved for the current user.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MyAccessResponse"
+        "401":
+          description: Missing or invalid session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /sessions/my:
+    get:
+      summary: List sessions launched by the current user
+      operationId: getMySessions
+      tags: [sessions]
+      security:
+        - sessionCookie: []
+      parameters:
+        - in: query
+          name: status
+          schema:
+            type: string
+            enum: [pending, active, completed, failed, terminated, expired]
+        - in: query
+          name: action
+          schema:
+            type: string
+            enum: [shell, sftp, dbeaver, redis]
+        - in: query
+          name: asset_type
+          schema:
+            type: string
+            enum: [linux_vm, database, redis]
+        - in: query
+          name: from
+          schema:
+            type: string
+            format: date-time
+        - in: query
+          name: to
+          schema:
+            type: string
+            format: date-time
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+      responses:
+        "200":
+          description: Session summaries for current user.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionListResponse"
+        "400":
+          description: Invalid query params.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Missing or invalid session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /sessions/{session_id}:
+    get:
+      summary: Get session detail with lifecycle metadata
+      operationId: getSessionDetail
+      tags: [sessions]
+      security:
+        - sessionCookie: []
+      parameters:
+        - in: path
+          name: session_id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Session detail.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionDetail"
+        "401":
+          description: Missing or invalid session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Authenticated but not authorized.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Session not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /sessions/{session_id}/export/summary:
+    get:
+      summary: Export session recap summary as JSON
+      operationId: getSessionExportSummary
+      tags: [sessions]
+      security:
+        - sessionCookie: []
+      parameters:
+        - in: path
+          name: session_id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: JSON summary export for a visible session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionExportSummaryResponse"
+        "401":
+          description: Missing or invalid session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Authenticated but not authorized.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Session not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /sessions/{session_id}/export/transcript:
+    get:
+      summary: Export shell transcript as plain text
+      operationId: getSessionExportTranscript
+      tags: [sessions]
+      security:
+        - sessionCookie: []
+      parameters:
+        - in: path
+          name: session_id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Plain text transcript for shell sessions.
+          content:
+            text/plain:
+              schema:
+                type: string
+                format: binary
+        "400":
+          description: Invalid request (including non-shell session transcript export).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Missing or invalid session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Authenticated but not authorized.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Session not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /sessions/launch:
+    post:
+      summary: Launch a brokered session for an allowed asset/action
+      operationId: postSessionsLaunch
+      tags: [sessions]
+      security:
+        - sessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LaunchSessionRequest"
+      responses:
+        "200":
+          description: Launch session created with managed launch payload for the requested action.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LaunchSessionResponse"
+        "400":
+          description: Invalid request payload or unsupported asset/action launch combination.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Missing or invalid session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Authenticated user is not allowed to perform this action for the asset.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Asset not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /sessions/{session_id}/events:
+    get:
+      summary: Get ordered session events
+      operationId: getSessionEvents
+      tags: [sessions]
+      security:
+        - sessionCookie: []
+      parameters:
+        - in: path
+          name: session_id
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - in: query
+          name: after_id
+          schema:
+            type: integer
+            minimum: 0
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 1000
+      responses:
+        "200":
+          description: Ordered event list for the session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionEventsResponse"
+        "401":
+          description: Missing or invalid session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Authenticated but not authorized.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Session not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    post:
+      summary: Record connector launch lifecycle metadata for an existing session
+      operationId: postSessionEvent
+      tags: [sessions]
+      security:
+        - sessionCookie: []
+      parameters:
+        - in: path
+          name: session_id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SessionEventRequest"
+      responses:
+        "202":
+          description: Session lifecycle event recorded.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionEventResponse"
+        "400":
+          description: Invalid request payload or unsupported event type.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Missing or invalid session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Session does not belong to authenticated user.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /sessions/{session_id}/replay:
+    get:
+      summary: Get normalized first-pass shell replay chunks
+      operationId: getSessionReplay
+      tags: [sessions]
+      security:
+        - sessionCookie: []
+      parameters:
+        - in: path
+          name: session_id
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - in: query
+          name: after_id
+          schema:
+            type: integer
+            minimum: 0
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 1000
+      responses:
+        "200":
+          description: Normalized replay chunks for shell sessions, or supported=false for non-shell sessions.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionReplayResponse"
+        "401":
+          description: Missing or invalid session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Authenticated but not authorized.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Session not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
 components:
   schemas:
     HealthResponse:
@@ -259,6 +1817,876 @@ components:
       properties:
         error:
           type: string
+
+    AdminUsersResponse:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/AdminUser"
+
+    AdminUser:
+      type: object
+      required: [id, username, is_active, roles]
+      properties:
+        id:
+          type: string
+          format: uuid
+        username:
+          type: string
+        email:
+          type: string
+          format: email
+        display_name:
+          type: string
+        is_active:
+          type: boolean
+        roles:
+          type: array
+          items:
+            type: string
+
+    AdminUserDetail:
+      allOf:
+        - $ref: "#/components/schemas/AdminUser"
+        - type: object
+          required: [groups]
+          properties:
+            groups:
+              type: array
+              items:
+                $ref: "#/components/schemas/AdminGroup"
+
+    AdminRolesResponse:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/AdminRole"
+
+    AdminRole:
+      type: object
+      required: [id, name]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        description:
+          type: string
+
+    AdminAssignRoleRequest:
+      type: object
+      required: [role_name]
+      properties:
+        role_name:
+          type: string
+
+    AdminGroupsResponse:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/AdminGroup"
+
+    AdminGroup:
+      type: object
+      required: [id, name]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        description:
+          type: string
+        member_count:
+          type: integer
+          minimum: 0
+
+    AdminGroupMembersResponse:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/AdminGroupMember"
+
+    AdminGroupMember:
+      type: object
+      required: [id, username]
+      properties:
+        id:
+          type: string
+          format: uuid
+        username:
+          type: string
+        email:
+          type: string
+          format: email
+        display_name:
+          type: string
+
+    AdminAssetsResponse:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/AdminAsset"
+
+    AdminAsset:
+      type: object
+      required: [id, name, asset_type, host, port, endpoint, grant_count, credential_count]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        asset_type:
+          type: string
+          enum: [linux_vm, database, redis]
+        host:
+          type: string
+        port:
+          type: integer
+          minimum: 1
+          maximum: 65535
+        endpoint:
+          type: string
+        grant_count:
+          type: integer
+          minimum: 0
+        credential_count:
+          type: integer
+          minimum: 0
+
+    AdminUpsertAssetRequest:
+      type: object
+      required: [name, asset_type, host, port]
+      properties:
+        name:
+          type: string
+        asset_type:
+          type: string
+          enum: [linux_vm, database, redis]
+        host:
+          type: string
+        port:
+          type: integer
+          minimum: 1
+          maximum: 65535
+        metadata:
+          type: object
+          additionalProperties: true
+
+    AdminAssetDetail:
+      type: object
+      required: [id, name, asset_type, host, port, endpoint, metadata, credentials]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        asset_type:
+          type: string
+          enum: [linux_vm, database, redis]
+        host:
+          type: string
+        port:
+          type: integer
+          minimum: 1
+          maximum: 65535
+        endpoint:
+          type: string
+        metadata:
+          type: object
+          additionalProperties: true
+        credentials:
+          type: array
+          items:
+            $ref: "#/components/schemas/AdminCredentialSummary"
+
+    AdminCredentialSummary:
+      type: object
+      required: [id, credential_type, algorithm, key_id, metadata, created_at, updated_at, secret_available]
+      properties:
+        id:
+          type: string
+          format: uuid
+        credential_type:
+          type: string
+          enum: [password, ssh_key, db_password]
+        username:
+          type: string
+        algorithm:
+          type: string
+        key_id:
+          type: string
+        metadata:
+          type: object
+          additionalProperties: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        last_rotated_at:
+          type: string
+          format: date-time
+        secret_available:
+          type: boolean
+
+    AdminAssetCredentialListResponse:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/AdminCredentialSummary"
+
+    AdminUpsertCredentialRequest:
+      type: object
+      required: [secret]
+      properties:
+        username:
+          type: string
+        secret:
+          type: string
+        metadata:
+          type: object
+          additionalProperties: true
+
+    AdminGrantsResponse:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/AdminGrant"
+
+    AdminGrant:
+      type: object
+      required: [subject_type, subject_id, subject_name, asset_id, asset_name, action, effect, created_at]
+      properties:
+        subject_type:
+          type: string
+          enum: [user, group]
+        subject_id:
+          type: string
+          format: uuid
+        subject_name:
+          type: string
+        asset_id:
+          type: string
+          format: uuid
+        asset_name:
+          type: string
+        action:
+          type: string
+          enum: [shell, sftp, dbeaver, redis]
+        effect:
+          type: string
+          enum: [allow, deny]
+        created_at:
+          type: string
+          format: date-time
+
+    AdminAddUserGrantRequest:
+      type: object
+      required: [asset_id, action]
+      properties:
+        asset_id:
+          type: string
+          format: uuid
+        action:
+          type: string
+          enum: [shell, sftp, dbeaver, redis]
+
+    AdminEffectiveAccessResponse:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/AdminEffectiveAccessItem"
+
+    AdminEffectiveAccessItem:
+      type: object
+      required: [asset_id, asset_name, actions]
+      properties:
+        asset_id:
+          type: string
+          format: uuid
+        asset_name:
+          type: string
+        actions:
+          type: array
+          items:
+            $ref: "#/components/schemas/AdminEffectiveAccessAction"
+
+    AdminEffectiveAccessAction:
+      type: object
+      required: [action, sources]
+      properties:
+        action:
+          type: string
+          enum: [shell, sftp, dbeaver, redis]
+        sources:
+          type: array
+          items:
+            type: string
+
+    AdminSummaryResponse:
+      type: object
+      required: [window_days, generated_at, metrics, by_action]
+      properties:
+        window_days:
+          type: integer
+          minimum: 1
+          maximum: 90
+        generated_at:
+          type: string
+          format: date-time
+        metrics:
+          $ref: "#/components/schemas/AdminSummaryMetrics"
+        by_action:
+          type: array
+          items:
+            $ref: "#/components/schemas/AdminActionCount"
+
+    AdminSummaryMetrics:
+      type: object
+      required: [recent_sessions, active_sessions, failed_sessions, shell_launches, dbeaver_launches]
+      properties:
+        recent_sessions:
+          type: integer
+          minimum: 0
+        active_sessions:
+          type: integer
+          minimum: 0
+        failed_sessions:
+          type: integer
+          minimum: 0
+        shell_launches:
+          type: integer
+          minimum: 0
+        dbeaver_launches:
+          type: integer
+          minimum: 0
+
+    AdminActionCount:
+      type: object
+      required: [action, count]
+      properties:
+        action:
+          type: string
+        count:
+          type: integer
+          minimum: 0
+
+    AdminAuditRecentResponse:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/AdminAuditItem"
+
+    AdminAuditEventsResponse:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/AdminAuditItem"
+
+    AdminAuditEventDetailResponse:
+      type: object
+      required: [item]
+      properties:
+        item:
+          $ref: "#/components/schemas/AdminAuditItem"
+
+    AdminAuditItem:
+      type: object
+      required: [id, event_time, event_type, metadata]
+      properties:
+        id:
+          type: integer
+          minimum: 1
+        event_time:
+          type: string
+          format: date-time
+        event_type:
+          type: string
+        action:
+          type: string
+        outcome:
+          type: string
+        actor_user:
+          $ref: "#/components/schemas/SessionEventUser"
+        asset:
+          $ref: "#/components/schemas/AdminAuditAsset"
+        session:
+          $ref: "#/components/schemas/AdminAuditSession"
+        session_id:
+          type: string
+          format: uuid
+        metadata:
+          type: object
+          additionalProperties: true
+
+    AdminAuditAsset:
+      type: object
+      required: [id]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        asset_type:
+          type: string
+          enum: [linux_vm, database, redis]
+
+    AdminAuditSession:
+      type: object
+      required: [id]
+      properties:
+        id:
+          type: string
+          format: uuid
+        action:
+          type: string
+        status:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+
+    SessionListResponse:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/SessionSummary"
+
+    SessionSummary:
+      type: object
+      required: [session_id, user, asset, action, launch_type, status, created_at, lifecycle]
+      properties:
+        session_id:
+          type: string
+          format: uuid
+        user:
+          $ref: "#/components/schemas/SessionSummaryUser"
+        asset:
+          $ref: "#/components/schemas/SessionSummaryAsset"
+        action:
+          type: string
+          enum: [shell, sftp, dbeaver, redis]
+        launch_type:
+          type: string
+        status:
+          type: string
+          enum: [pending, active, completed, failed, terminated, expired]
+        started_at:
+          type: string
+          format: date-time
+        ended_at:
+          type: string
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+        duration_seconds:
+          type: integer
+          minimum: 0
+        lifecycle:
+          $ref: "#/components/schemas/SessionLifecycleSummary"
+
+    SessionDetail:
+      allOf:
+        - $ref: "#/components/schemas/SessionSummary"
+        - type: object
+          required: [protocol, launched_via]
+          properties:
+            protocol:
+              type: string
+            launched_via:
+              type: string
+
+    SessionExportSummaryResponse:
+      type: object
+      required: [session, event_type_counts, event_count]
+      properties:
+        session:
+          $ref: "#/components/schemas/SessionDetail"
+        event_type_counts:
+          type: object
+          additionalProperties:
+            type: integer
+            minimum: 0
+        event_count:
+          type: integer
+          minimum: 0
+
+    SessionEventsResponse:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/SessionEvent"
+        next_after_id:
+          type: integer
+          minimum: 0
+
+    SessionEvent:
+      type: object
+      required: [id, event_type, event_time, payload]
+      properties:
+        id:
+          type: integer
+          minimum: 1
+        event_type:
+          type: string
+        event_time:
+          type: string
+          format: date-time
+        actor_user:
+          $ref: "#/components/schemas/SessionEventUser"
+        payload:
+          type: object
+          additionalProperties: true
+        transcript:
+          $ref: "#/components/schemas/SessionTranscriptChunk"
+
+    SessionTranscriptChunk:
+      type: object
+      required: [direction]
+      properties:
+        direction:
+          type: string
+          enum: [in, out]
+        stream:
+          type: string
+        size:
+          type: integer
+          minimum: 0
+        text:
+          type: string
+
+    SessionReplayResponse:
+      type: object
+      required: [session_id, supported, approximate, items]
+      properties:
+        session_id:
+          type: string
+          format: uuid
+        supported:
+          type: boolean
+        approximate:
+          type: boolean
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/SessionReplayChunk"
+        next_after_id:
+          type: integer
+          minimum: 0
+
+    SessionReplayChunk:
+      type: object
+      required: [event_id, event_time, direction, text]
+      properties:
+        event_id:
+          type: integer
+          minimum: 1
+        event_time:
+          type: string
+          format: date-time
+        direction:
+          type: string
+          enum: [in, out]
+        stream:
+          type: string
+        size:
+          type: integer
+          minimum: 0
+        text:
+          type: string
+
+    SessionSummaryUser:
+      type: object
+      required: [id, username]
+      properties:
+        id:
+          type: string
+          format: uuid
+        username:
+          type: string
+
+    SessionSummaryAsset:
+      type: object
+      required: [id, name, asset_type]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        asset_type:
+          type: string
+          enum: [linux_vm, database, redis]
+
+    SessionLifecycleSummary:
+      type: object
+      required:
+        - started
+        - ended
+        - failed
+        - shell_started
+        - connector_requested
+        - connector_succeeded
+        - connector_failed
+        - event_count
+      properties:
+        started:
+          type: boolean
+        ended:
+          type: boolean
+        failed:
+          type: boolean
+        shell_started:
+          type: boolean
+        connector_requested:
+          type: boolean
+        connector_succeeded:
+          type: boolean
+        connector_failed:
+          type: boolean
+        event_count:
+          type: integer
+          minimum: 0
+        first_event_at:
+          type: string
+          format: date-time
+        last_event_at:
+          type: string
+          format: date-time
+
+    SessionEventUser:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        username:
+          type: string
+
+    MyAccessResponse:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/AccessPoint"
+
+    AccessPoint:
+      type: object
+      required: [asset_id, asset_name, asset_type, host, port, endpoint, allowed_actions]
+      properties:
+        asset_id:
+          type: string
+          format: uuid
+        asset_name:
+          type: string
+        asset_type:
+          type: string
+          enum: [linux_vm, database, redis]
+        host:
+          type: string
+        port:
+          type: integer
+          minimum: 1
+          maximum: 65535
+        endpoint:
+          type: string
+        allowed_actions:
+          type: array
+          items:
+            type: string
+            enum: [shell, sftp, dbeaver, redis]
+
+    LaunchSessionRequest:
+      type: object
+      required: [asset_id, action]
+      properties:
+        asset_id:
+          type: string
+          format: uuid
+        action:
+          type: string
+          enum: [shell, sftp, dbeaver, redis]
+
+    LaunchSessionResponse:
+      type: object
+      required: [session_id, launch_type, launch]
+      properties:
+        session_id:
+          type: string
+          format: uuid
+        launch_type:
+          type: string
+          enum: [shell, sftp, dbeaver, redis]
+        launch:
+          oneOf:
+            - $ref: "#/components/schemas/ShellLaunchConnection"
+            - $ref: "#/components/schemas/SFTPLaunchConnection"
+            - $ref: "#/components/schemas/DBeaverLaunchConnection"
+            - $ref: "#/components/schemas/RedisLaunchConnection"
+
+    ShellLaunchConnection:
+      type: object
+      required: [proxy_host, proxy_port, username, token, expires_at]
+      properties:
+        proxy_host:
+          type: string
+        proxy_port:
+          type: integer
+          minimum: 1
+          maximum: 65535
+        username:
+          type: string
+          description: SSH username to use when connecting to PAM proxy.
+        token:
+          type: string
+          description: Short-lived HMAC-signed launch token used for SSH proxy authentication.
+        expires_at:
+          type: string
+          format: date-time
+
+    DBeaverLaunchConnection:
+      type: object
+      required: [engine, host, port, username, password, expires_at]
+      properties:
+        engine:
+          type: string
+          description: Database engine identifier (for initial DBeaver driver mapping).
+        host:
+          type: string
+        port:
+          type: integer
+          minimum: 1
+          maximum: 65535
+        database:
+          type: string
+        username:
+          type: string
+        password:
+          type: string
+          description: Resolved DB credential secret for first connector-launched session material.
+        ssl_mode:
+          type: string
+        expires_at:
+          type: string
+          format: date-time
+
+    SFTPLaunchConnection:
+      type: object
+      required: [host, port, username, password, expires_at]
+      properties:
+        host:
+          type: string
+        port:
+          type: integer
+          minimum: 1
+          maximum: 65535
+        username:
+          type: string
+        password:
+          type: string
+          description: Resolved SFTP credential secret used by connector-launched FileZilla/WinSCP.
+        path:
+          type: string
+          description: Optional initial remote path for the file transfer client.
+        expires_at:
+          type: string
+          format: date-time
+
+    RedisLaunchConnection:
+      type: object
+      required: [redis_host, redis_port, redis_password, expires_at]
+      properties:
+        redis_host:
+          type: string
+        redis_port:
+          type: integer
+          minimum: 1
+          maximum: 65535
+        redis_username:
+          type: string
+        redis_password:
+          type: string
+          description: Resolved Redis password used by local redis-cli launch (`REDISCLI_AUTH`).
+        redis_database:
+          type: integer
+          minimum: 0
+        redis_tls:
+          type: boolean
+        redis_insecure_skip_verify_tls:
+          type: boolean
+        expires_at:
+          type: string
+          format: date-time
+
+    SessionEventRequest:
+      type: object
+      required: [event_type]
+      properties:
+        event_type:
+          type: string
+          enum:
+            - connector_launch_requested
+            - connector_launch_succeeded
+            - connector_launch_failed
+        metadata:
+          type: object
+          additionalProperties: true
+
+    SessionEventResponse:
+      type: object
+      required: [status, session_id]
+      properties:
+        status:
+          type: string
+          enum: [recorded]
+        session_id:
+          type: string
+          format: uuid
 
   securitySchemes:
     sessionCookie:

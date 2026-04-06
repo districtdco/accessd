@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/districtd/pam/api/internal/app"
@@ -15,14 +16,37 @@ import (
 	"github.com/districtd/pam/api/internal/db"
 )
 
+var (
+	version = "0.1.0-dev"
+	commit  = "dev"
+	builtAt = "unknown"
+)
+
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{}))
+	setVersionEnvDefaults()
 
 	cfg, err := config.Load()
 	if err != nil {
 		logger.Error("load config", "error", err)
 		os.Exit(1)
 	}
+	logger.Info("starting pam-api",
+		"env", cfg.App.Env,
+		"http_addr", cfg.App.HTTPAddr,
+		"version", cfg.App.Version.Version,
+		"commit", cfg.App.Version.Commit,
+		"built_at", cfg.App.Version.BuiltAt,
+		"auth_provider", cfg.Auth.ProviderMode,
+		"session_ttl", cfg.Auth.SessionTTL.String(),
+		"session_secure", cfg.Auth.SessionSecure,
+		"session_samesite", cfg.Auth.SessionSameSite,
+		"ssh_proxy_addr", cfg.SSHProxy.ListenAddr,
+		"ssh_proxy_public", fmt.Sprintf("%s:%d", cfg.SSHProxy.PublicHost, cfg.SSHProxy.PublicPort),
+		"ssh_host_key_mode", cfg.SSHProxy.UpstreamHostKeyMode,
+		"connector_trust", cfg.Sessions.ConnectorSecret != "",
+		"unsafe_mode", cfg.App.AllowUnsafeMode,
+	)
 
 	ctx := context.Background()
 	pool, err := db.OpenPool(ctx, cfg.DB, logger)
@@ -73,17 +97,30 @@ func main() {
 
 func runServer(a *app.App) error {
 	ctx := context.Background()
+	a.Logger.Info("startup phase begin", "phase", "migrations")
 	if err := a.RunMigrations(ctx); err != nil {
+		a.Logger.Error("startup phase failed", "phase", "migrations", "error", err)
 		return err
 	}
+	a.Logger.Info("startup phase complete", "phase", "migrations")
+	a.Logger.Info("startup phase begin", "phase", "bootstrap")
 	if err := a.Bootstrap(ctx); err != nil {
+		a.Logger.Error("startup phase failed", "phase", "bootstrap", "error", err)
 		return err
 	}
+	a.Logger.Info("startup phase complete", "phase", "bootstrap")
 
-	errCh := make(chan error, 1)
+	errCh := make(chan error, 2)
 	go func() {
 		a.Logger.Info("http server listening", "addr", a.Config.App.HTTPAddr)
 		if err := a.Server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			errCh <- err
+			return
+		}
+		errCh <- nil
+	}()
+	go func() {
+		if err := a.SSHProxyServer.ListenAndServe(); err != nil {
 			errCh <- err
 			return
 		}
@@ -109,9 +146,14 @@ func runServer(a *app.App) error {
 	if err := a.Server.Shutdown(shutdownCtx); err != nil {
 		return fmt.Errorf("graceful shutdown failed: %w", err)
 	}
+	if err := a.SSHProxyServer.Shutdown(shutdownCtx); err != nil {
+		return fmt.Errorf("ssh proxy shutdown failed: %w", err)
+	}
 
-	if err := <-errCh; err != nil {
-		return err
+	for i := 0; i < 2; i++ {
+		if err := <-errCh; err != nil {
+			return err
+		}
 	}
 
 	a.Logger.Info("server stopped", "timeout", a.Config.App.ShutdownTimeout.String())
@@ -171,4 +213,16 @@ func printUsage() {
 	fmt.Println("  pam-api bootstrap")
 	fmt.Println()
 	fmt.Println("default command is: server")
+}
+
+func setVersionEnvDefaults() {
+	if strings.TrimSpace(os.Getenv("PAM_VERSION")) == "" {
+		_ = os.Setenv("PAM_VERSION", version)
+	}
+	if strings.TrimSpace(os.Getenv("PAM_COMMIT")) == "" {
+		_ = os.Setenv("PAM_COMMIT", commit)
+	}
+	if strings.TrimSpace(os.Getenv("PAM_BUILT_AT")) == "" {
+		_ = os.Setenv("PAM_BUILT_AT", builtAt)
+	}
 }

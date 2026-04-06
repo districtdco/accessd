@@ -1,0 +1,22 @@
+[Unit]
+Description=PAM Connector Service (optional)
+After=network.target
+
+[Service]
+Type=simple
+User=pam
+Group=pam
+WorkingDirectory=/opt/pam/apps/connector
+EnvironmentFile=/etc/pam/pam-connector.env
+ExecStart=/opt/pam/bin/pam-connector
+Restart=on-failure
+RestartSec=5s
+TimeoutStartSec=30s
+TimeoutStopSec=15s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target
