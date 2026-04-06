@@ -1,0 +1,49 @@
+# Go
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+vendor/
+
+# Go build output
+apps/api/bin/
+apps/connector/bin/
+
+# Node / UI
+apps/ui/node_modules/
+apps/ui/dist/
+apps/ui/.vite/
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+docker-compose.override.yml
+
+# Logs
+*.log
+
+# Session recordings (local dev)
+recordings/
+
+# Temporary files
+tmp/
+*.tmp

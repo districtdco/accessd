@@ -1,0 +1,32 @@
+# Local development services only — NOT for production deployment.
+# Production target is systemd on Linux VM (see deploy/).
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: pam
+      POSTGRES_USER: pam
+      POSTGRES_PASSWORD: pam_dev_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  ldap:
+    image: osixia/openldap:1.5.0
+    environment:
+      LDAP_ORGANISATION: "PAM Dev"
+      LDAP_DOMAIN: "pam.local"
+      LDAP_ADMIN_PASSWORD: "admin"
+    ports:
+      - "389:389"
+      - "636:636"
+    volumes:
+      - ldapdata:/var/lib/ldap
+      - ldapconfig:/etc/ldap/slapd.d
+
+volumes:
+  pgdata:
+  ldapdata:
+  ldapconfig:
