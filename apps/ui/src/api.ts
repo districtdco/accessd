@@ -9,6 +9,7 @@ import type {
   AdminGrantsResponse,
   AdminRolesResponse,
   AdminSummaryResponse,
+  AdminUser,
   AdminUserDetail,
   AdminUsersResponse,
   ConnectorDBeaverLaunchRequest,
@@ -249,6 +250,46 @@ export async function adminRemoveRole(userID: string, roleName: string): Promise
   await requestJSON(`/admin/users/${userID}/roles/${encodeURIComponent(roleName)}`, {
     method: 'DELETE',
   })
+}
+
+export async function adminCreateUser(body: {
+  username: string
+  password: string
+  email?: string
+  display_name?: string
+}): Promise<AdminUser> {
+  return requestJSON('/admin/users', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  })
+}
+
+export async function adminUpdateUser(userID: string, body: {
+  email?: string
+  display_name?: string
+}): Promise<void> {
+  await requestJSON(`/admin/users/${userID}`, {
+    method: 'PUT',
+    body: JSON.stringify(body),
+  })
+}
+
+export async function adminSetUserActive(userID: string, isActive: boolean): Promise<void> {
+  await requestJSON(`/admin/users/${userID}/active`, {
+    method: 'PUT',
+    body: JSON.stringify({ is_active: isActive }),
+  })
+}
+
+export async function adminResetUserPassword(userID: string, password: string): Promise<void> {
+  await requestJSON(`/admin/users/${userID}/password`, {
+    method: 'PUT',
+    body: JSON.stringify({ password }),
+  })
+}
+
+export async function adminDeleteAsset(assetID: string): Promise<void> {
+  await requestJSON(`/admin/assets/${assetID}`, { method: 'DELETE' })
 }
 
 export async function adminListAssets(): Promise<AdminAssetsResponse> {

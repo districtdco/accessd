@@ -12,6 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"golang.org/x/crypto/bcrypt"
 )
 
 var (
@@ -912,4 +913,192 @@ func (s *Service) roleIDByName(ctx context.Context, roleName string) (string, er
 		return "", err
 	}
 	return roleID, nil
+}
+
+// CreateUserInput holds fields for creating a new local user.
+type CreateUserInput struct {
+	Username    string
+	Password    string
+	Email       string
+	DisplayName string
+}
+
+func (s *Service) CreateUser(ctx context.Context, input CreateUserInput) (UserSummary, error) {
+	username := strings.TrimSpace(input.Username)
+	password := strings.TrimSpace(input.Password)
+	email := strings.TrimSpace(input.Email)
+	displayName := strings.TrimSpace(input.DisplayName)
+
+	if username == "" {
+		return UserSummary{}, fmt.Errorf("username is required")
+	}
+	if len(username) < 2 || len(username) > 64 {
+		return UserSummary{}, fmt.Errorf("username must be between 2 and 64 characters")
+	}
+	if password == "" {
+		return UserSummary{}, fmt.Errorf("password is required")
+	}
+	if len(password) < 8 {
+		return UserSummary{}, fmt.Errorf("password must be at least 8 characters")
+	}
+
+	hash, err := bcryptHash(password)
+	if err != nil {
+		return UserSummary{}, fmt.Errorf("hash password: %w", err)
+	}
+
+	const query = `
+INSERT INTO users (username, password_hash, email, display_name, is_active, auth_provider)
+VALUES ($1, $2, NULLIF($3, ''), NULLIF($4, ''), true, 'local')
+RETURNING id;`
+
+	var userID string
+	if err := s.pool.QueryRow(ctx, query, username, hash, email, displayName).Scan(&userID); err != nil {
+		if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "unique constraint") {
+			return UserSummary{}, fmt.Errorf("username %q already exists", username)
+		}
+		return UserSummary{}, fmt.Errorf("create user: %w", err)
+	}
+
+	return UserSummary{
+		ID:          userID,
+		Username:    username,
+		Email:       email,
+		DisplayName: displayName,
+		IsActive:    true,
+		Roles:       []string{},
+	}, nil
+}
+
+// UpdateUserInput holds fields for updating an existing user.
+type UpdateUserInput struct {
+	Email       *string
+	DisplayName *string
+}
+
+func (s *Service) UpdateUser(ctx context.Context, userID string, input UpdateUserInput) error {
+	trimmedID := strings.TrimSpace(userID)
+	if trimmedID == "" {
+		return fmt.Errorf("user id is required")
+	}
+	exists, err := s.userExists(ctx, trimmedID)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return ErrUserNotFound
+	}
+
+	const query = `
+UPDATE users
+SET email = COALESCE(NULLIF($2, ''), email),
+    display_name = COALESCE(NULLIF($3, ''), display_name)
+WHERE id = $1;`
+
+	emailVal := ""
+	if input.Email != nil {
+		emailVal = strings.TrimSpace(*input.Email)
+	}
+	displayVal := ""
+	if input.DisplayName != nil {
+		displayVal = strings.TrimSpace(*input.DisplayName)
+	}
+
+	if _, err := s.pool.Exec(ctx, query, trimmedID, emailVal, displayVal); err != nil {
+		return fmt.Errorf("update user: %w", err)
+	}
+	return nil
+}
+
+func (s *Service) SetUserActive(ctx context.Context, userID string, active bool) error {
+	trimmedID := strings.TrimSpace(userID)
+	if trimmedID == "" {
+		return fmt.Errorf("user id is required")
+	}
+	exists, err := s.userExists(ctx, trimmedID)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return ErrUserNotFound
+	}
+
+	const query = `UPDATE users SET is_active = $2 WHERE id = $1;`
+	if _, err := s.pool.Exec(ctx, query, trimmedID, active); err != nil {
+		return fmt.Errorf("set user active: %w", err)
+	}
+	return nil
+}
+
+func (s *Service) ResetUserPassword(ctx context.Context, userID, newPassword string) error {
+	trimmedID := strings.TrimSpace(userID)
+	password := strings.TrimSpace(newPassword)
+	if trimmedID == "" {
+		return fmt.Errorf("user id is required")
+	}
+	if len(password) < 8 {
+		return fmt.Errorf("password must be at least 8 characters")
+	}
+	exists, err := s.userExists(ctx, trimmedID)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return ErrUserNotFound
+	}
+
+	hash, err := bcryptHash(password)
+	if err != nil {
+		return fmt.Errorf("hash password: %w", err)
+	}
+
+	const query = `UPDATE users SET password_hash = $2 WHERE id = $1;`
+	if _, err := s.pool.Exec(ctx, query, trimmedID, hash); err != nil {
+		return fmt.Errorf("reset user password: %w", err)
+	}
+	return nil
+}
+
+func (s *Service) DeleteAsset(ctx context.Context, assetID string) error {
+	trimmedID := strings.TrimSpace(assetID)
+	if trimmedID == "" {
+		return fmt.Errorf("asset id is required")
+	}
+	exists, err := s.assetExists(ctx, trimmedID)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return ErrAssetNotFound
+	}
+
+	// Delete dependent rows first: grants, credentials, then the asset.
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if _, err := tx.Exec(ctx, `DELETE FROM access_grants WHERE asset_id = $1`, trimmedID); err != nil {
+		return fmt.Errorf("delete asset grants: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM credentials WHERE asset_id = $1`, trimmedID); err != nil {
+		return fmt.Errorf("delete asset credentials: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM assets WHERE id = $1`, trimmedID); err != nil {
+		return fmt.Errorf("delete asset: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit delete asset: %w", err)
+	}
+	return nil
+}
+
+func bcryptHash(password string) (string, error) {
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		return "", err
+	}
+	return string(hash), nil
 }

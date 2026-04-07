@@ -856,6 +856,151 @@ func sortedMapKeys(value map[string]any) []string {
 	return keys
 }
 
+type createUserRequest struct {
+	Username    string `json:"username"`
+	Password    string `json:"password"`
+	Email       string `json:"email,omitempty"`
+	DisplayName string `json:"display_name,omitempty"`
+}
+
+type updateUserRequest struct {
+	Email       *string `json:"email,omitempty"`
+	DisplayName *string `json:"display_name,omitempty"`
+}
+
+type setUserActiveRequest struct {
+	IsActive bool `json:"is_active"`
+}
+
+type resetPasswordRequest struct {
+	Password string `json:"password"`
+}
+
+func (h *AdminHandler) CreateUser(w http.ResponseWriter, r *http.Request) {
+	var req createUserRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json body"})
+		return
+	}
+
+	user, err := h.adminService.CreateUser(r.Context(), admin.CreateUserInput{
+		Username:    req.Username,
+		Password:    req.Password,
+		Email:       req.Email,
+		DisplayName: req.DisplayName,
+	})
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, adminUserResponse{
+		ID:          user.ID,
+		Username:    user.Username,
+		Email:       user.Email,
+		DisplayName: user.DisplayName,
+		IsActive:    user.IsActive,
+		Roles:       user.Roles,
+	})
+}
+
+func (h *AdminHandler) UpdateUser(w http.ResponseWriter, r *http.Request) {
+	userID := strings.TrimSpace(r.PathValue("userID"))
+	if userID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "user id is required"})
+		return
+	}
+
+	var req updateUserRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json body"})
+		return
+	}
+
+	if err := h.adminService.UpdateUser(r.Context(), userID, admin.UpdateUserInput{
+		Email:       req.Email,
+		DisplayName: req.DisplayName,
+	}); err != nil {
+		if errors.Is(err, admin.ErrUserNotFound) {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "user not found"})
+			return
+		}
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *AdminHandler) SetUserActive(w http.ResponseWriter, r *http.Request) {
+	userID := strings.TrimSpace(r.PathValue("userID"))
+	if userID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "user id is required"})
+		return
+	}
+
+	var req setUserActiveRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json body"})
+		return
+	}
+
+	if err := h.adminService.SetUserActive(r.Context(), userID, req.IsActive); err != nil {
+		if errors.Is(err, admin.ErrUserNotFound) {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "user not found"})
+			return
+		}
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *AdminHandler) ResetUserPassword(w http.ResponseWriter, r *http.Request) {
+	userID := strings.TrimSpace(r.PathValue("userID"))
+	if userID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "user id is required"})
+		return
+	}
+
+	var req resetPasswordRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json body"})
+		return
+	}
+
+	if err := h.adminService.ResetUserPassword(r.Context(), userID, req.Password); err != nil {
+		if errors.Is(err, admin.ErrUserNotFound) {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "user not found"})
+			return
+		}
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *AdminHandler) DeleteAsset(w http.ResponseWriter, r *http.Request) {
+	assetID := strings.TrimSpace(r.PathValue("assetID"))
+	if assetID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "asset id is required"})
+		return
+	}
+
+	if err := h.adminService.DeleteAsset(r.Context(), assetID); err != nil {
+		if errors.Is(err, admin.ErrAssetNotFound) {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "asset not found"})
+			return
+		}
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func normalizeRemoteIP(remoteAddr string) string {
 	trimmed := strings.TrimSpace(remoteAddr)
 	if trimmed == "" {

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
-import { Link, useParams } from 'react-router-dom'
+import { Link, useNavigate, useParams } from 'react-router-dom'
 import {
+  adminDeleteAsset,
   adminGetAssetDetail,
   adminListAssetGrants,
   adminUpdateAsset,
@@ -23,7 +24,9 @@ const ASSET_TYPE_OPTIONS = [
 
 export function AdminAssetDetailPage() {
   const { assetID = '' } = useParams<{ assetID: string }>()
+  const navigate = useNavigate()
   const [detail, setDetail] = useState<AdminAssetDetail | null>(null)
+  const [deleting, setDeleting] = useState(false)
   const [grants, setGrants] = useState<AdminGrant[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -107,6 +110,20 @@ export function AdminAssetDetailPage() {
     }
   }
 
+  const deleteAsset = async () => {
+    if (!assetID || !detail) return
+    if (!window.confirm(`Delete asset "${detail.name}"? This will also remove all grants and credentials.`)) return
+    setDeleting(true)
+    setError(null)
+    try {
+      await adminDeleteAsset(assetID)
+      navigate('/admin/assets')
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'failed to delete asset')
+      setDeleting(false)
+    }
+  }
+
   const saveCredential = async () => {
     if (!assetID) return
     setMessage(null)
@@ -154,10 +171,13 @@ export function AdminAssetDetailPage() {
           <Card>
             <CardHeader title="Asset Summary" />
             <CardBody>
-              <div className="grid gap-x-8 gap-y-1 sm:grid-cols-2">
+              <div className="grid gap-x-8 gap-y-1 sm:grid-cols-2 mb-4">
                 <InfoRow label="ID" value={<span className="font-mono text-xs">{detail.id}</span>} />
                 <InfoRow label="Endpoint" value={<span className="font-mono text-xs">{detail.endpoint}</span>} />
               </div>
+              <Button variant="danger" disabled={deleting} onClick={() => void deleteAsset()}>
+                {deleting ? 'Deleting...' : 'Delete Asset'}
+              </Button>
             </CardBody>
           </Card>
 

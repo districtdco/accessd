@@ -1,48 +1,104 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { adminListUsers } from '../api'
+import { adminCreateUser, adminListUsers } from '../api'
 import type { AdminUser } from '../types'
-import { Badge, Card, EmptyRow, ErrorState, LoadingState, PageHeader, Table, Td, Th } from '../components/ui'
+import { Badge, Button, Card, CardBody, CardHeader, EmptyRow, ErrorState, Input, LoadingState, PageHeader, SuccessState, Table, Td, Th } from '../components/ui'
 
 export function AdminUsersPage() {
   const [items, setItems] = useState<AdminUser[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [message, setMessage] = useState<string | null>(null)
+
+  const [username, setUsername] = useState('')
+  const [password, setPassword] = useState('')
+  const [email, setEmail] = useState('')
+  const [displayName, setDisplayName] = useState('')
+  const [creating, setCreating] = useState(false)
+
+  const load = async () => {
+    setLoading(true)
+    setError(null)
+    try {
+      const response = await adminListUsers()
+      setItems(response.items)
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'failed to load users'
+      setError(message)
+    } finally {
+      setLoading(false)
+    }
+  }
 
   useEffect(() => {
     let cancelled = false
-
-    const load = async () => {
+    void (async () => {
       setLoading(true)
       setError(null)
       try {
         const response = await adminListUsers()
-        if (!cancelled) {
-          setItems(response.items)
-        }
+        if (!cancelled) setItems(response.items)
       } catch (err) {
-        if (!cancelled) {
-          const message = err instanceof Error ? err.message : 'failed to load users'
-          setError(message)
-        }
+        if (!cancelled) setError(err instanceof Error ? err.message : 'failed to load users')
       } finally {
-        if (!cancelled) {
-          setLoading(false)
-        }
+        if (!cancelled) setLoading(false)
       }
-    }
-
-    void load()
-    return () => {
-      cancelled = true
-    }
+    })()
+    return () => { cancelled = true }
   }, [])
+
+  const createUser = async () => {
+    setError(null)
+    setMessage(null)
+    if (!username.trim() || !password.trim()) {
+      setError('Username and password are required')
+      return
+    }
+    setCreating(true)
+    try {
+      await adminCreateUser({
+        username: username.trim(),
+        password,
+        email: email.trim() || undefined,
+        display_name: displayName.trim() || undefined,
+      })
+      setUsername('')
+      setPassword('')
+      setEmail('')
+      setDisplayName('')
+      setMessage('User created')
+      await load()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'failed to create user')
+    } finally {
+      setCreating(false)
+    }
+  }
 
   return (
     <>
       <PageHeader title="Users" />
 
       {error && <div className="mb-4"><ErrorState message={error} /></div>}
+      {message && <div className="mb-4"><SuccessState message={message} /></div>}
+
+      <Card className="mb-4">
+        <CardHeader title="Create User" />
+        <CardBody>
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+            <Input label="Username" value={username} onChange={setUsername} placeholder="jdoe" />
+            <Input label="Password" value={password} onChange={setPassword} type="password" placeholder="min 8 characters" />
+            <Input label="Email (optional)" value={email} onChange={setEmail} placeholder="jdoe@example.com" />
+            <Input label="Display Name (optional)" value={displayName} onChange={setDisplayName} placeholder="Jane Doe" />
+          </div>
+          <div className="mt-4">
+            <Button disabled={creating} onClick={() => void createUser()}>
+              {creating ? 'Creating...' : 'Create User'}
+            </Button>
+          </div>
+        </CardBody>
+      </Card>
+
       {loading && <LoadingState message="Loading users..." />}
 
       {!loading && !error && (

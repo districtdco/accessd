@@ -10,6 +10,9 @@ import {
   adminListUserGrants,
   adminRemoveRole,
   adminRemoveUserGrant,
+  adminResetUserPassword,
+  adminSetUserActive,
+  adminUpdateUser,
 } from '../api'
 import type {
   AdminAsset,
@@ -18,7 +21,7 @@ import type {
   AdminRole,
   AdminUserDetail,
 } from '../types'
-import { Badge, Button, Card, CardBody, CardHeader, EmptyRow, ErrorState, InfoRow, LoadingState, PageHeader, Select, SuccessState, Table, Td, Th } from '../components/ui'
+import { Badge, Button, Card, CardBody, CardHeader, EmptyRow, ErrorState, InfoRow, Input, LoadingState, PageHeader, Select, SuccessState, Table, Td, Th } from '../components/ui'
 
 const SUPPORTED_ACTIONS = [
   { value: 'shell', label: 'Shell' },
@@ -45,6 +48,13 @@ export function AdminUserDetailPage() {
   const [selectedAssetID, setSelectedAssetID] = useState<string>('')
   const [selectedAction, setSelectedAction] = useState<string>('shell')
 
+  const [editEmail, setEditEmail] = useState('')
+  const [editDisplayName, setEditDisplayName] = useState('')
+  const [savingProfile, setSavingProfile] = useState(false)
+  const [newPassword, setNewPassword] = useState('')
+  const [savingPassword, setSavingPassword] = useState(false)
+  const [togglingActive, setTogglingActive] = useState(false)
+
   const loadData = async () => {
     if (userID === '') {
       setError('missing user id')
@@ -63,6 +73,8 @@ export function AdminUserDetailPage() {
       ])
 
       setDetail(detailResp)
+      setEditEmail(detailResp.email || '')
+      setEditDisplayName(detailResp.display_name || '')
       setRoles(rolesResp.items)
       setAssets(assetsResp.items)
       setGrants(grantsResp.items)
@@ -154,6 +166,61 @@ export function AdminUserDetailPage() {
     }
   }
 
+  const saveProfile = async () => {
+    setMessage(null)
+    setError(null)
+    setSavingProfile(true)
+    try {
+      await adminUpdateUser(userID, {
+        email: editEmail.trim() || undefined,
+        display_name: editDisplayName.trim() || undefined,
+      })
+      setMessage('Profile updated')
+      await loadData()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'failed to update profile')
+    } finally {
+      setSavingProfile(false)
+    }
+  }
+
+  const toggleActive = async () => {
+    if (!detail) return
+    const next = !detail.is_active
+    if (!window.confirm(`${next ? 'Activate' : 'Deactivate'} user "${detail.username}"?`)) return
+    setMessage(null)
+    setError(null)
+    setTogglingActive(true)
+    try {
+      await adminSetUserActive(userID, next)
+      setMessage(next ? 'User activated' : 'User deactivated')
+      await loadData()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'failed to change user status')
+    } finally {
+      setTogglingActive(false)
+    }
+  }
+
+  const resetPassword = async () => {
+    if (!newPassword.trim()) {
+      setError('Password is required')
+      return
+    }
+    setMessage(null)
+    setError(null)
+    setSavingPassword(true)
+    try {
+      await adminResetUserPassword(userID, newPassword)
+      setNewPassword('')
+      setMessage('Password reset successfully')
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'failed to reset password')
+    } finally {
+      setSavingPassword(false)
+    }
+  }
+
   return (
     <>
       <div className="mb-2 flex items-center gap-2 text-sm text-gray-500">
@@ -172,15 +239,43 @@ export function AdminUserDetailPage() {
           <Card>
             <CardHeader title="Profile" />
             <CardBody>
-              <div className="grid gap-x-8 gap-y-1 sm:grid-cols-2">
+              <div className="grid gap-x-8 gap-y-1 sm:grid-cols-2 mb-4">
                 <InfoRow label="Username" value={detail.username} />
-                <InfoRow label="Email" value={detail.email || '-'} />
-                <InfoRow label="Display Name" value={detail.display_name || '-'} />
                 <InfoRow label="Status" value={
                   <Badge color={detail.is_active ? 'green' : 'red'}>
                     {detail.is_active ? 'Active' : 'Inactive'}
                   </Badge>
                 } />
+              </div>
+              <div className="grid gap-4 sm:grid-cols-2 mb-4">
+                <Input label="Email" value={editEmail} onChange={setEditEmail} placeholder="user@example.com" />
+                <Input label="Display Name" value={editDisplayName} onChange={setEditDisplayName} placeholder="Jane Doe" />
+              </div>
+              <div className="flex gap-2">
+                <Button disabled={savingProfile} onClick={() => void saveProfile()}>
+                  {savingProfile ? 'Saving...' : 'Save Profile'}
+                </Button>
+                <Button
+                  variant={detail.is_active ? 'danger' : 'primary'}
+                  disabled={togglingActive}
+                  onClick={() => void toggleActive()}
+                >
+                  {togglingActive ? 'Updating...' : detail.is_active ? 'Deactivate User' : 'Activate User'}
+                </Button>
+              </div>
+            </CardBody>
+          </Card>
+
+          <Card>
+            <CardHeader title="Reset Password" />
+            <CardBody>
+              <div className="flex items-end gap-2">
+                <div className="w-64">
+                  <Input label="New Password" value={newPassword} onChange={setNewPassword} type="password" placeholder="min 8 characters" />
+                </div>
+                <Button disabled={savingPassword} onClick={() => void resetPassword()}>
+                  {savingPassword ? 'Resetting...' : 'Reset Password'}
+                </Button>
               </div>
             </CardBody>
           </Card>
