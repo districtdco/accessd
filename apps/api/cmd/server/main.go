@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/districtd/pam/api/internal/app"
 	"github.com/districtd/pam/api/internal/config"
@@ -60,6 +61,8 @@ func main() {
 		"redis_proxy_max_session_duration", cfg.RedisProxy.MaxSessionAge.String(),
 		"ssh_host_key_mode", cfg.SSHProxy.UpstreamHostKeyMode,
 		"connector_trust", cfg.Sessions.ConnectorSecret != "",
+		"launch_materialize_timeout", cfg.Sessions.MaterializeTimeout.String(),
+		"launch_sweep_interval", cfg.Sessions.LaunchSweepInterval.String(),
 		"unsafe_mode", cfg.App.AllowUnsafeMode,
 	)
 
@@ -126,6 +129,9 @@ func runServer(a *app.App) error {
 	a.Logger.Info("startup phase complete", "phase", "bootstrap")
 
 	errCh := make(chan error, 2)
+	sweepCtx, stopSweep := context.WithCancel(context.Background())
+	defer stopSweep()
+	go runPendingLaunchSweep(sweepCtx, a)
 	go func() {
 		a.Logger.Info("http server listening", "addr", a.Config.App.HTTPAddr)
 		if err := a.Server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -157,6 +163,7 @@ func runServer(a *app.App) error {
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), a.Config.App.ShutdownTimeout)
 	defer cancel()
+	stopSweep()
 
 	if err := a.Server.Shutdown(shutdownCtx); err != nil {
 		return fmt.Errorf("graceful shutdown failed: %w", err)
@@ -185,6 +192,35 @@ func runServer(a *app.App) error {
 
 	a.Logger.Info("server stopped", "timeout", a.Config.App.ShutdownTimeout.String())
 	return nil
+}
+
+func runPendingLaunchSweep(ctx context.Context, a *app.App) {
+	interval := a.Config.Sessions.LaunchSweepInterval
+	if interval <= 0 {
+		interval = 15 * time.Second
+	}
+	timeout := a.Config.Sessions.MaterializeTimeout
+	if timeout <= 0 {
+		timeout = 45 * time.Second
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			count, err := a.SessionsService.FailUnmaterializedConnectorLaunches(ctx, timeout, 200)
+			if err != nil {
+				a.Logger.Warn("pending launch sweep failed", "error", err)
+				continue
+			}
+			if count > 0 {
+				a.Logger.Info("marked stale connector launches as failed", "count", count, "timeout", timeout.String())
+			}
+		}
+	}
 }
 
 func runBootstrap(ctx context.Context, a *app.App) error {

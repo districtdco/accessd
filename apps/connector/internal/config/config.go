@@ -2,17 +2,17 @@
 package config
 
 import (
+	"log"
 	"os"
 	"strings"
 	"time"
+
+	"github.com/districtd/pam/connector/internal/discovery"
 )
 
 const (
 	defaultAddr           = "127.0.0.1:9494"
 	defaultAllowedOrigins = "http://127.0.0.1:3000,http://localhost:3000"
-	defaultPuTTYPath      = "putty"
-	defaultWinSCPPath     = "winscp"
-	defaultFileZillaPath  = "filezilla"
 	defaultDBeaverTempTTL = 15 * time.Minute
 )
 
@@ -22,10 +22,11 @@ type Config struct {
 	AllowAnyOrigin  bool
 	AllowRemote     bool
 	ConnectorSecret string // Shared HMAC secret for verifying backend-signed launch payloads
-	PuTTYPath       string
-	WinSCPPath      string
-	FileZillaPath   string
 	DBeaverTempTTL  time.Duration
+
+	// Resolver handles cross-platform application discovery with strict
+	// priority: ENV → config file → auto-detect → actionable error.
+	Resolver *discovery.Resolver
 }
 
 func Load() Config {
@@ -34,9 +35,6 @@ func Load() Config {
 		AllowAnyOrigin:  parseBoolEnv("PAM_CONNECTOR_ALLOW_ANY_ORIGIN", false),
 		AllowRemote:     parseBoolEnv("PAM_CONNECTOR_ALLOW_REMOTE", false),
 		ConnectorSecret: strings.TrimSpace(os.Getenv("PAM_CONNECTOR_SECRET")),
-		PuTTYPath:       strings.TrimSpace(os.Getenv("PAM_CONNECTOR_PUTTY_PATH")),
-		WinSCPPath:      strings.TrimSpace(os.Getenv("PAM_CONNECTOR_WINSCP_PATH")),
-		FileZillaPath:   strings.TrimSpace(os.Getenv("PAM_CONNECTOR_FILEZILLA_PATH")),
 		DBeaverTempTTL:  parseDurationEnv("PAM_CONNECTOR_DBEAVER_TEMP_TTL", defaultDBeaverTempTTL),
 	}
 	rawOrigins := strings.TrimSpace(os.Getenv("PAM_CONNECTOR_ALLOWED_ORIGIN"))
@@ -48,18 +46,16 @@ func Load() Config {
 	if cfg.Addr == "" {
 		cfg.Addr = defaultAddr
 	}
-	if cfg.PuTTYPath == "" {
-		cfg.PuTTYPath = defaultPuTTYPath
-	}
-	if cfg.WinSCPPath == "" {
-		cfg.WinSCPPath = defaultWinSCPPath
-	}
-	if cfg.FileZillaPath == "" {
-		cfg.FileZillaPath = defaultFileZillaPath
-	}
 	if cfg.DBeaverTempTTL <= 0 {
 		cfg.DBeaverTempTTL = defaultDBeaverTempTTL
 	}
+
+	// Load optional discovery config file for app path and terminal overrides.
+	discoveryCfg, err := discovery.LoadConfig()
+	if err != nil {
+		log.Printf("WARNING: failed to load discovery config: %v", err)
+	}
+	cfg.Resolver = discovery.NewResolver(discoveryCfg)
 
 	return cfg
 }

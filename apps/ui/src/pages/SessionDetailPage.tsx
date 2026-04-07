@@ -356,6 +356,17 @@ export function SessionDetailPage() {
       .find((event) => event.event_type === 'session_ended' || event.event_type === 'session_failed')
   }, [events])
 
+  const failureReason = useMemo(() => {
+    if (!finalLifecycleEvent || finalLifecycleEvent.event_type !== 'session_failed') {
+      return ''
+    }
+    const reason = readString(finalLifecycleEvent.payload.reason)
+    if (reason === 'launch_materialization_timeout') {
+      return 'Launch accepted but no client/proxy connection materialized before timeout.'
+    }
+    return reason
+  }, [finalLifecycleEvent])
+
   return (
     <>
       <div className="mb-2 flex items-center gap-2 text-sm text-gray-500">
@@ -403,6 +414,7 @@ export function SessionDetailPage() {
                 <InfoRow label="Ended" value={detail.ended_at ? new Date(detail.ended_at).toLocaleString() : '-'} />
                 <InfoRow label="Duration" value={detail.duration_seconds === undefined ? '-' : `${detail.duration_seconds}s`} />
                 <InfoRow label="Events Loaded" value={`${events.length}${eventsNextAfter ? ' (partial)' : ''}`} />
+                {failureReason !== '' && <InfoRow label="Failure Reason" value={failureReason} />}
               </div>
             </CardBody>
           </Card>

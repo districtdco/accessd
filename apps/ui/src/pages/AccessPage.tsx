@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react'
 import {
+  ConnectorHandoffError,
+  connectorTokenForHandoff,
   createSessionLaunch,
   getMyAccess,
   handoffDBeaverToConnector,
@@ -17,6 +19,7 @@ export function AccessPage() {
   const [error, setError] = useState<string | null>(null)
   const [launchingAssetID, setLaunchingAssetID] = useState<string | null>(null)
   const [launchMessage, setLaunchMessage] = useState<string | null>(null)
+  const [launchMessageKind, setLaunchMessageKind] = useState<'success' | 'error'>('success')
 
   useEffect(() => {
     let cancelled = false
@@ -49,6 +52,7 @@ export function AccessPage() {
 
   const launchAsset = async (item: AccessPoint, action: 'shell' | 'sftp' | 'dbeaver' | 'redis') => {
     setLaunchMessage(null)
+    setLaunchMessageKind('success')
     setLaunchingAssetID(item.asset_id)
     let sessionID: string | null = null
 
@@ -58,6 +62,13 @@ export function AccessPage() {
         action,
       })
       sessionID = session.session_id
+      const connectorToken = connectorTokenForHandoff(session)
+      const connectorBase = {
+        session_id: session.session_id,
+        asset_id: item.asset_id,
+        asset_name: item.asset_name,
+        connector_token: connectorToken,
+      }
 
       await recordSessionEvent(session.session_id, 'connector_launch_requested', {
         connector_action: session.launch_type,
@@ -69,25 +80,16 @@ export function AccessPage() {
 
       if (session.launch_type === 'shell') {
         const result = await handoffShellToConnector({
-          session_id: session.session_id,
-          asset_id: item.asset_id,
-          asset_name: item.asset_name,
+          ...connectorBase,
           launch: session.launch as ShellLaunchConnection,
         })
-        successMetadata.token_copied = result.tokenCopied
         if (result.hint) {
           successMetadata.instructions = result.hint
         }
-        setLaunchMessage(
-          result.tokenCopied
-            ? `Shell launch started for ${item.asset_name}. Launch token copied to clipboard; paste it at the SSH prompt.`
-            : `Shell launch started for ${item.asset_name}. Paste the launch token shown in your terminal when prompted.`,
-        )
+        setLaunchMessage(`Shell launch started for ${item.asset_name}. You are being authenticated automatically.`)
       } else if (session.launch_type === 'sftp') {
         const result = await handoffSFTPToConnector({
-          session_id: session.session_id,
-          asset_id: item.asset_id,
-          asset_name: item.asset_name,
+          ...connectorBase,
           launch: session.launch as SFTPLaunchConnection,
         })
         if (result.hint) {
@@ -99,9 +101,7 @@ export function AccessPage() {
         setLaunchMessage(`SFTP launch requested for ${item.asset_name}.`)
       } else if (session.launch_type === 'dbeaver') {
         const result = await handoffDBeaverToConnector({
-          session_id: session.session_id,
-          asset_id: item.asset_id,
-          asset_name: item.asset_name,
+          ...connectorBase,
           launch: session.launch as DBeaverLaunchConnection,
         })
         if (result.hint) {
@@ -119,9 +119,7 @@ export function AccessPage() {
         }
       } else {
         const result = await handoffRedisToConnector({
-          session_id: session.session_id,
-          asset_id: item.asset_id,
-          asset_name: item.asset_name,
+          ...connectorBase,
           launch: session.launch as RedisLaunchConnection,
         })
         if (result.hint) {
@@ -142,16 +140,28 @@ export function AccessPage() {
         return
       }
     } catch (err) {
+      setLaunchMessageKind('error')
       let message = err instanceof Error ? err.message : 'failed to launch asset'
-      if (message.includes('connector handoff failed')) {
+      const connectorError = err instanceof ConnectorHandoffError ? err : null
+      if (message.includes('connector handoff failed') || message.includes('Connector rejected launch authorization')) {
         message += '. Ensure the local connector is running and reachable at /connector.'
       }
+      if (connectorError?.hint) {
+        message += ` Hint: ${connectorError.hint}.`
+      }
       if (sessionID) {
+        const metadata: Record<string, unknown> = {
+          connector_action: action,
+          error: message,
+        }
+        if (connectorError?.code) {
+          metadata.code = connectorError.code
+        }
+        if (connectorError?.details) {
+          metadata.details = connectorError.details
+        }
         try {
-          await recordSessionEvent(sessionID, 'connector_launch_failed', {
-            connector_action: action,
-            error: message,
-          })
+          await recordSessionEvent(sessionID, 'connector_launch_failed', metadata)
         } catch {
           // Keep user flow simple; launch error is still surfaced below.
         }
@@ -166,7 +176,11 @@ export function AccessPage() {
     <>
       <PageHeader title="My Access" />
 
-      {launchMessage && <div className="mb-4"><SuccessState message={launchMessage} /></div>}
+      {launchMessage && (
+        <div className="mb-4">
+          {launchMessageKind === 'error' ? <ErrorState message={launchMessage} /> : <SuccessState message={launchMessage} />}
+        </div>
+      )}
       {error && <div className="mb-4"><ErrorState message={error} /></div>}
       {loading && <LoadingState message="Loading access..." />}
 

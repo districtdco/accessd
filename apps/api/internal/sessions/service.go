@@ -50,6 +50,13 @@ const (
 	auditEventSessionDone = "session_end"
 )
 
+var materializationEventsByAction = map[string][]string{
+	"shell":   {EventProxyConnected},
+	"dbeaver": {EventProxyConnected, EventDBQuery},
+	"sftp":    {EventProxyConnected, EventFileOperation},
+	"redis":   {EventProxyConnected, EventRedisCommand},
+}
+
 var (
 	ErrUnauthorizedLaunch = errors.New("unauthorized launch token")
 	ErrLaunchExpired      = errors.New("launch token expired")
@@ -58,12 +65,13 @@ var (
 )
 
 type Config struct {
-	LaunchTokenSecret []byte
-	LaunchTokenTTL    time.Duration
-	ConnectorSecret   []byte // HMAC key for signing connector launch payloads
-	ProxyHost         string
-	ProxyPort         int
-	ProxyUsername     string
+	LaunchTokenSecret  []byte
+	LaunchTokenTTL     time.Duration
+	ConnectorSecret    []byte // HMAC key for signing connector launch payloads
+	MaterializeTimeout time.Duration
+	ProxyHost          string
+	ProxyPort          int
+	ProxyUsername      string
 }
 
 type Service struct {
@@ -288,6 +296,9 @@ func NewService(pool *pgxpool.Pool, cfg Config, logger *slog.Logger) (*Service, 
 	if cfg.LaunchTokenTTL <= 0 {
 		return nil, fmt.Errorf("launch token ttl must be > 0")
 	}
+	if cfg.MaterializeTimeout <= 0 {
+		cfg.MaterializeTimeout = 45 * time.Second
+	}
 	if strings.TrimSpace(cfg.ProxyHost) == "" {
 		return nil, fmt.Errorf("proxy host is required")
 	}
@@ -368,10 +379,9 @@ RETURNING id;`
 			ExpiresAt: expiresAt.Unix(),
 		})
 		if ctErr != nil {
-			s.logger.Warn("failed to sign connector token", "session_id", sessionID, "error", ctErr)
-		} else {
-			result.ConnectorToken = ct
+			return LaunchResult{}, fmt.Errorf("sign connector token: %w", ctErr)
 		}
+		result.ConnectorToken = ct
 	}
 
 	if protocol == ProtocolSSH && action == "shell" {
@@ -436,6 +446,10 @@ RETURNING id;`
 	}
 
 	return result, nil
+}
+
+func (s *Service) ConnectorTokenEnabled() bool {
+	return s.connectorTokens != nil
 }
 
 func (s *Service) ResolveLaunchToken(ctx context.Context, token string) (LaunchContext, error) {
@@ -553,7 +567,153 @@ func (s *Service) RecordConnectorLaunchEvent(
 	if err := s.WriteEvent(ctx, lctx.SessionID, eventType, &lctx.UserID, payload); err != nil {
 		return err
 	}
+	if eventType == EventConnectorFailed {
+		if lctx.Status == StatusPending || lctx.Status == StatusActive {
+			reason := "connector_launch_failed"
+			if code, ok := payload["code"].(string); ok && strings.TrimSpace(code) != "" {
+				reason = reason + ":" + strings.TrimSpace(code)
+			}
+			return s.MarkFailed(ctx, lctx, reason)
+		}
+	}
 	return nil
+}
+
+func (s *Service) FailUnmaterializedConnectorLaunches(ctx context.Context, timeout time.Duration, limit int) (int, error) {
+	if timeout <= 0 {
+		timeout = s.cfg.MaterializeTimeout
+	}
+	if timeout <= 0 {
+		timeout = 45 * time.Second
+	}
+	if limit <= 0 {
+		limit = 200
+	}
+	if limit > 2000 {
+		limit = 2000
+	}
+	cutoff := time.Now().UTC().Add(-timeout)
+
+	const query = `
+SELECT
+	s.id,
+	s.user_id,
+	s.asset_id,
+	s.protocol,
+	COALESCE(s.reason, ''),
+	a.asset_type,
+	a.host,
+	a.port
+FROM sessions s
+JOIN assets a ON a.id = s.asset_id
+JOIN (
+	SELECT session_id, MAX(event_time) AS succeeded_at
+	FROM session_events
+	WHERE event_type = $1
+	GROUP BY session_id
+) success_evt ON success_evt.session_id = s.id
+WHERE s.status = $2
+  AND success_evt.succeeded_at <= $3
+ORDER BY success_evt.succeeded_at ASC
+LIMIT $4;`
+
+	rows, err := s.pool.Query(ctx, query, EventConnectorSuccess, StatusPending, cutoff, limit)
+	if err != nil {
+		return 0, fmt.Errorf("query stale pending launches: %w", err)
+	}
+	defer rows.Close()
+
+	marked := 0
+	for rows.Next() {
+		var (
+			lctx   LaunchContext
+			reason string
+		)
+		if scanErr := rows.Scan(
+			&lctx.SessionID,
+			&lctx.UserID,
+			&lctx.AssetID,
+			&lctx.Protocol,
+			&reason,
+			&lctx.AssetType,
+			&lctx.Host,
+			&lctx.Port,
+		); scanErr != nil {
+			return marked, fmt.Errorf("scan stale pending launch: %w", scanErr)
+		}
+		lctx.Action = strings.TrimPrefix(reason, "action:")
+		materialized, matErr := s.launchMaterialized(ctx, lctx.SessionID, lctx.Action)
+		if matErr != nil {
+			return marked, fmt.Errorf("check launch materialization: %w", matErr)
+		}
+		if materialized {
+			continue
+		}
+
+		const updatePending = `
+UPDATE sessions
+SET status = $2,
+	ended_at = NOW()
+WHERE id = $1
+  AND status = $3;`
+		tag, execErr := s.pool.Exec(ctx, updatePending, lctx.SessionID, StatusFailed, StatusPending)
+		if execErr != nil {
+			return marked, fmt.Errorf("mark stale launch failed: %w", execErr)
+		}
+		if tag.RowsAffected() == 0 {
+			continue
+		}
+		expected := expectedMaterialization(lctx.Action)
+		failPayload := map[string]any{
+			"reason":                   "launch_materialization_timeout",
+			"expected_materialization": expected,
+		}
+		if err := s.WriteEvent(ctx, lctx.SessionID, EventSessionFailed, &lctx.UserID, failPayload); err != nil {
+			return marked, err
+		}
+		if err := s.writeAudit(ctx, lctx, auditEventSessionDone, sessionEndAuditAction(lctx.Action), "failed", failPayload); err != nil {
+			return marked, err
+		}
+		marked++
+	}
+	if err := rows.Err(); err != nil {
+		return marked, fmt.Errorf("iterate stale pending launches: %w", err)
+	}
+	return marked, nil
+}
+
+func (s *Service) launchMaterialized(ctx context.Context, sessionID, action string) (bool, error) {
+	events := materializationEventsByAction[strings.TrimSpace(action)]
+	if len(events) == 0 {
+		events = []string{EventProxyConnected}
+	}
+	const query = `
+SELECT EXISTS (
+	SELECT 1
+	FROM session_events
+	WHERE session_id = $1
+	  AND event_type = ANY($2::text[])
+)`
+	var exists bool
+	if err := s.pool.QueryRow(ctx, query, strings.TrimSpace(sessionID), events).Scan(&exists); err != nil {
+		return false, err
+	}
+	return exists, nil
+}
+
+func expectedMaterialization(action string) string {
+	switch strings.TrimSpace(action) {
+	case "shell":
+		return EventProxyConnected
+	case "dbeaver":
+		return EventProxyConnected + " or " + EventDBQuery
+	case "sftp":
+		return EventProxyConnected + " or " + EventFileOperation
+	case "redis":
+		return EventProxyConnected + " or " + EventRedisCommand
+	default:
+		return EventProxyConnected
+	}
 }
 
 func (s *Service) GetSessionContextForUser(ctx context.Context, sessionID, userID string) (LaunchContext, error) {
@@ -1535,7 +1695,6 @@ func (s *Service) MarkFailed(ctx context.Context, lctx LaunchContext, reason str
 	const query = `
 UPDATE sessions
 SET status = $2,
-    started_at = COALESCE(started_at, NOW()),
     ended_at = NOW()
 WHERE id = $1;`
 	if _, err := s.pool.Exec(ctx, query, lctx.SessionID, StatusFailed); err != nil {

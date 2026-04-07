@@ -6,12 +6,12 @@ A lean PAM system that centralizes access to infrastructure assets. Users authen
 
 - Monorepo with modular monolith backend
 - Backend: Go (`net/http`, `pgx/pgxpool`, SQL-first)
-- UI: React (minimal shell + SFTP + DBeaver + Redis flow implemented; TailAdmin deferred)
+- UI: React (custom role-aware shell + access/session/admin flows; TailAdmin not used in current slice)
 - Connector: thin local launcher (shell + SFTP + DBeaver + Redis CLI)
 - Data store: PostgreSQL
 - Auth source: provider-based (`local`, `ldap`, `hybrid`)
 
-See [PLAN.md](PLAN.md) for full architecture and [CHECKLIST.md](CHECKLIST.md) for progress.
+See [PLAN.md](PLAN.md) for full architecture, [CHECKLIST.md](CHECKLIST.md) for reconciled status, [REMAINING_BLOCKERS.md](REMAINING_BLOCKERS.md) for current blockers, and [LOCAL_TESTING.md](LOCAL_TESTING.md) for end-to-end local run/testing steps.
 
 ## CI
 
@@ -97,7 +97,34 @@ deploy/         Deployment-oriented templates/docs
 - PostgreSQL 16+
 - Docker & Docker Compose (local dev services)
 
-### Quick Start
+### Quick Start (Scripted)
+
+```bash
+# 0) Prereq check
+./scripts/check_env.sh
+
+# 1) Start local dependencies
+./scripts/dev_up.sh --with-targets
+
+# 2) Start API
+./scripts/dev_api.sh
+
+# 3) Seed predictable local assets/credentials/grants
+./scripts/dev_seed.sh
+
+# 4) Start connector
+./scripts/dev_connector.sh
+
+# 5) Start UI
+./scripts/dev_ui.sh
+
+# 6) Run API launch matrix smoke
+./scripts/test_matrix.sh --api-only
+```
+
+Local macOS note: on some hosts, transient Go temp executables used by `go run` can fail with dyld `missing LC_UUID load command`. The dev scripts use repo-local binaries under `./bin` (`pam-api`, `pam-connector`) as the supported workaround.
+
+### Quick Start (Manual)
 
 ```bash
 # Start local dependencies (PostgreSQL)
@@ -105,8 +132,9 @@ docker-compose up -d
 
 # Run backend from apps/api directory
 cd apps/api
-export PAM_DB_URL='postgres://postgres:postgres@localhost:5432/pam?sslmode=disable'
-go run ./cmd/server
+export PAM_DB_URL='postgres://pam:pam_dev_password@localhost:5432/pam?sslmode=disable'
+CGO_ENABLED=0 GOCACHE=../../.gocache go build -o ../../bin/pam-api ./cmd/server
+../../bin/pam-api server
 ```
 
 ### Backend Commands
@@ -139,6 +167,12 @@ go test ./internal/integration -count=1
 
 # Equivalent make target
 make smoke-api
+```
+
+Extended multi-protocol launch smoke:
+
+```bash
+./scripts/test_api_smoke_extended.sh
 ```
 
 ## Environment Variables (Backend)
@@ -215,7 +249,8 @@ PAM_LDAP_GROUP_ROLE_MAPPING=PAM Operators=operator,CN=PAM Admins,OU=Groups,DC=co
 
 ```bash
 cd apps/connector
-go run ./cmd/connector
+CGO_ENABLED=0 GOCACHE=../../.gocache go build -o ../../bin/pam-connector ./cmd/connector
+../../bin/pam-connector
 ```
 
 3. Start UI:

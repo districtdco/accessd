@@ -26,7 +26,66 @@ services:
       - ldapdata:/var/lib/ldap
       - ldapconfig:/etc/ldap/slapd.d
 
+  # Optional local target services used by LOCAL_TESTING.md and scripts/test_matrix.sh.
+  # Start with: ./scripts/dev_up.sh --with-targets [--with-mssql]
+  ssh-target:
+    image: lscr.io/linuxserver/openssh-server:latest
+    profiles: ["targets"]
+    environment:
+      PUID: "1000"
+      PGID: "1000"
+      TZ: UTC
+      PASSWORD_ACCESS: "true"
+      SUDO_ACCESS: "false"
+      USER_NAME: pam
+      USER_PASSWORD: pam_dev_password
+    ports:
+      - "22222:2222"
+    volumes:
+      - ssh_target_data:/config
+
+  pg-target:
+    image: postgres:16-alpine
+    profiles: ["targets"]
+    environment:
+      POSTGRES_DB: app
+      POSTGRES_USER: app_user
+      POSTGRES_PASSWORD: app_password
+    ports:
+      - "15432:5432"
+
+  mysql-target:
+    image: mysql:8.4
+    profiles: ["targets"]
+    command: --default-authentication-plugin=mysql_native_password
+    environment:
+      MYSQL_ROOT_PASSWORD: root_password
+      MYSQL_DATABASE: appdb
+      MYSQL_USER: app_user
+      MYSQL_PASSWORD: app_password
+    ports:
+      - "13306:3306"
+
+  redis-target:
+    image: redis:7-alpine
+    profiles: ["targets"]
+    command: ["redis-server", "--requirepass", "app_password"]
+    ports:
+      - "16379:6379"
+
+  # Optional because some environments cannot run this image natively.
+  mssql-target:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    profiles: ["targets", "mssql"]
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_PID: Developer
+      SA_PASSWORD: YourStrong!Passw0rd
+    ports:
+      - "11433:1433"
+
 volumes:
   pgdata:
   ldapdata:
   ldapconfig:
+  ssh_target_data:

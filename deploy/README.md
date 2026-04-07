@@ -2,6 +2,9 @@
 
 Production-oriented deployment assets for a Linux VM + `systemd` target.
 
+For local multi-protocol testing, use [`LOCAL_TESTING.md`](../LOCAL_TESTING.md).
+For active unresolved rollout blockers, see [`REMAINING_BLOCKERS.md`](../REMAINING_BLOCKERS.md).
+
 ## Included Assets
 
 - `systemd/pam-api.service`

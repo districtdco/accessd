@@ -1,23 +1,40 @@
-# Remaining Blockers (Current)
+# Remaining Blockers (Reconciled 2026-04-07)
+
+Only active, real blockers are listed below.
 
 ## 1) MSSQL full client<->proxy TLS tunnel mode is not implemented
-- Why it remains: the MSSQL proxy still rejects required client TLS and upstream TLS tunnel negotiation in this slice.
+- Severity: `staging blocker`, `production blocker`
+- Scope: does **not** block basic local testing if MSSQL target is configured without strict TLS tunnel requirements.
+- Exact impact:
+  - MSSQL sessions can fail when client/upstream requires full TDS TLS tunnel negotiation.
+  - Current code paths still reject required client TLS and upstream-required tunnel mode.
 - Evidence in code:
-  - `apps/api/internal/mssqlproxy/server.go` rejects required client TLS (`client requested required tls...`)
-  - `apps/api/internal/mssqlproxy/server.go` returns `upstream requested tls encryption; ... not yet implemented`
-- Impact: MSSQL assets requiring strict client<->proxy and upstream TDS TLS tunnel mode are not fully supported in this slice.
-- Suggested next action: implement and validate full TDS TLS tunnel mode on both client and upstream legs.
+  - `apps/api/internal/mssqlproxy/server.go` (`client requested required tls...`)
+  - `apps/api/internal/mssqlproxy/server.go` (`upstream requested tls encryption; ... not yet implemented`)
+- Next action:
+  - Implement full bidirectional TDS TLS tunnel support in MSSQL proxy and add integration validation with strict TLS-required MSSQL targets.
 
-## 2) Redis client-leg TLS to PAM Redis proxy is still unavailable in effective product flow
-- Why it remains: connector command builders can pass `redis-cli --tls`, but PAM launch responses currently issue non-TLS client-leg Redis proxy endpoints (`redis_tls=false`) and the Redis proxy listener is plaintext for client sessions in this slice.
-- Impact: environments requiring TLS from local client to PAM Redis proxy need compensating controls (loopback trust boundary + host hardening) or further implementation.
-- Suggested next action: add optional TLS listener mode for session-scoped Redis proxy endpoints and emit `redis_tls=true` launch payload when enabled.
+## 2) Redis client-leg TLS to PAM Redis proxy is not implemented
+- Severity: `production blocker`
+- Scope: does **not** block local testing in current loopback trust model.
+- Exact impact:
+  - Connector/API launch payloads currently operate with plaintext local client leg (`redis_tls=false` in effective flow).
+  - Environments requiring TLS from local client to PAM Redis proxy endpoint cannot satisfy that requirement yet.
+- Evidence in code/docs:
+  - Launch payload handling supports `redis_tls`, but current flow remains non-TLS for client leg in this slice.
+  - Documented in `apps/connector/README.md` and local-testing limitations.
+- Next action:
+  - Add optional TLS listener mode for session-scoped Redis proxy endpoints and emit `redis_tls=true` launch payload when enabled.
 
-## 3) Full Go runtime test execution is blocked in this environment
-- Why it remains: runtime test binaries fail at execution with local dyld error (`missing LC_UUID load command`), unrelated to PAM business logic changes.
-- What was validated in this pass:
-  - `GOCACHE=$(pwd)/.gocache go build ./...` in `apps/api` succeeded (compile check).
-  - `GOCACHE=$(pwd)/.gocache go test -c ./internal/auth ./internal/integration ./internal/sessions` succeeded (test binaries compile).
-  - `npm run build` in `apps/ui` succeeded (typecheck + bundle).
-- What remains to run elsewhere:
-  - full runtime Go test execution (for example `go test ./...` and integration suites) in a host/runtime where test binaries execute normally.
+## 3) Runtime Go test execution is blocked in this current host environment
+- Severity: `local-testing blocker` (environment-specific)
+- Scope: blocks full runtime `go test` execution **in this environment only**, not a product architecture blocker.
+- Exact impact:
+  - Go tests compile, but runtime execution can fail with local dyld loader error (`missing LC_UUID load command`).
+  - Prevents trustworthy full runtime test pass on this machine until host/runtime issue is fixed.
+- What is still validated locally:
+  - API/connector compile/build checks
+  - UI build checks
+  - script syntax checks
+- Next action:
+  - Run full Go runtime tests on a clean host/runtime (or fix local toolchain/runtime), then capture results back into checklist/release notes.

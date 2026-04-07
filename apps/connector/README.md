@@ -53,6 +53,7 @@ DBeaver request shape:
   "session_id": "uuid",
   "asset_id": "uuid",
   "asset_name": "postgres-app",
+  "connector_token": "base64-body.base64-sig",
   "launch": {
     "engine": "postgres",
     "host": "pam.example.internal",
@@ -72,6 +73,7 @@ Redis request shape:
   "session_id": "uuid",
   "asset_id": "uuid",
   "asset_name": "redis-cache",
+  "connector_token": "base64-body.base64-sig",
   "launch": {
     "redis_host": "pam.example.internal",
     "redis_port": 46379,
@@ -92,6 +94,7 @@ SFTP request shape:
   "session_id": "uuid",
   "asset_id": "uuid",
   "asset_name": "linux-app-01",
+  "connector_token": "base64-body.base64-sig",
   "launch": {
     "host": "127.0.0.1",
     "port": 2222,
@@ -109,18 +112,21 @@ SFTP request shape:
 - Linux: tries `x-terminal-emulator`, `gnome-terminal`, `konsole`, then `xfce4-terminal`, each running the same SSH command
 - Windows: launches PuTTY (`putty -ssh <username>@<proxy_host> -P <proxy_port>`)
 - DBeaver launch behavior:
-  - macOS: tries `open -a DBeaver --args -con <spec>`, then `dbeaver -con <spec>`
-  - Linux: tries `dbeaver -con <spec>`, then `dbeaver-ce -con <spec>`
-  - Windows: tries `cmd /C start "" dbeaver -con <spec>`, then `dbeaver.exe`
+  - macOS: `PAM_CONNECTOR_DBEAVER_PATH` (if set), else `open -a DBeaver`, then common app bundle paths, then `dbeaver`
+  - Linux: `PAM_CONNECTOR_DBEAVER_PATH` (if set), else `dbeaver`, then `dbeaver-ce`
+  - Windows: `PAM_CONNECTOR_DBEAVER_PATH` (if set), else `cmd /C start "" dbeaver -con <spec>`, then `dbeaver.exe`
 - SFTP launch behavior:
-  - macOS/Linux: launches `filezilla sftp://<user>:<password>@<host>:<port>/<path>`
-  - Windows: launches `winscp sftp://<user>:<password>@<host>:<port>/<path>`
+  - macOS/Linux: `PAM_CONNECTOR_FILEZILLA_PATH` (if set), else FileZilla in PATH/common macOS app paths
+  - Windows: `PAM_CONNECTOR_WINSCP_PATH` (if set), else WinSCP in PATH/common install paths
+- Redis launch behavior:
+  - macOS/Linux/Windows: `PAM_CONNECTOR_REDIS_CLI_PATH` (if set), else `redis-cli` from PATH/common install paths, then launch inside a local terminal
 
 In this first pass, the token is displayed in the launched terminal flow so the user can paste it at prompt. Connector also attempts best-effort clipboard copy (`pbcopy`, `wl-copy`/`xclip`, or `Set-Clipboard`) to reduce manual friction. PuTTY automation for token entry is intentionally deferred.
 
 For DBeaver in this first pass, connector creates a temporary local manifest file under OS temp directory (`pam-dbeaver-launch-*`) and launches DBeaver using CLI connection spec. The connector auto-cleans temp launch directories after a TTL (`PAM_CONNECTOR_DBEAVER_TEMP_TTL`, default `15m`) and performs stale cleanup on startup.
 The manifest intentionally omits plaintext DB password; it records non-sensitive launch metadata only.
 Connector launch diagnostics also redact sensitive values (for example `password=` fields, SFTP URL passwords, and `REDISCLI_AUTH`) before returning operator-visible error details.
+Launch requests now fail fast with structured codes for common local issues (`*_not_installed`, `invalid_configured_path`, `terminal_not_installed`, `terminal_launch_failed`, etc.) instead of optimistic acceptance.
 
 For Redis in this slice, connector launches local `redis-cli` in a new terminal window against a PAM session-scoped Redis proxy endpoint. `REDISCLI_AUTH` is set to the short-lived PAM launch token; upstream Redis credentials stay managed server-side.
 Redis TLS note: connector command builders support `redis-cli --tls` when launch payload includes `redis_tls=true`; in the current PAM slice the API issues non-TLS client-leg Redis proxy endpoints, so connector launches are typically plaintext on loopback/session endpoints. Upstream Redis TLS is handled by the PAM proxy-to-target leg when enabled on the asset.
@@ -137,6 +143,8 @@ For SFTP in this slice, connector launches FileZilla/WinSCP against the PAM SFTP
 | `PAM_CONNECTOR_PUTTY_PATH` | `putty` | PuTTY executable/path on Windows |
 | `PAM_CONNECTOR_WINSCP_PATH` | `winscp` | WinSCP executable/path on Windows |
 | `PAM_CONNECTOR_FILEZILLA_PATH` | `filezilla` | FileZilla executable/path on macOS/Linux |
+| `PAM_CONNECTOR_DBEAVER_PATH` | *(auto-discovery)* | DBeaver app/binary path override |
+| `PAM_CONNECTOR_REDIS_CLI_PATH` | *(auto-discovery)* | `redis-cli` path override |
 | `PAM_CONNECTOR_DBEAVER_TEMP_TTL` | `15m` | TTL for DBeaver temp launch material cleanup |
 | `PAM_CONNECTOR_SECRET` | *(empty)* | Shared HMAC secret for verifying backend-signed launch payloads. Must match `PAM_CONNECTOR_SECRET` on the API. When empty, verification is disabled. |
 

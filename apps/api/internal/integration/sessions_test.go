@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+
+	"github.com/districtd/pam/api/internal/access"
 )
 
 func TestSessionDetail_OwnerCanAccess(t *testing.T) {
@@ -150,6 +152,34 @@ func TestSessionLaunch_LaunchTypeIsShell(t *testing.T) {
 	}
 	if asString(launchObj["expires_at"]) == "" {
 		t.Fatalf("expected expires_at in shell launch payload")
+	}
+	if asString(payload["connector_token"]) == "" {
+		t.Fatalf("expected connector_token in shell launch payload")
+	}
+}
+
+func TestSessionLaunch_SFTPIncludesConnectorToken(t *testing.T) {
+	h := newTestHarness(t)
+
+	operatorCookie := h.login(h.seed.operatorName, h.seed.operatorPass)
+	createdBy := &h.seed.adminID
+	if err := h.access.GrantUserAction(h.ctx, h.seed.operatorID, h.seed.allowedAssetID, access.ActionSFTP, createdBy); err != nil {
+		t.Fatalf("grant operator sftp access: %v", err)
+	}
+
+	launchResp := h.requestJSON(http.MethodPost, "/sessions/launch", map[string]any{
+		"asset_id": h.seed.allowedAssetID,
+		"action":   "sftp",
+	}, operatorCookie)
+	if launchResp.Code != http.StatusOK {
+		t.Fatalf("expected sftp launch 200, got %d: %s", launchResp.Code, launchResp.Body.String())
+	}
+	payload := h.responseJSON(t, launchResp)
+	if asString(payload["launch_type"]) != "sftp" {
+		t.Fatalf("expected launch_type=sftp, got %s", asString(payload["launch_type"]))
+	}
+	if asString(payload["connector_token"]) == "" {
+		t.Fatalf("expected connector_token in sftp launch payload")
 	}
 }
 

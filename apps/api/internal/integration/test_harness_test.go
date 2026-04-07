@@ -130,6 +130,7 @@ func (h *testHarness) newRouter(logger *slog.Logger) http.Handler {
 	sessionsSvc, err := sessions.NewService(h.pool, sessions.Config{
 		LaunchTokenSecret: []byte("pam-test-launch-secret"),
 		LaunchTokenTTL:    5 * time.Minute,
+		ConnectorSecret:   []byte("pam-test-connector-secret"),
 		ProxyHost:         "127.0.0.1",
 		ProxyPort:         2222,
 		ProxyUsername:     "pam",

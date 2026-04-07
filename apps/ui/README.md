@@ -41,6 +41,8 @@ Minimal React + Vite frontend for integrated shell + SFTP + DBeaver + Redis brok
   4. Record outcome via `POST /sessions/{session_id}/events`:
      - `connector_launch_succeeded`
      - `connector_launch_failed`
+  5. Backend enforces launch materialization timeout:
+     - if connector launch is marked succeeded but no proxy/client connection materializes in time, session is auto-marked `failed`
 - Session review flow:
   1. `GET /sessions/{session_id}` for metadata + lifecycle summary
   2. `GET /sessions/{session_id}/events` for ordered timeline events (paged with `limit` + `after_id`)
@@ -70,6 +72,8 @@ Minimal React + Vite frontend for integrated shell + SFTP + DBeaver + Redis brok
   - file operation replay/timeline from `file_operation` events
   - operation/path/path_to/size columns with destructive-operation highlighting
   - incremental loading for long histories
+- Connector failures:
+  - Access page surfaces connector-provided `code`/`hint` details for not-installed apps, invalid configured paths, and terminal/client launch failures.
 - Replay caveat:
   - replay is approximate text/event playback only; terminal-perfect rendering is intentionally deferred.
 
@@ -91,6 +95,7 @@ Frontend sends this JSON to the connector:
   "session_id": "uuid",
   "asset_id": "uuid",
   "asset_name": "dev-vm-01",
+  "connector_token": "base64-body.base64-sig",
   "launch": {
     "proxy_host": "127.0.0.1",
     "proxy_port": 2222,
@@ -108,6 +113,7 @@ For DBeaver launches the frontend forwards:
   "session_id": "uuid",
   "asset_id": "uuid",
   "asset_name": "postgres-app",
+  "connector_token": "base64-body.base64-sig",
   "launch": {
     "engine": "postgres",
     "host": "127.0.0.1",
@@ -149,3 +155,4 @@ Vite dev proxy config:
 Optional:
 
 - `VITE_CONNECTOR_BASE` (default `/connector`) for connector handoff base URL.
+- `VITE_CONNECTOR_TOKEN_REQUIRED` (default `true`) to enforce fail-fast behavior when `/sessions/launch` is missing `connector_token`.

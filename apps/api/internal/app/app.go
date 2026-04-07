@@ -63,12 +63,13 @@ func New(_ context.Context, cfg config.Config, logger *slog.Logger, pool *pgxpoo
 	}
 	credentialsService := credentials.NewService(pool, cipher, logger)
 	sessionsService, err := sessions.NewService(pool, sessions.Config{
-		LaunchTokenSecret: []byte(cfg.Sessions.LaunchTokenSecret),
-		LaunchTokenTTL:    cfg.Sessions.LaunchTokenTTL,
-		ConnectorSecret:   []byte(cfg.Sessions.ConnectorSecret),
-		ProxyHost:         cfg.SSHProxy.PublicHost,
-		ProxyPort:         cfg.SSHProxy.PublicPort,
-		ProxyUsername:     cfg.SSHProxy.Username,
+		LaunchTokenSecret:  []byte(cfg.Sessions.LaunchTokenSecret),
+		LaunchTokenTTL:     cfg.Sessions.LaunchTokenTTL,
+		ConnectorSecret:    []byte(cfg.Sessions.ConnectorSecret),
+		MaterializeTimeout: cfg.Sessions.MaterializeTimeout,
+		ProxyHost:          cfg.SSHProxy.PublicHost,
+		ProxyPort:          cfg.SSHProxy.PublicPort,
+		ProxyUsername:      cfg.SSHProxy.Username,
 	}, logger)
 	if err != nil {
 		return nil, fmt.Errorf("initialize sessions service: %w", err)

@@ -100,6 +100,8 @@ Optional:
 - `PAM_VAULT_KEY_ID` (default: `v1`)
 - `PAM_LAUNCH_TOKEN_SECRET` (required): HMAC signing secret for launch tokens
 - `PAM_LAUNCH_TOKEN_TTL` (default: `2m`)
+- `PAM_LAUNCH_MATERIALIZE_TIMEOUT` (default: `45s`): timeout for connector-accepted launches to materialize into a proxy/client connection before auto-fail
+- `PAM_LAUNCH_SWEEP_INTERVAL` (default: `15s`): interval for stale pending launch sweep
 - `PAM_SSH_PROXY_ADDR` (default: `:2222`)
 - `PAM_SSH_PROXY_PUBLIC_HOST` (default: `127.0.0.1`)
 - `PAM_SSH_PROXY_PUBLIC_PORT` (default: `2222`)
@@ -199,6 +201,8 @@ cd apps/api
 export PAM_DB_URL='postgres://postgres:postgres@localhost:5432/pam?sslmode=disable'
 export PAM_VAULT_KEY='replace-with-dev-key'
 export PAM_LAUNCH_TOKEN_SECRET='replace-with-dev-launch-token-secret'
+export PAM_LAUNCH_MATERIALIZE_TIMEOUT='45s'
+export PAM_LAUNCH_SWEEP_INTERVAL='15s'
 go run ./cmd/server
 ```
 

@@ -1,8 +1,16 @@
-.PHONY: build dev-api dev-ui test lint migrate clean smoke-api validate-contract
+.PHONY: build build-api-bin build-connector-bin dev-api dev-ui dev-connector dev-up dev-seed test-matrix check-env test lint migrate clean smoke-api smoke-api-extended validate-contract
 
 # --- Build ---
 
 build: build-api build-connector build-ui
+
+build-api-bin:
+	mkdir -p .gocache bin
+	cd apps/api && CGO_ENABLED=0 GOCACHE=$(CURDIR)/.gocache go build -o $(CURDIR)/bin/pam-api ./cmd/server
+
+build-connector-bin:
+	mkdir -p .gocache bin
+	cd apps/connector && CGO_ENABLED=0 GOCACHE=$(CURDIR)/.gocache go build -o $(CURDIR)/bin/pam-connector ./cmd/connector
 
 build-api:
 	cd apps/api && go build -o bin/pam-server ./cmd/server
@@ -16,10 +24,25 @@ build-ui:
 # --- Dev ---
 
 dev-api:
-	cd apps/api && go run ./cmd/server
+	./scripts/dev_api.sh
 
 dev-ui:
-	cd apps/ui && npm run dev
+	./scripts/dev_ui.sh
+
+dev-connector:
+	./scripts/dev_connector.sh
+
+dev-up:
+	./scripts/dev_up.sh
+
+dev-up-targets:
+	./scripts/dev_up.sh --with-targets
+
+dev-up-targets-mssql:
+	./scripts/dev_up.sh --with-targets --with-mssql
+
+dev-seed:
+	./scripts/dev_seed.sh
 
 # --- Test ---
 
@@ -61,6 +84,15 @@ migrate-down:
 
 smoke-api:
 	./scripts/smoke_api.sh
+
+smoke-api-extended:
+	./scripts/test_api_smoke_extended.sh
+
+test-matrix:
+	./scripts/test_matrix.sh
+
+check-env:
+	./scripts/check_env.sh
 
 # --- Docker (dev only) ---
 

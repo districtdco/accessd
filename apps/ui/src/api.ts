@@ -29,10 +29,42 @@ type APIError = {
   error?: string
   code?: string
   hint?: string
+  details?: string
 }
 
 const API_BASE = '/api'
 const CONNECTOR_BASE = import.meta.env.VITE_CONNECTOR_BASE ?? '/connector'
+const CONNECTOR_TOKEN_REQUIRED = parseConnectorTokenRequired(import.meta.env.VITE_CONNECTOR_TOKEN_REQUIRED)
+
+export class ConnectorHandoffError extends Error {
+  code?: string
+  hint?: string
+  details?: string
+  status: number
+
+  constructor(message: string, status: number, code?: string, hint?: string, details?: string) {
+    super(message)
+    this.name = 'ConnectorHandoffError'
+    this.status = status
+    this.code = code
+    this.hint = hint
+    this.details = details
+  }
+}
+
+function parseConnectorTokenRequired(raw: unknown): boolean {
+  if (typeof raw !== 'string') {
+    return true
+  }
+  const normalized = raw.trim().toLowerCase()
+  if (normalized === '' || normalized === 'true' || normalized === '1' || normalized === 'yes') {
+    return true
+  }
+  if (normalized === 'false' || normalized === '0' || normalized === 'no') {
+    return false
+  }
+  return true
+}
 
 async function requestJSON<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, {
@@ -92,10 +124,21 @@ export async function createSessionLaunch(
   })
 }
 
-export async function handoffShellToConnector(
-  body: ConnectorShellLaunchRequest,
-): Promise<{ tokenCopied: boolean; hint?: string }> {
-  const response = await fetch(`${CONNECTOR_BASE}/launch/shell`, {
+export function connectorTokenForHandoff(session: LaunchSessionResponse): string {
+  const token = (session.connector_token ?? '').trim()
+  if (CONNECTOR_TOKEN_REQUIRED && token === '') {
+    throw new Error(
+      'Launch response is missing connector_token. Refusing connector handoff because connector token validation is required.',
+    )
+  }
+  return token
+}
+
+async function connectorLaunchRequest<TResponse>(
+  path: string,
+  body: unknown,
+): Promise<TResponse> {
+  const response = await fetch(`${CONNECTOR_BASE}${path}`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -105,26 +148,36 @@ export async function handoffShellToConnector(
 
   if (!response.ok) {
     let message = `connector handoff failed (${response.status})`
+    let code: string | undefined
+    let hint: string | undefined
+    let details: string | undefined
     try {
       const payload = (await response.json()) as APIError
       if (payload.error) {
         message = payload.error
-        if (payload.hint) {
-          message += ` (${payload.hint})`
-        }
       }
+      code = payload.code
+      hint = payload.hint
+      details = payload.details
     } catch {
       // ignore
     }
-    throw new Error(message)
+    if (response.status === 403) {
+      message = `${message}. Connector rejected launch authorization (403); verify connector secret alignment and connector_token forwarding.`
+    }
+    throw new ConnectorHandoffError(message, response.status, code, hint, details)
   }
 
-  const payload = (await response.json()) as {
-    token_copied?: boolean
+  return (await response.json()) as TResponse
+}
+
+export async function handoffShellToConnector(
+  body: ConnectorShellLaunchRequest,
+): Promise<{ hint?: string }> {
+  const payload = await connectorLaunchRequest<{
     instructions?: string
-  }
+  }>('/launch/shell', body)
   return {
-    tokenCopied: payload.token_copied === true,
     hint: payload.instructions,
   }
 }
@@ -132,102 +185,30 @@ export async function handoffShellToConnector(
 export async function handoffDBeaverToConnector(
   body: ConnectorDBeaverLaunchRequest,
 ): Promise<{ hint?: string; diagnostics?: Record<string, unknown> }> {
-  const response = await fetch(`${CONNECTOR_BASE}/launch/dbeaver`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(body),
-  })
-
-  if (!response.ok) {
-    let message = `connector handoff failed (${response.status})`
-    try {
-      const payload = (await response.json()) as APIError
-      if (payload.error) {
-        message = payload.error
-        if (payload.hint) {
-          message += ` (${payload.hint})`
-        }
-      }
-    } catch {
-      // ignore
-    }
-    throw new Error(message)
-  }
-
-  const payload = (await response.json()) as {
+  const payload = await connectorLaunchRequest<{
     instructions?: string
     diagnostics?: Record<string, unknown>
-  }
+  }>('/launch/dbeaver', body)
   return { hint: payload.instructions, diagnostics: payload.diagnostics }
 }
 
 export async function handoffRedisToConnector(
   body: ConnectorRedisLaunchRequest,
 ): Promise<{ hint?: string; diagnostics?: Record<string, unknown> }> {
-  const response = await fetch(`${CONNECTOR_BASE}/launch/redis`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(body),
-  })
-
-  if (!response.ok) {
-    let message = `connector handoff failed (${response.status})`
-    try {
-      const payload = (await response.json()) as APIError
-      if (payload.error) {
-        message = payload.error
-        if (payload.hint) {
-          message += ` (${payload.hint})`
-        }
-      }
-    } catch {
-      // ignore
-    }
-    throw new Error(message)
-  }
-
-  const payload = (await response.json()) as {
+  const payload = await connectorLaunchRequest<{
     instructions?: string
     diagnostics?: Record<string, unknown>
-  }
+  }>('/launch/redis', body)
   return { hint: payload.instructions, diagnostics: payload.diagnostics }
 }
 
 export async function handoffSFTPToConnector(
   body: ConnectorSFTPLaunchRequest,
 ): Promise<{ hint?: string; diagnostics?: Record<string, unknown> }> {
-  const response = await fetch(`${CONNECTOR_BASE}/launch/sftp`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(body),
-  })
-
-  if (!response.ok) {
-    let message = `connector handoff failed (${response.status})`
-    try {
-      const payload = (await response.json()) as APIError
-      if (payload.error) {
-        message = payload.error
-        if (payload.hint) {
-          message += ` (${payload.hint})`
-        }
-      }
-    } catch {
-      // ignore
-    }
-    throw new Error(message)
-  }
-
-  const payload = (await response.json()) as {
+  const payload = await connectorLaunchRequest<{
     instructions?: string
     diagnostics?: Record<string, unknown>
-  }
+  }>('/launch/sftp', body)
   return { hint: payload.instructions, diagnostics: payload.diagnostics }
 }
 

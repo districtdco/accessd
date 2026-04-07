@@ -523,6 +523,10 @@ func (h *SessionsHandler) Launch(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to build launch response"})
 		return
 	}
+	if h.sessionsService.ConnectorTokenEnabled() && strings.TrimSpace(resp.ConnectorToken) == "" {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to issue connector token for launch"})
+		return
+	}
 	writeJSON(w, http.StatusOK, resp)
 }
 

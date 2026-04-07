@@ -2562,6 +2562,9 @@ components:
         launch_type:
           type: string
           enum: [shell, sftp, dbeaver, redis]
+        connector_token:
+          type: string
+          description: Backend-signed connector authorization token. Required by connector launch endpoints when connector token verification is enabled.
         launch:
           oneOf:
             - $ref: "#/components/schemas/ShellLaunchConnection"

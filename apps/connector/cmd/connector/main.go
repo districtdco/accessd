@@ -24,10 +24,8 @@ func main() {
 		log.Printf("WARNING: PAM_CONNECTOR_SECRET not set; connector token verification disabled")
 	}
 	launcher := launch.Launcher{
-		PuTTYPath:      cfg.PuTTYPath,
-		WinSCPPath:     cfg.WinSCPPath,
-		FileZillaPath:  cfg.FileZillaPath,
 		DBeaverTempTTL: cfg.DBeaverTempTTL,
+		Resolver:       cfg.Resolver,
 	}
 	if removed, err := launch.CleanupStaleDBeaverTemp(cfg.DBeaverTempTTL); err != nil {
 		log.Printf("stale dbeaver temp cleanup skipped: %v", err)
@@ -68,13 +66,10 @@ func main() {
 			writeLaunchError(w, err)
 			return
 		}
-		tokenCopied, clipboardTool := launch.TryCopyTokenToClipboard(r.Context(), req.Launch.Token)
 		writeJSON(w, http.StatusAccepted, map[string]any{
-			"status":         "launched",
-			"session_id":     req.SessionID,
-			"token_copied":   tokenCopied,
-			"clipboard_tool": clipboardTool,
-			"instructions":   "When prompted for launch token, paste from clipboard or terminal banner",
+			"status":       "launched",
+			"session_id":   req.SessionID,
+			"instructions": "shell launched with automatic token authentication",
 		})
 	})
 	mux.HandleFunc("POST /launch/dbeaver", func(w http.ResponseWriter, r *http.Request) {
@@ -290,11 +285,15 @@ func verifyConnectorToken(v *auth.Verifier, token, sessionID string) error {
 func writeLaunchError(w http.ResponseWriter, err error) {
 	var launchErr *launch.LaunchError
 	if errors.As(err, &launchErr) {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{
+		body := map[string]string{
 			"error": launchErr.Message,
 			"code":  launchErr.Code,
 			"hint":  launchErr.Hint,
-		})
+		}
+		if strings.TrimSpace(launchErr.Details) != "" {
+			body["details"] = launchErr.Details
+		}
+		writeJSON(w, http.StatusInternalServerError, body)
 		return
 	}
 	writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})

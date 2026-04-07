@@ -67,36 +67,25 @@ export type RedisLaunchConnection = {
 export type LaunchSessionResponse = {
   session_id: string
   launch_type: 'shell' | 'sftp' | 'dbeaver' | 'redis'
+  connector_token?: string
   launch: ShellLaunchConnection | SFTPLaunchConnection | DBeaverLaunchConnection | RedisLaunchConnection
 }
 
-export type ConnectorShellLaunchRequest = {
+export type ConnectorLaunchRequestEnvelope<TLaunchPayload> = {
   session_id: string
   asset_id: string
   asset_name: string
-  launch: ShellLaunchConnection
+  connector_token: string
+  launch: TLaunchPayload
 }
 
-export type ConnectorDBeaverLaunchRequest = {
-  session_id: string
-  asset_id: string
-  asset_name: string
-  launch: DBeaverLaunchConnection
-}
+export type ConnectorShellLaunchRequest = ConnectorLaunchRequestEnvelope<ShellLaunchConnection>
 
-export type ConnectorSFTPLaunchRequest = {
-  session_id: string
-  asset_id: string
-  asset_name: string
-  launch: SFTPLaunchConnection
-}
+export type ConnectorDBeaverLaunchRequest = ConnectorLaunchRequestEnvelope<DBeaverLaunchConnection>
 
-export type ConnectorRedisLaunchRequest = {
-  session_id: string
-  asset_id: string
-  asset_name: string
-  launch: RedisLaunchConnection
-}
+export type ConnectorSFTPLaunchRequest = ConnectorLaunchRequestEnvelope<SFTPLaunchConnection>
+
+export type ConnectorRedisLaunchRequest = ConnectorLaunchRequestEnvelope<RedisLaunchConnection>
 
 export type AdminUser = {
   id: string

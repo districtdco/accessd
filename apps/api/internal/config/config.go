@@ -99,9 +99,11 @@ type CredentialsConfig struct {
 }
 
 type SessionsConfig struct {
-	LaunchTokenSecret string
-	LaunchTokenTTL    time.Duration
-	ConnectorSecret   string // HMAC key for signing connector launch payloads
+	LaunchTokenSecret   string
+	LaunchTokenTTL      time.Duration
+	ConnectorSecret     string // HMAC key for signing connector launch payloads
+	MaterializeTimeout  time.Duration
+	LaunchSweepInterval time.Duration
 }
 
 type SSHProxyConfig struct {
@@ -223,9 +225,11 @@ func Load() (Config, error) {
 		KeyID:     getEnv("PAM_VAULT_KEY_ID", "v1"),
 	}
 	cfg.Sessions = SessionsConfig{
-		LaunchTokenSecret: strings.TrimSpace(os.Getenv("PAM_LAUNCH_TOKEN_SECRET")),
-		LaunchTokenTTL:    getDurationEnv("PAM_LAUNCH_TOKEN_TTL", 2*time.Minute),
-		ConnectorSecret:   strings.TrimSpace(os.Getenv("PAM_CONNECTOR_SECRET")),
+		LaunchTokenSecret:   strings.TrimSpace(os.Getenv("PAM_LAUNCH_TOKEN_SECRET")),
+		LaunchTokenTTL:      getDurationEnv("PAM_LAUNCH_TOKEN_TTL", 2*time.Minute),
+		ConnectorSecret:     strings.TrimSpace(os.Getenv("PAM_CONNECTOR_SECRET")),
+		MaterializeTimeout:  getDurationEnv("PAM_LAUNCH_MATERIALIZE_TIMEOUT", 45*time.Second),
+		LaunchSweepInterval: getDurationEnv("PAM_LAUNCH_SWEEP_INTERVAL", 15*time.Second),
 	}
 	cfg.SSHProxy = SSHProxyConfig{
 		ListenAddr:             getEnv("PAM_SSH_PROXY_ADDR", ":2222"),
@@ -350,6 +354,12 @@ func Load() (Config, error) {
 	}
 	if cfg.Sessions.LaunchTokenTTL <= 0 {
 		return Config{}, fmt.Errorf("PAM_LAUNCH_TOKEN_TTL must be > 0")
+	}
+	if cfg.Sessions.MaterializeTimeout <= 0 {
+		return Config{}, fmt.Errorf("PAM_LAUNCH_MATERIALIZE_TIMEOUT must be > 0")
+	}
+	if cfg.Sessions.LaunchSweepInterval <= 0 {
+		return Config{}, fmt.Errorf("PAM_LAUNCH_SWEEP_INTERVAL must be > 0")
 	}
 	if strings.TrimSpace(cfg.SSHProxy.ListenAddr) == "" {
 		return Config{}, fmt.Errorf("PAM_SSH_PROXY_ADDR cannot be empty")
