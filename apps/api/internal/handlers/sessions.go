@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -1012,10 +1013,10 @@ func (h *SessionsHandler) ExportSessionTranscript(w http.ResponseWriter, r *http
 		return
 	}
 
-	chunks := make([]sessions.ReplayChunk, 0)
+	events := make([]sessions.SessionEvent, 0)
 	var afterID int64
 	for {
-		page, pageErr := h.sessionsService.ListReplayChunks(r.Context(), sessionID, afterID, 1000)
+		page, pageErr := h.sessionsService.ListEvents(r.Context(), sessionID, afterID, 1000)
 		if pageErr != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to build transcript export"})
 			return
@@ -1023,9 +1024,10 @@ func (h *SessionsHandler) ExportSessionTranscript(w http.ResponseWriter, r *http
 		if len(page) == 0 {
 			break
 		}
-		chunks = append(chunks, page...)
-		afterID = page[len(page)-1].EventID
+		events = append(events, page...)
+		afterID = page[len(page)-1].ID
 	}
+	lines := normalizeTranscriptRows(events)
 
 	var b strings.Builder
 	b.WriteString("# PAM session transcript (first-pass)\n")
@@ -1034,24 +1036,18 @@ func (h *SessionsHandler) ExportSessionTranscript(w http.ResponseWriter, r *http
 	b.WriteString(fmt.Sprintf("# asset: %s\n", item.AssetName))
 	b.WriteString(fmt.Sprintf("# generated_at: %s\n\n", time.Now().UTC().Format(time.RFC3339Nano)))
 
-	for _, chunk := range chunks {
-		if chunk.Direction != "in" && chunk.Direction != "out" {
-			continue
-		}
-		if strings.TrimSpace(chunk.Text) == "" {
-			continue
-		}
+	for _, row := range lines {
 		prefix := "OUT"
-		if chunk.Direction == "in" {
+		if row.Direction == "in" {
 			prefix = "IN "
 		}
-		b.WriteString(fmt.Sprintf("[%s] %s ", chunk.EventTime.UTC().Format(time.RFC3339Nano), prefix))
-		b.WriteString(chunk.Text)
-		if !strings.HasSuffix(chunk.Text, "\n") {
+		b.WriteString(fmt.Sprintf("[%s] %s ", row.EventTime.UTC().Format(time.RFC3339Nano), prefix))
+		b.WriteString(row.Text)
+		if !strings.HasSuffix(row.Text, "\n") {
 			b.WriteString("\n")
 		}
 	}
-	if len(chunks) == 0 {
+	if len(lines) == 0 {
 		b.WriteString("(no transcript chunks captured)\n")
 	}
 
@@ -1060,6 +1056,13 @@ func (h *SessionsHandler) ExportSessionTranscript(w http.ResponseWriter, r *http
 	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", filename))
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(b.String()))
+}
+
+type normalizedTranscriptRow struct {
+	EventID   int64
+	EventTime time.Time
+	Direction string
+	Text      string
 }
 
 func (h *SessionsHandler) AdminExportSessionsCSV(w http.ResponseWriter, r *http.Request) {
@@ -1482,8 +1485,18 @@ func mapSessionDetail(item sessions.SessionDetail, lifecycle sessions.SessionLif
 }
 
 func mapSessionEvents(action string, items []sessions.SessionEvent) []sessionEventResponse {
+	var transcriptRowsByEvent map[int64][]normalizedTranscriptRow
+	if shellSession := strings.TrimSpace(action) == "shell"; shellSession {
+		transcriptRowsByEvent = map[int64][]normalizedTranscriptRow{}
+		for _, row := range normalizeTranscriptRows(items) {
+			if row.EventID <= 0 {
+				continue
+			}
+			transcriptRowsByEvent[row.EventID] = append(transcriptRowsByEvent[row.EventID], row)
+		}
+	}
+
 	resp := make([]sessionEventResponse, 0, len(items))
-	shellSession := strings.TrimSpace(action) == "shell"
 	for _, item := range items {
 		row := sessionEventResponse{
 			ID:        item.ID,
@@ -1500,8 +1513,30 @@ func mapSessionEvents(action string, items []sessions.SessionEvent) []sessionEve
 				row.ActorUser.Username = *item.ActorUser
 			}
 		}
-		if shellSession {
-			if transcript, ok := transcriptChunkFromEvent(item.EventType, item.Payload); ok {
+		if transcriptRowsByEvent != nil {
+			if normalizedRows, ok := transcriptRowsByEvent[item.ID]; ok && len(normalizedRows) > 0 {
+				textParts := make([]string, 0, len(normalizedRows))
+				for _, nrow := range normalizedRows {
+					textParts = append(textParts, nrow.Text)
+				}
+				transcript := sessionTranscriptChunk{
+					Direction: normalizedRows[0].Direction,
+					Text:      strings.Join(textParts, "\n"),
+				}
+				if item.EventType == sessions.EventDataIn || item.EventType == sessions.EventDataOut {
+					stream, _ := item.Payload["stream"].(string)
+					transcript.Stream = stream
+					size := 0
+					switch typed := item.Payload["size"].(type) {
+					case float64:
+						size = int(typed)
+					case int:
+						size = typed
+					case int64:
+						size = int(typed)
+					}
+					transcript.Size = size
+				}
 				row.Transcript = &transcript
 			}
 		}
@@ -1545,40 +1580,153 @@ func formatNullableInt64(value *int64) string {
 	return strconv.FormatInt(*value, 10)
 }
 
-func transcriptChunkFromEvent(eventType string, payload map[string]any) (sessionTranscriptChunk, bool) {
-	direction := ""
-	switch eventType {
-	case sessions.EventDataIn:
-		direction = "in"
-	case sessions.EventDataOut:
-		direction = "out"
-	default:
-		return sessionTranscriptChunk{}, false
-	}
+func normalizeTranscriptRows(items []sessions.SessionEvent) []normalizedTranscriptRow {
+	rows := make([]normalizedTranscriptRow, 0, len(items))
+	pendingEchoes := make([]string, 0, 32)
+	inputBuffer := ""
 
-	encoded, _ := payload["data"].(string)
-	if strings.TrimSpace(encoded) == "" {
-		return sessionTranscriptChunk{}, false
-	}
-	decoded, err := base64.StdEncoding.DecodeString(encoded)
-	if err != nil || !utf8.Valid(decoded) {
-		return sessionTranscriptChunk{}, false
-	}
-	stream, _ := payload["stream"].(string)
-	size := 0
-	switch typed := payload["size"].(type) {
-	case float64:
-		size = int(typed)
-	case int:
-		size = typed
-	case int64:
-		size = int(typed)
-	}
+	for _, item := range items {
+		if item.EventType != sessions.EventDataIn && item.EventType != sessions.EventDataOut {
+			continue
+		}
+		encoded, _ := item.Payload["data"].(string)
+		if strings.TrimSpace(encoded) == "" {
+			continue
+		}
+		decoded, err := base64.StdEncoding.DecodeString(encoded)
+		if err != nil || !utf8.Valid(decoded) {
+			continue
+		}
+		if item.EventType == sessions.EventDataIn {
+			commands, nextBuf := consumeInputChunk(string(decoded), inputBuffer)
+			inputBuffer = nextBuf
+			for _, command := range commands {
+				trimmed := strings.TrimSpace(command)
+				if trimmed == "" {
+					continue
+				}
+				rows = append(rows, normalizedTranscriptRow{
+					EventID:   item.ID,
+					EventTime: item.EventTime,
+					Direction: "in",
+					Text:      trimmed,
+				})
+				pendingEchoes = append(pendingEchoes, trimmed)
+				if len(pendingEchoes) > 32 {
+					pendingEchoes = pendingEchoes[1:]
+				}
+			}
+			continue
+		}
 
-	return sessionTranscriptChunk{
-		Direction: direction,
-		Stream:    stream,
-		Size:      size,
-		Text:      string(decoded),
-	}, true
+		for _, line := range normalizeOutputChunk(string(decoded)) {
+			trimmed := strings.TrimSpace(line)
+			if trimmed == "" {
+				continue
+			}
+			if len(pendingEchoes) > 0 && trimmed == pendingEchoes[0] {
+				pendingEchoes = pendingEchoes[1:]
+				continue
+			}
+			rows = append(rows, normalizedTranscriptRow{
+				EventID:   item.ID,
+				EventTime: item.EventTime,
+				Direction: "out",
+				Text:      trimmed,
+			})
+		}
+	}
+	return rows
+}
+
+func consumeInputChunk(chunk, buffer string) ([]string, string) {
+	commands := make([]string, 0, 1)
+	clean := stripANSI(chunk)
+	current := buffer
+	lastBreak := rune(0)
+	for _, r := range clean {
+		if r == '\r' || r == '\n' {
+			if lastBreak == '\r' && r == '\n' {
+				lastBreak = r
+				continue
+			}
+			if strings.TrimSpace(current) != "" {
+				commands = append(commands, current)
+			}
+			current = ""
+			lastBreak = r
+			continue
+		}
+		lastBreak = 0
+		if r == '\b' || r == 0x7f {
+			current = trimLastRune(current)
+			continue
+		}
+		if isControlRune(r) {
+			continue
+		}
+		current += string(r)
+	}
+	return commands, current
+}
+
+func normalizeOutputChunk(chunk string) []string {
+	clean := strings.ReplaceAll(stripANSI(chunk), "\r\n", "\n")
+	clean = strings.ReplaceAll(clean, "\x1b[?2004h", "")
+	clean = strings.ReplaceAll(clean, "\x1b[?2004l", "")
+
+	lines := make([]string, 0, 2)
+	current := ""
+	for _, r := range clean {
+		if r == '\r' {
+			current = ""
+			continue
+		}
+		if r == '\n' {
+			if current != "" {
+				lines = append(lines, current)
+			}
+			current = ""
+			continue
+		}
+		if r == '\b' || r == 0x7f {
+			current = trimLastRune(current)
+			continue
+		}
+		if isControlRune(r) {
+			continue
+		}
+		current += string(r)
+	}
+	if current != "" {
+		lines = append(lines, current)
+	}
+	return lines
+}
+
+func stripANSI(value string) string {
+	return ansiCSIRegex.ReplaceAllString(ansiOSCRegex.ReplaceAllString(value, ""), "")
+}
+
+var (
+	ansiCSIRegex = regexp.MustCompile(`\x1b\[[0-?]*[ -/]*[@-~]`)
+	ansiOSCRegex = regexp.MustCompile(`\x1b\][^\x07]*(?:\x07|\x1b\\)`)
+)
+
+func isControlRune(r rune) bool {
+	if r == '\t' {
+		return false
+	}
+	return r >= 0 && r < 0x20
+}
+
+func trimLastRune(value string) string {
+	if value == "" {
+		return value
+	}
+	_, size := utf8.DecodeLastRuneInString(value)
+	if size <= 0 || size > len(value) {
+		return ""
+	}
+	return value[:len(value)-size]
 }

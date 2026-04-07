@@ -3,16 +3,15 @@ import { Link, useParams } from 'react-router-dom'
 import { getSessionDetail, getSessionEvents, getSessionReplay } from '../api'
 import type { SessionDetail, SessionEvent, SessionReplayChunk, SessionReplayResponse } from '../types'
 import { Badge, Button, Card, CardBody, CardHeader, EmptyRow, ErrorState, InfoRow, LoadingState, PageHeader, Table, Td, Th, statusColor } from '../components/ui'
+import { TerminalReplay } from '../components/TerminalReplay'
 
 type SessionTab = 'timeline' | 'transcript' | 'replay' | 'queries' | 'commands' | 'files'
 
 type TranscriptChunk = {
-  id: number
+  id: string
   event_time: string
   source: 'in' | 'out'
   text: string
-  stream?: string
-  size?: number
 }
 
 type DBQueryItem = {
@@ -158,28 +157,7 @@ export function SessionDetailPage() {
 
   const shellSession = detail?.action === 'shell'
 
-  const transcriptChunks = useMemo(() => {
-    const chunks: TranscriptChunk[] = []
-    for (const event of events) {
-      if (event.event_type !== 'data_in' && event.event_type !== 'data_out') {
-        continue
-      }
-      const source = event.event_type === 'data_in' ? 'in' : 'out'
-      const text = event.transcript?.text ?? decodeEventText(event.payload)
-      if (text === '') {
-        continue
-      }
-      chunks.push({
-        id: event.id,
-        event_time: event.event_time,
-        source,
-        text,
-        stream: event.transcript?.stream,
-        size: event.transcript?.size,
-      })
-    }
-    return chunks
-  }, [events])
+  const transcriptChunks = useMemo(() => buildNormalizedTranscript(events), [events])
 
   const filteredChunks = useMemo(() => {
     const needle = search.trim().toLowerCase()
@@ -198,18 +176,32 @@ export function SessionDetailPage() {
     if (replay?.supported === true && replay.items.length > 0) {
       return replay.items
     }
-    return transcriptChunks.map((chunk) => ({
-      event_id: chunk.id,
-      event_time: chunk.event_time,
-      event_type: chunk.source === 'in' ? 'input' : 'output',
-      direction: chunk.source,
-      stream: chunk.stream,
-      size: chunk.size,
-      text: chunk.text,
-      offset_sec: 0,
-      delay_sec: 0,
-    })) as SessionReplayChunk[]
-  }, [replay, transcriptChunks])
+    return events
+      .filter((event) => event.event_type === 'data_in' || event.event_type === 'data_out' || event.event_type === 'terminal_resize')
+      .map((event) => {
+        if (event.event_type === 'terminal_resize') {
+          return {
+            event_id: event.id,
+            event_time: event.event_time,
+            event_type: 'resize',
+            offset_sec: 0,
+            delay_sec: 0,
+            cols: readNumber(event.payload.cols),
+            rows: readNumber(event.payload.rows),
+          } as SessionReplayChunk
+        }
+        const source = event.event_type === 'data_in' ? 'in' : 'out'
+        return {
+          event_id: event.id,
+          event_time: event.event_time,
+          event_type: source === 'in' ? 'input' : 'output',
+          direction: source,
+          text: decodeEventText(event.payload),
+          offset_sec: 0,
+          delay_sec: 0,
+        } as SessionReplayChunk
+      })
+  }, [replay, events])
 
   const dbQueries = useMemo(() => {
     const rows: DBQueryItem[] = []
@@ -336,13 +328,6 @@ export function SessionDetailPage() {
     setSourceFilter('all')
     setQueryProtocolFilter('all')
   }, [sessionID])
-
-  const replayText = useMemo(() => {
-    return replayChunks
-      .slice(0, cursor)
-      .map((chunk) => chunk.text ?? '')
-      .join('')
-  }, [cursor, replayChunks])
 
   const resizeCount = useMemo(() => replayChunks.filter((chunk) => chunk.event_type === 'resize').length, [replayChunks])
 
@@ -525,11 +510,7 @@ export function SessionDetailPage() {
                       <span className="text-xs text-gray-400">resize events: {resizeCount}</span>
                     </div>
 
-                    <div className="rounded-lg border border-gray-200 bg-gray-900 p-4">
-                      <pre className="max-h-64 overflow-auto whitespace-pre-wrap font-mono text-sm text-green-400">
-                        {replayText || '(no replay output yet)'}
-                      </pre>
-                    </div>
+                    <TerminalReplay chunks={replayChunks} cursor={cursor} />
                     {replayNextAfter && (
                       <div className="mt-3">
                         <Button size="sm" variant="secondary" disabled={loadingMoreReplay} onClick={() => void loadMoreReplay()}>
@@ -838,6 +819,140 @@ function decodeEventText(payload: Record<string, unknown>): string {
   } catch {
     return ''
   }
+}
+
+function buildNormalizedTranscript(events: SessionEvent[]): TranscriptChunk[] {
+  const rows: TranscriptChunk[] = []
+  const pendingEchoes: string[] = []
+  let inputBuffer = ''
+  for (const event of events) {
+    if (event.event_type !== 'data_in' && event.event_type !== 'data_out') {
+      continue
+    }
+    const raw = decodeEventText(event.payload)
+    if (raw === '') {
+      continue
+    }
+    if (event.event_type === 'data_in') {
+      const parsed = consumeInputChunk(raw, inputBuffer)
+      inputBuffer = parsed.buffer
+      parsed.commands.forEach((command, idx) => {
+        const cleaned = command.trim()
+        if (cleaned === '') {
+          return
+        }
+        rows.push({
+          id: `${event.id}:in:${idx}`,
+          event_time: event.event_time,
+          source: 'in',
+          text: cleaned,
+        })
+        pendingEchoes.push(cleaned)
+        if (pendingEchoes.length > 32) {
+          pendingEchoes.shift()
+        }
+      })
+      continue
+    }
+
+    const outputLines = normalizeOutputChunk(raw)
+    outputLines.forEach((line, idx) => {
+      const cleaned = line.trim()
+      if (cleaned === '') {
+        return
+      }
+      if (pendingEchoes.length > 0 && cleaned === pendingEchoes[0]) {
+        pendingEchoes.shift()
+        return
+      }
+      rows.push({
+        id: `${event.id}:out:${idx}`,
+        event_time: event.event_time,
+        source: 'out',
+        text: cleaned,
+      })
+    })
+  }
+  return rows
+}
+
+function consumeInputChunk(chunk: string, buffer: string): { buffer: string; commands: string[] } {
+  const commands: string[] = []
+  const clean = stripANSI(chunk)
+  let current = buffer
+  let lastBreak = ''
+  for (const ch of clean) {
+    if (ch === '\r' || ch === '\n') {
+      if (lastBreak === '\r' && ch === '\n') {
+        lastBreak = ch
+        continue
+      }
+      if (current.trim() !== '') {
+        commands.push(current)
+      }
+      current = ''
+      lastBreak = ch
+      continue
+    }
+    lastBreak = ''
+    if (ch === '\b' || ch === '\u007f') {
+      current = current.slice(0, -1)
+      continue
+    }
+    if (isControl(ch)) {
+      continue
+    }
+    current += ch
+  }
+  return { buffer: current, commands }
+}
+
+function normalizeOutputChunk(chunk: string): string[] {
+  const clean = stripANSI(chunk)
+    .replace(/\u001b\[\?2004[hl]/g, '')
+    .replace(/\r\n/g, '\n')
+  const lines: string[] = []
+  let current = ''
+  for (const ch of clean) {
+    if (ch === '\r') {
+      current = ''
+      continue
+    }
+    if (ch === '\n') {
+      if (current !== '') {
+        lines.push(current)
+      }
+      current = ''
+      continue
+    }
+    if (ch === '\b' || ch === '\u007f') {
+      current = current.slice(0, -1)
+      continue
+    }
+    if (isControl(ch)) {
+      continue
+    }
+    current += ch
+  }
+  if (current !== '') {
+    lines.push(current)
+  }
+  return lines
+}
+
+function stripANSI(value: string): string {
+  return value.replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, '').replace(/\u001b\][^\u0007]*(?:\u0007|\u001b\\)/g, '')
+}
+
+function isControl(ch: string): boolean {
+  if (ch === '\t') {
+    return false
+  }
+  if (ch.length === 0) {
+    return false
+  }
+  const code = ch.charCodeAt(0)
+  return code < 0x20
 }
 
 function trimText(value: string): string {

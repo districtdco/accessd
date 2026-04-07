@@ -290,11 +290,11 @@ Paste launch token when prompted. Password auth also works as first-pass fallbac
   - `session_ended` / `session_failed` (proxy-driven lifecycle for SSH, SFTP, DBeaver DB proxies, and Redis proxy sessions)
 - Session review helpers in this slice:
   - `GET /sessions/{id}` includes lifecycle summary (`started/ended/failed`, connector flags, event count, first/last event time)
-  - `GET /sessions/{id}/events` returns ordered raw events plus decoded transcript hints for shell `data_in/data_out` events when payload is valid base64 text
-  - `GET /sessions/{id}/replay` returns timed shell replay chunks with asciicast-v2-like tuples (`[offset, code, data]`) for input/output plus terminal resize events when captured
+  - `GET /sessions/{id}/events` returns ordered raw events plus normalized transcript hints for shell `data_in/data_out` events (ANSI/control cleaned, command/echo noise reduced)
+  - `GET /sessions/{id}/replay` returns timed shell replay chunks with asciicast-v2-like tuples (`[offset, code, data]`) for input/output plus terminal resize events when captured; replay should be rendered in a terminal emulator surface
 - Session recap/export helpers in this slice:
   - `GET /sessions/{id}/export/summary` returns session detail + event type counts + total event count
-  - `GET /sessions/{id}/export/transcript` returns first-pass shell transcript text (`data_in`/`data_out` decode path)
+  - `GET /sessions/{id}/export/transcript` returns normalized shell transcript text (input collapsed to command-level where possible, duplicate echo suppression, ANSI/control cleanup)
   - `GET /admin/sessions/export` returns filterable CSV session summary rows for admin/auditor views
 - Audit review helpers in this slice:
   - `GET /admin/audit/events` supports practical filters: `event_type`, `user_id`, `asset_id`, `session_id`, `action`, `from`, `to`, `limit`
@@ -305,7 +305,7 @@ Paste launch token when prompted. Password auth also works as first-pass fallbac
 - `PAM_AUTH_COOKIE_SECURE=false`, `PAM_AUTH_COOKIE_SAMESITE=none`, and `PAM_LDAP_INSECURE_SKIP_VERIFY=true` are blocked outside `development` unless `PAM_ALLOW_UNSAFE_MODE=true`.
 - Admin credential updates (`PUT /admin/assets/{assetID}/credentials/{credentialType}`) now write an explicit `audit_events` record (`event_type=admin_action`, `action=credential_upsert`).
 - Session stream capture stores `data_in`/`data_out` chunks in `session_events` with base64 payload plus asciicast-v2-like timing tuples; terminal resizes are tracked as `terminal_resize`.
-- Shell replay uses recorded timing and resize events but is still text-stream playback, not a full terminal state emulator (no CSI/stateful cursor fidelity yet).
+- Shell replay data remains raw/timed capture; UI replay now uses terminal-emulator rendering for CSI/control-sequence fidelity.
 - API request logging now propagates and emits `X-Request-Id`, and launch-to-proxy registration carries `request_id` into proxy logs for correlation.
 - Launch tokens now also carry `request_id` so SSH/SFTP/Redis token-authenticated proxy activity can be correlated back to originating API request logs.
 - Proxy services enforce configurable idle timeout + max session duration and perform graceful shutdown draining of active sessions before forced close on shutdown timeout.
