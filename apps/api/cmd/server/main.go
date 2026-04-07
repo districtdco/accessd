@@ -34,6 +34,7 @@ func main() {
 	logger.Info("starting pam-api",
 		"env", cfg.App.Env,
 		"http_addr", cfg.App.HTTPAddr,
+		"cors_allowed_origins", strings.Join(cfg.App.CORSAllowedOrigins, ","),
 		"version", cfg.App.Version.Version,
 		"commit", cfg.App.Version.Commit,
 		"built_at", cfg.App.Version.BuiltAt,

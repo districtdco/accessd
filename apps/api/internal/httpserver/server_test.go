@@ -58,3 +58,39 @@ func TestWithRequestLogging_UsesIncomingRequestID(t *testing.T) {
 		t.Fatalf("response request id = %q, want %q", rec.Header().Get("X-Request-Id"), incoming)
 	}
 }
+
+func TestWithCORS_AllowedOrigin(t *testing.T) {
+	handler := withCORS([]string{"http://localhost:3000"}, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/health/live", nil)
+	req.Header.Set("Origin", "http://localhost:3000")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "http://localhost:3000" {
+		t.Fatalf("allow-origin header = %q, want %q", got, "http://localhost:3000")
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Credentials"); got != "true" {
+		t.Fatalf("allow-credentials header = %q, want true", got)
+	}
+}
+
+func TestWithCORS_Preflight(t *testing.T) {
+	handler := withCORS([]string{"http://localhost:3000"}, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodOptions, "/sessions/my", nil)
+	req.Header.Set("Origin", "http://localhost:3000")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", rec.Code)
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Methods"); got == "" {
+		t.Fatalf("missing Access-Control-Allow-Methods header")
+	}
+}

@@ -13,15 +13,56 @@ import (
 )
 
 type Config struct {
-	Addr string
+	Addr               string
+	CORSAllowedOrigins []string
 }
 
 func New(cfg Config, logger *slog.Logger, handler http.Handler) *http.Server {
+	wrapped := withRequestLogging(logger, handler)
+	wrapped = withCORS(cfg.CORSAllowedOrigins, wrapped)
 	return &http.Server{
 		Addr:              cfg.Addr,
-		Handler:           withRequestLogging(logger, handler),
+		Handler:           wrapped,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
+}
+
+func withCORS(allowedOrigins []string, next http.Handler) http.Handler {
+	allowed := map[string]struct{}{}
+	for _, origin := range allowedOrigins {
+		trimmed := strings.TrimSpace(origin)
+		if trimmed == "" {
+			continue
+		}
+		allowed[trimmed] = struct{}{}
+	}
+
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		origin := strings.TrimSpace(r.Header.Get("Origin"))
+		if origin != "" {
+			if _, ok := allowed["*"]; ok {
+				w.Header().Set("Access-Control-Allow-Origin", "*")
+			} else if _, ok := allowed[origin]; ok {
+				w.Header().Set("Access-Control-Allow-Origin", origin)
+				w.Header().Set("Access-Control-Allow-Credentials", "true")
+			}
+			w.Header().Add("Vary", "Origin")
+		}
+
+		if r.Method == http.MethodOptions {
+			w.Header().Set("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type,X-Request-Id")
+			w.Header().Set("Access-Control-Expose-Headers", "X-Request-Id")
+			w.Header().Set("Access-Control-Max-Age", "600")
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+
+		if origin != "" {
+			w.Header().Set("Access-Control-Expose-Headers", "X-Request-Id")
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func withRequestLogging(logger *slog.Logger, next http.Handler) http.Handler {

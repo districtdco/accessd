@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { useParams } from 'react-router-dom'
+import { Link, useParams } from 'react-router-dom'
 import {
   adminGetAssetDetail,
   adminListAssetGrants,
@@ -138,6 +138,11 @@ export function AdminAssetDetailPage() {
 
   return (
     <>
+      <div className="mb-2 flex items-center gap-2 text-sm text-gray-500">
+        <Link to="/admin/assets" className="hover:text-gray-700">Assets</Link>
+        <span>/</span>
+        <span className="text-gray-700">{detail?.name || assetID || 'detail'}</span>
+      </div>
       <PageHeader title="Asset Detail" />
 
       {error && <div className="mb-4"><ErrorState message={error} /></div>}

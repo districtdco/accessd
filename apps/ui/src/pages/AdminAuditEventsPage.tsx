@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { getAdminAuditEvents } from '../api'
+import { useAuth } from '../auth'
 import type { AdminAuditItem } from '../types'
 import { Badge, Button, Card, CardBody, CardHeader, EmptyRow, ErrorState, Input, LoadingState, PageHeader, Select, Table, Td, Th } from '../components/ui'
 
@@ -12,6 +13,8 @@ const LIMIT_OPTIONS = [
 ]
 
 export function AdminAuditEventsPage() {
+  const { user } = useAuth()
+  const isAdmin = user?.roles.includes('admin') === true
   const [items, setItems] = useState<AdminAuditItem[]>([])
   const [eventType, setEventType] = useState('')
   const [action, setAction] = useState('')
@@ -119,8 +122,20 @@ export function AdminAuditEventsPage() {
                   <Td><Badge>{item.event_type}</Badge></Td>
                   <Td>{item.action || '-'}</Td>
                   <Td>{item.outcome || '-'}</Td>
-                  <Td>{item.actor_user?.username || item.actor_user?.id || '-'}</Td>
-                  <Td>{item.asset?.name || item.asset?.id || '-'}</Td>
+                  <Td>
+                    {item.actor_user?.id && isAdmin ? (
+                      <Link to={`/admin/users/${item.actor_user.id}`} className="text-indigo-600 hover:text-indigo-800">
+                        {item.actor_user.username || item.actor_user.id}
+                      </Link>
+                    ) : (item.actor_user?.username || item.actor_user?.id || '-')}
+                  </Td>
+                  <Td>
+                    {item.asset?.id && isAdmin ? (
+                      <Link to={`/admin/assets/${item.asset.id}`} className="text-indigo-600 hover:text-indigo-800">
+                        {item.asset.name || item.asset.id}
+                      </Link>
+                    ) : (item.asset?.name || item.asset?.id || '-')}
+                  </Td>
                   <Td mono>
                     {item.session_id ? (
                       <Link to={`/sessions/${item.session_id}`} className="text-indigo-600 hover:text-indigo-800">

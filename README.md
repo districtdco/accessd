@@ -137,6 +137,8 @@ make smoke-api
 |----------|---------|----------|
 | `PAM_DB_URL` | PostgreSQL connection string | Yes |
 | `PAM_HTTP_ADDR` | HTTP bind address (default `:8080`) | No |
+| `PAM_CORS_ALLOWED_ORIGINS` | Comma-separated API CORS allowlist (development default: `http://localhost:3000,http://127.0.0.1:3000`) | No |
+| `PAM_CONFIG_FILE` | Optional env file path (`KEY=VALUE`) loaded before validation; explicit env vars still win | No |
 | `PAM_MIGRATIONS_DIR` | Migration directory (default `migrations`) | No |
 | `PAM_VERSION` / `PAM_COMMIT` / `PAM_BUILT_AT` | Version endpoint metadata | No |
 | `PAM_AUTH_COOKIE_NAME` | Session cookie name (default `pam_session`) | No |
@@ -235,18 +237,14 @@ npm run dev
 
 ## Current Launch Slice Limitations
 
-- DB path is first brokered DBeaver launch only (`database` + `action=dbeaver`).
-- Redis path is first brokered connector launch only (`redis` + `action=redis` using local `redis-cli`).
-- SFTP path is first brokered connector launch only (`linux_vm` + `action=sftp` using FileZilla/WinSCP).
-- No DB statement capture or SQL proxying yet; audit is connection/session lifecycle metadata only.
-- DBeaver launch currently passes DB credential material to local connector for temporary launch use.
-- Connector creates temporary local launch manifest files under OS temp dir; automatic cleanup is deferred.
-- DBeaver CLI behavior can vary by installation/distribution; connector uses honest best-effort OS command fallbacks.
-- Credential resolution uses stored `password`/`db_password` credential types for managed launch payloads.
-- Host key verification defaults to `known-hosts`; `accept-new`/`insecure` are development-oriented modes and should not be used outside development unless `PAM_ALLOW_UNSAFE_MODE=true`.
-- Session stream recording is chunked base64 event payloads in `session_events` (`data_in`/`data_out`), not asciicast yet.
-- UI and connector currently implement shell + SFTP + DBeaver + Redis CLI only.
-- Token entry is still user-driven (manual paste at prompt).
+- DB launches are DBeaver-only (`database` + `action=dbeaver`), but statement-level `db_query` event capture is implemented for Postgres/MySQL/MSSQL proxies.
+- Redis launches are connector-managed `redis-cli` sessions with `redis_command` event capture; client-side terminal replay is not implemented.
+- SFTP launches are connector-managed FileZilla/WinSCP sessions with server-side `file_operation` capture; full protocol-extension coverage is still partial.
+- SSH replay is transcript/timeline replay from event streams, not terminal-perfect emulation and not video replay.
+- MSSQL TLS tunnel mode remains limited in this slice (full client<->proxy TDS TLS tunnel support is not implemented).
+- Redis client-leg TLS to PAM proxy is not implemented in this slice (connector typically talks to loopback/session endpoint).
+- Host key verification defaults to `known-hosts`; `accept-new`/`insecure` are development-oriented and blocked outside development unless `PAM_ALLOW_UNSAFE_MODE=true`.
+- Token entry for shell remains user-driven (manual paste at prompt).
 
 ## Deployment Target (Linux VM + systemd)
 
@@ -258,6 +256,7 @@ Deployment assets are in `deploy/`:
 - `deploy/env/pam-connector.env.example`
 
 The API unit runs migrations in `ExecStartPre` so migration failures block startup.
+Production deployment must terminate HTTPS/TLS at an external reverse proxy/load balancer in front of PAM API and connector endpoints. The API binary in this slice serves HTTP only.
 
 See [deploy/README.md](deploy/README.md) for step-by-step setup.
 

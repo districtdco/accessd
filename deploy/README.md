@@ -43,6 +43,15 @@ Production-oriented deployment assets for a Linux VM + `systemd` target.
    - `curl -f http://127.0.0.1:8080/health/ready`
    - `systemctl status pam-api`
 
+## HTTPS / TLS Requirement
+
+- The PAM API in this slice listens on HTTP only (`PAM_HTTP_ADDR`).
+- Production deployments must place a reverse proxy or load balancer in front of PAM that:
+  - terminates HTTPS/TLS for browser/API traffic
+  - forwards trusted requests to PAM over private network interfaces
+  - preserves correlation headers such as `X-Request-Id`
+- Do not expose the raw API listener directly on the public internet.
+
 ## Connector Deployment Note
 
 Connector is usually operator-local, not a shared remote service. Use `pam-connector.service` only when your operational model explicitly requires VM-local connector hosting.
@@ -136,6 +145,11 @@ Check the API structured logs for entries with `"action":"login"`:
 - `host key verification failed` — add the target host key to the known hosts file (see above)
 - `connection refused` — verify the target host is reachable from the API server on the configured SSH port
 - `invalid launch token` — the token may be expired (default 2 min TTL) or the session was already used
+
+### Known Proxy TLS Limitations
+
+- MSSQL: full client<->proxy TDS TLS tunnel mode is not implemented in this slice.
+- Redis: connector `redis-cli` currently connects to the PAM Redis proxy endpoint without TLS (expected loopback/session endpoint); upstream Redis TLS from PAM to target is supported.
 
 ---
 

@@ -22,14 +22,14 @@
 ## Phase 2: Backend Bootstrap
 
 - [x] Set up Go HTTP server with graceful shutdown (`apps/api/cmd/server`)
-- [ ] Implement config loading (env vars + config file) *(env loading done; config file loading deferred)*
+- [x] Implement config loading (env vars + config file) *(added optional `PAM_CONFIG_FILE` loader with env-first precedence; file values only backfill missing env vars)*
 - [x] Set up PostgreSQL connection pool (`pgxpool`)
 - [x] Set up in-repo SQL migration runner (`migrate up`, `migrate status`)
 - [x] Create initial migration: `users`, `groups`, `user_groups`, `assets`, `asset_protocols`, `access_grants`, `credentials`, `sessions`, `session_events`, `audit_events`
 - [x] Add auth/RBAC migration: `roles`, `user_roles`, `auth_sessions`, local auth columns on `users`
 - [x] Implement structured logging (`slog`)
 - [x] Implement request logging middleware
-- [ ] Implement CORS middleware
+- [x] Implement CORS middleware *(API CORS middleware added with allowlist via `PAM_CORS_ALLOWED_ORIGINS`, credential-aware origin echo, and preflight handling)*
 - [x] Implement health check endpoints (`GET /health/live`, `GET /health/ready`)
 - [x] Implement version endpoint (`GET /version`)
 - [x] Write first backend integration test slice against real DB handlers/services *(expanded beyond health: login/logout/me, RBAC authz checks, `/access/my`, launch happy/denied, sessions list filters, and export authz)*
@@ -41,7 +41,7 @@
 - [ ] Install TailAdmin template and integrate with Vite + React
 - [x] Set up React Router with auth-guarded routes
 - [x] Implement auth context (cookie-session aware `/me` fetch + logout)
-- [ ] Create layout shell (sidebar, header, content area)
+- [x] Create layout shell (sidebar, header, content area) *(role-aware sidebar/header layout active; detail routes now include breadcrumb navigation)*
 - [x] Create login page (form + backend local auth integration)
 - [x] Set up API client module (`apps/ui/src/api.ts`)
 - [x] Confirm dev proxy from Vite to Go backend works
@@ -113,7 +113,7 @@
 - [x] Implement credential create/resolve service (backend-only decrypted use; no plaintext API exposure)
 - [x] Credential types (this slice): `password`, `ssh_key`, `db_password`
 - [x] Build admin credential management in asset detail page *(minimal helper: write-only credential update + safe metadata visibility, no plaintext secret readback)*
-- [ ] Audit log credential access events
+- [x] Audit log credential access events *(credential usage now emitted for launch preparation + proxy upstream auth stages across SSH/DB/Redis flows)*
 - [ ] Write tests: encrypt/decrypt roundtrip, key missing error, credential CRUD, no plaintext in API responses
 
 ## Phase 10: SSH Proxy / Shell Path
@@ -182,7 +182,7 @@ This is the critical path — highest-value v1 feature.
 - [x] Implement session list API with filters *(added `GET /sessions/my` and `GET /admin/sessions` with practical status/action/asset/date/user filters + limit)*
 - [x] Implement session detail API *(added `GET /sessions/{id}` + `GET /sessions/{id}/events`; recording download still deferred)*
 - [ ] Ensure audit writes are non-blocking (don't slow down proxy traffic)
-- [ ] Add indexes for query performance
+- [x] Add indexes for query performance *(added `000005_session_audit_perf_v1.up.sql` composite indexes for session event paging/filtering and audit/sessions query paths)*
 - [ ] Write tests: audit event creation, query filters, session lifecycle *(partial reliability slice now added: launch/list/export authorization paths)*
 
 ## Phase 15: Session Review UI
@@ -192,8 +192,8 @@ This is the critical path — highest-value v1 feature.
 - [x] Implement first-pass SSH session text replay *(approximate event-based replay from `data_in`/`data_out`; terminal-perfect emulation deferred)*
 - [x] Add DBeaver session detail metadata review *(connector launch lifecycle + final outcome, no transcript emulation)*
 - [x] Add practical session recap/export helpers *(summary JSON, shell transcript TXT, admin sessions CSV)*
-- [ ] Display SFTP session file operation log
-- [ ] Display DB/Redis session connection timeline
+- [x] Display SFTP session file operation log *(session detail now renders paged `file_operation` timeline with operation/path/path_to/size + destructive markers)*
+- [x] Display DB/Redis session connection timeline *(session detail now renders paged `db_query` and `redis_command` replay/timeline sections with search/filter and protocol/danger badges)*
 - [x] Build admin audit log page (practical filters + detail drilldown; heavier SIEM-style analytics/export deferred)
 - [x] Build lightweight admin recap/dashboard view *(added `/admin/dashboard` with summary cards, sessions-by-action, active sessions list, and recent audit activity feed from new admin summary endpoints)*
 - [ ] Test replay with real recorded sessions
@@ -217,7 +217,7 @@ This is the critical path — highest-value v1 feature.
 - [ ] Input validation on all API endpoints (reject malformed requests)
 - [x] Rate limiting on auth endpoints *(in-memory sliding window rate limiter: 10 attempts / 5min per username, with cleanup goroutine)*
 - [ ] JWT secret/key configuration for production
-- [ ] HTTPS/TLS configuration for API server
+- [ ] HTTPS/TLS configuration for API server *(app-level TLS listener intentionally not implemented in this slice; deploy docs now require external reverse proxy/LB TLS termination in front of API/connector routes)*
 - [x] SSH host key management for PAM's SSH proxy *(added persistent proxy host key file + upstream host-key modes: `known-hosts` (default), `accept-new`, `insecure`; unsafe modes gated outside development)*
 - [x] Enforce explicit LDAP transport mode controls (`PAM_LDAP_USE_TLS` or `PAM_LDAP_STARTTLS`; mutually exclusive)
 - [x] Harden session cookie defaults and controls (`PAM_AUTH_COOKIE_SECURE` env-aware default, `PAM_AUTH_COOKIE_SAMESITE`, production validation guards)
@@ -230,10 +230,10 @@ This is the critical path — highest-value v1 feature.
 - [x] Structured login failure diagnostics (differentiate user_not_found, invalid_password, bind/config, TLS/connectivity in logs and audit)
 - [x] Hybrid auth mode clarity (explicit fallback logging with failure reason classification)
 - [x] Startup configuration summary log (provider mode, session settings, connector trust, unsafe mode status)
-- [ ] Ensure no credentials leak in logs, error messages, or API responses
-- [ ] Add request ID tracking across API and proxy layers
-- [ ] Timeout configuration for proxy connections (idle timeout, max session duration)
-- [ ] Graceful shutdown: drain active sessions before stopping
+- [ ] Ensure no credentials leak in logs, error messages, or API responses *(targeted review completed for launch/session/audit/connector diagnostics; full repo-wide formal security review still pending)*
+- [x] Add request ID tracking across API and proxy layers *(request id now propagated through API middleware, launch/proxy registration, and session/audit event payload metadata)*
+- [x] Timeout configuration for proxy connections (idle timeout, max session duration) *(SSH/DB/Redis proxies enforce configurable idle and max session duration guards)*
+- [x] Graceful shutdown: drain active sessions before stopping *(proxy services close listeners, wait for active workers, and force-close only on shutdown context timeout)*
 - [ ] Security review: OWASP top 10 check against API
 - [ ] Dependency audit (`go mod tidy`, `npm audit`)
 
@@ -263,7 +263,7 @@ This is the critical path — highest-value v1 feature.
 ## Resolved Decisions (locked for v1)
 
 - [x] **Connector registration**: JWT-authenticated launch/session model only. No device registration or admin approval in v1.
-- [x] **DB statement capture**: Deferred beyond v1. v1 guarantees brokered DB access + connection/session metadata audit only.
+- [x] **DB statement capture scope**: lightweight query-event capture (`db_query`) is included in this slice; full protocol-perfect/result-aware reconstruction remains deferred.
 - [x] **SSH session token transport**: Keyboard-interactive auth method. Session token passed via challenge-response.
 - [x] **DBeaver launch method**: Thin connector receives short-lived launch payload, creates temporary local connection profile/material, launches DBeaver, cleans up after session.
 - [x] **Deployment target**: Production is systemd on Linux VM. Docker Compose for local dev/test only.
@@ -276,6 +276,8 @@ This is the critical path — highest-value v1 feature.
 - [ ] **Default dev admin bootstrap**: final defaults for username/email/password and rotation expectation in team workflow.
 - [ ] **LDAP schema details (deferred)**: what specific attributes/group structure does the target LDAP use? Need sample directory for integration.
 - [x] **DBeaver temp profile cleanup**: connector now auto-cleans temp launch material by TTL and removes stale temp dirs on startup.
+- [ ] **MSSQL client/proxy TLS tunnel support**: current MSSQL proxy does not support full client<->proxy TLS tunnel mode in this slice; rollout must use documented limitation/workaround.
+- [ ] **Redis client-leg TLS mode**: connector/redis-cli currently connects to PAM Redis proxy over plaintext loopback/session endpoint; rollout docs must treat this as current limitation.
 
 ## Deferred Beyond v1
 
@@ -295,7 +297,7 @@ This is the critical path — highest-value v1 feature.
 - Third-party API / webhook integrations
 - Connector auto-update mechanism
 - Connector device registration / admin approval
-- DB statement-level capture (wire protocol parsing)
+- Full protocol-perfect statement reconstruction with result/error attribution across all DB engines
 - External KMS / HashiCorp Vault key management
 - Full LDAP sync engine (scheduled background sync, full attribute mapping)
 - Behavioral analytics / anomaly detection

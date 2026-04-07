@@ -1,6 +1,10 @@
 package config
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
 
 func TestLoadLDAPSambaDefaults(t *testing.T) {
 	t.Setenv("PAM_ENV", "development")
@@ -40,5 +44,56 @@ func TestLoadHybridRequiresLDAPBaseDN(t *testing.T) {
 	_, err := Load()
 	if err == nil {
 		t.Fatal("Load() expected error, got nil")
+	}
+}
+
+func TestLoad_UsesConfigFileWhenEnvMissing(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "pam.env")
+	content := "PAM_DB_URL=postgres://postgres:postgres@localhost:5432/pam?sslmode=disable\n" +
+		"PAM_VAULT_KEY=dev-only-key\n" +
+		"PAM_LAUNCH_TOKEN_SECRET=dev-secret\n" +
+		"PAM_AUTH_PROVIDER_MODE=local\n"
+	if err := os.WriteFile(cfgPath, []byte(content), 0o600); err != nil {
+		t.Fatalf("write config file: %v", err)
+	}
+
+	t.Setenv("PAM_CONFIG_FILE", cfgPath)
+	t.Setenv("PAM_DB_URL", "")
+	t.Setenv("PAM_VAULT_KEY", "")
+	t.Setenv("PAM_LAUNCH_TOKEN_SECRET", "")
+	t.Setenv("PAM_ENV", "development")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() unexpected error: %v", err)
+	}
+	if cfg.DB.URL == "" {
+		t.Fatalf("expected DB URL from config file")
+	}
+}
+
+func TestLoad_ConfigFileDoesNotOverrideExplicitEnv(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "pam.env")
+	content := "PAM_DB_URL=postgres://postgres:postgres@localhost:5432/from_file?sslmode=disable\n" +
+		"PAM_VAULT_KEY=dev-only-key\n" +
+		"PAM_LAUNCH_TOKEN_SECRET=dev-secret\n"
+	if err := os.WriteFile(cfgPath, []byte(content), 0o600); err != nil {
+		t.Fatalf("write config file: %v", err)
+	}
+
+	t.Setenv("PAM_CONFIG_FILE", cfgPath)
+	t.Setenv("PAM_ENV", "development")
+	t.Setenv("PAM_DB_URL", "postgres://postgres:postgres@localhost:5432/from_env?sslmode=disable")
+	t.Setenv("PAM_VAULT_KEY", "dev-only-key")
+	t.Setenv("PAM_LAUNCH_TOKEN_SECRET", "dev-secret")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() unexpected error: %v", err)
+	}
+	if got, want := cfg.DB.URL, "postgres://postgres:postgres@localhost:5432/from_env?sslmode=disable"; got != want {
+		t.Fatalf("DB.URL = %q, want %q", got, want)
 	}
 }

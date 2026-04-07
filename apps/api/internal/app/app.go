@@ -145,7 +145,10 @@ func New(_ context.Context, cfg config.Config, logger *slog.Logger, pool *pgxpoo
 		AuthSvc:  authService,
 	})
 
-	server := httpserver.New(httpserver.Config{Addr: cfg.App.HTTPAddr}, logger, router)
+	server := httpserver.New(httpserver.Config{
+		Addr:               cfg.App.HTTPAddr,
+		CORSAllowedOrigins: cfg.App.CORSAllowedOrigins,
+	}, logger, router)
 
 	return &App{
 		Config:             cfg,

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { useParams } from 'react-router-dom'
+import { Link, useParams } from 'react-router-dom'
 import {
   adminAddUserGrant,
   adminAssignRole,
@@ -115,6 +115,9 @@ export function AdminUserDetailPage() {
   }
 
   const removeRole = async (roleName: string) => {
+    if (!window.confirm(`Remove role "${roleName}" from ${detail?.username || 'this user'}?`)) {
+      return
+    }
     setMessage(null)
     try {
       await adminRemoveRole(userID, roleName)
@@ -138,6 +141,9 @@ export function AdminUserDetailPage() {
   }
 
   const removeGrant = async (assetID: string, action: string) => {
+    if (!window.confirm(`Remove ${action} grant from this user?`)) {
+      return
+    }
     setMessage(null)
     try {
       await adminRemoveUserGrant(userID, assetID, action)
@@ -150,6 +156,11 @@ export function AdminUserDetailPage() {
 
   return (
     <>
+      <div className="mb-2 flex items-center gap-2 text-sm text-gray-500">
+        <Link to="/admin/users" className="hover:text-gray-700">Users</Link>
+        <span>/</span>
+        <span className="text-gray-700">{detail?.username || userID || 'detail'}</span>
+      </div>
       <PageHeader title="User Detail" />
 
       {error && <div className="mb-4"><ErrorState message={error} /></div>}

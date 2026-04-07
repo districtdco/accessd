@@ -52,6 +52,11 @@ export function AdminAuditEventDetailPage() {
 
   return (
     <>
+      <div className="mb-2 flex items-center gap-2 text-sm text-gray-500">
+        <Link to="/admin/audit/events" className="hover:text-gray-700">Audit Events</Link>
+        <span>/</span>
+        <span className="text-gray-700">{eventID || 'detail'}</span>
+      </div>
       <PageHeader title="Audit Event Detail" />
 
       {loading && <LoadingState message="Loading audit event detail..." />}

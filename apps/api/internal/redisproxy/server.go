@@ -51,6 +51,7 @@ type commandLogEvent struct {
 	SessionID  string
 	UserID     string
 	AssetID    string
+	RequestID  string
 	Command    string
 	Args       []string
 	Dangerous  bool
@@ -197,6 +198,7 @@ func (s *Service) handleSessionConn(reg SessionRegistration, client net.Conn) er
 		SessionID: reg.SessionID,
 		UserID:    reg.UserID,
 		AssetID:   reg.AssetID,
+		RequestID: reg.RequestID,
 		Action:    "redis",
 		Protocol:  sessions.ProtocolRedis,
 		AssetType: assets.TypeRedis,
@@ -225,6 +227,7 @@ func (s *Service) runProxyFlow(reg SessionRegistration, client net.Conn) error {
 		SessionID: reg.SessionID,
 		UserID:    reg.UserID,
 		AssetID:   reg.AssetID,
+		RequestID: reg.RequestID,
 		Action:    "redis",
 		Protocol:  sessions.ProtocolRedis,
 		AssetType: assets.TypeRedis,
@@ -257,6 +260,7 @@ func (s *Service) runProxyFlow(reg SessionRegistration, client net.Conn) error {
 		SessionID: reg.SessionID,
 		UserID:    reg.UserID,
 		AssetID:   reg.AssetID,
+		RequestID: reg.RequestID,
 		Action:    "redis",
 		Protocol:  sessions.ProtocolRedis,
 		AssetType: assets.TypeRedis,
@@ -335,6 +339,7 @@ func (s *Service) runProxyFlow(reg SessionRegistration, client net.Conn) error {
 			SessionID:  reg.SessionID,
 			UserID:     reg.UserID,
 			AssetID:    reg.AssetID,
+			RequestID:  reg.RequestID,
 			Command:    cmd,
 			Args:       args,
 			Dangerous:  isDangerousCommand(cmd),
@@ -740,6 +745,7 @@ func (s *Service) logWorker() {
 			"dangerous":    evt.Dangerous,
 			"event_time":   evt.EventTime.Format(time.RFC3339Nano),
 			"remote_addr":  evt.RemoteAddr,
+			"request_id":   strings.TrimSpace(evt.RequestID),
 		}
 		if err := s.sessionsSvc.WriteEvent(context.Background(), evt.SessionID, sessions.EventRedisCommand, &actor, payload); err != nil {
 			s.logger.Warn("failed to write redis_command event", "session_id", evt.SessionID, "error", err)

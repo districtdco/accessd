@@ -123,6 +123,7 @@ The manifest intentionally omits plaintext DB password; it records non-sensitive
 Connector launch diagnostics also redact sensitive values (for example `password=` fields, SFTP URL passwords, and `REDISCLI_AUTH`) before returning operator-visible error details.
 
 For Redis in this slice, connector launches local `redis-cli` in a new terminal window against a PAM session-scoped Redis proxy endpoint. `REDISCLI_AUTH` is set to the short-lived PAM launch token; upstream Redis credentials stay managed server-side.
+Redis TLS note: connector `redis-cli` currently connects to the PAM Redis proxy endpoint without TLS (expected loopback/session endpoint). Upstream Redis TLS is handled by the PAM proxy-to-target leg when enabled on the asset.
 For SFTP in this slice, connector launches FileZilla/WinSCP against the PAM SFTP relay endpoint (session token is passed as SFTP password in launch payload). File-operation telemetry is captured server-side by the PAM relay.
 
 ## Configuration (env)

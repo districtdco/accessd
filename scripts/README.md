@@ -11,6 +11,9 @@ Dev tooling and helper scripts.
     - login flow (`POST /auth/login`)
     - `GET /access/my`
     - `POST /sessions/launch` response shape
+    - `GET /sessions/{id}` + `GET /sessions/{id}/events`
+    - `GET /sessions/{id}/replay` for shell smoke action
+    - admin audit list/detail checks when logged-in user has admin role
 
 ## Usage
 

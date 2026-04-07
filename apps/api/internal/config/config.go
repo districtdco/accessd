@@ -30,13 +30,14 @@ type Config struct {
 }
 
 type AppConfig struct {
-	Name            string
-	Env             string
-	HTTPAddr        string
-	ShutdownTimeout time.Duration
-	AllowUnsafeMode bool
-	Version         VersionInfo
-	Migrations      MigrationConfig
+	Name               string
+	Env                string
+	HTTPAddr           string
+	CORSAllowedOrigins []string
+	ShutdownTimeout    time.Duration
+	AllowUnsafeMode    bool
+	Version            VersionInfo
+	Migrations         MigrationConfig
 }
 
 type VersionInfo struct {
@@ -156,11 +157,20 @@ type RedisProxyConfig struct {
 }
 
 func Load() (Config, error) {
+	if err := loadConfigFileIntoEnv(strings.TrimSpace(os.Getenv("PAM_CONFIG_FILE"))); err != nil {
+		return Config{}, err
+	}
+
 	cfg := Config{}
 
 	cfg.App.Name = getEnv("PAM_APP_NAME", "pam-api")
 	cfg.App.Env = getEnv("PAM_ENV", "development")
 	cfg.App.HTTPAddr = getEnv("PAM_HTTP_ADDR", defaultHTTPAddr)
+	corsDefaults := ""
+	if strings.ToLower(cfg.App.Env) == "development" {
+		corsDefaults = "http://localhost:3000,http://127.0.0.1:3000"
+	}
+	cfg.App.CORSAllowedOrigins = splitCSV(getEnv("PAM_CORS_ALLOWED_ORIGINS", corsDefaults))
 	cfg.App.ShutdownTimeout = getDurationEnv("PAM_SHUTDOWN_TIMEOUT", defaultShutdownTimeout)
 	cfg.App.AllowUnsafeMode = getBoolEnv("PAM_ALLOW_UNSAFE_MODE", false)
 	sessionSecureDefault := strings.ToLower(cfg.App.Env) != "development"
@@ -532,4 +542,58 @@ func getBoolEnv(key string, fallback bool) bool {
 	default:
 		return fallback
 	}
+}
+
+func splitCSV(raw string) []string {
+	parts := strings.Split(strings.TrimSpace(raw), ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		value := strings.TrimSpace(part)
+		if value == "" {
+			continue
+		}
+		out = append(out, value)
+	}
+	return out
+}
+
+func loadConfigFileIntoEnv(path string) error {
+	if path == "" {
+		return nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read PAM_CONFIG_FILE %q: %w", path, err)
+	}
+	lines := strings.Split(string(data), "\n")
+	for i, raw := range lines {
+		line := strings.TrimSpace(raw)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if strings.HasPrefix(line, "export ") {
+			line = strings.TrimSpace(strings.TrimPrefix(line, "export "))
+		}
+		eq := strings.IndexByte(line, '=')
+		if eq <= 0 {
+			return fmt.Errorf("invalid line %d in PAM_CONFIG_FILE %q: expected KEY=VALUE", i+1, path)
+		}
+		key := strings.TrimSpace(line[:eq])
+		value := strings.TrimSpace(line[eq+1:])
+		if key == "" {
+			return fmt.Errorf("invalid line %d in PAM_CONFIG_FILE %q: empty key", i+1, path)
+		}
+		if len(value) >= 2 {
+			if (value[0] == '"' && value[len(value)-1] == '"') || (value[0] == '\'' && value[len(value)-1] == '\'') {
+				value = value[1 : len(value)-1]
+			}
+		}
+		if strings.TrimSpace(os.Getenv(key)) != "" {
+			continue
+		}
+		if err := os.Setenv(key, value); err != nil {
+			return fmt.Errorf("set env from PAM_CONFIG_FILE %q for key %q: %w", path, key, err)
+		}
+	}
+	return nil
 }

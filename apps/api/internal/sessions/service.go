@@ -1476,6 +1476,7 @@ WHERE id = $1
 	if err := s.WriteEvent(ctx, lctx.SessionID, EventProxyConnected, &lctx.UserID, map[string]any{
 		"remote_addr": remoteAddr,
 		"remote_ip":   ip,
+		"request_id":  strings.TrimSpace(lctx.RequestID),
 	}); err != nil {
 		return err
 	}
@@ -1486,6 +1487,7 @@ func (s *Service) MarkUpstreamConnected(ctx context.Context, lctx LaunchContext)
 	return s.WriteEvent(ctx, lctx.SessionID, EventUpstreamConn, &lctx.UserID, map[string]any{
 		"upstream_host": lctx.Host,
 		"upstream_port": lctx.Port,
+		"request_id":    strings.TrimSpace(lctx.RequestID),
 	})
 }
 
@@ -1499,8 +1501,9 @@ WHERE id = $1;`
 		return fmt.Errorf("mark session active: %w", err)
 	}
 	if err := s.WriteEvent(ctx, lctx.SessionID, EventShellStarted, &lctx.UserID, map[string]any{
-		"protocol": lctx.Protocol,
-		"action":   lctx.Action,
+		"protocol":   lctx.Protocol,
+		"action":     lctx.Action,
+		"request_id": strings.TrimSpace(lctx.RequestID),
 	}); err != nil {
 		return err
 	}
@@ -1518,7 +1521,8 @@ WHERE id = $1;`
 		return fmt.Errorf("mark session completed: %w", err)
 	}
 	if err := s.WriteEvent(ctx, lctx.SessionID, EventSessionEnded, &lctx.UserID, map[string]any{
-		"reason": strings.TrimSpace(reason),
+		"reason":     strings.TrimSpace(reason),
+		"request_id": strings.TrimSpace(lctx.RequestID),
 	}); err != nil {
 		return err
 	}
@@ -1538,7 +1542,8 @@ WHERE id = $1;`
 		return fmt.Errorf("mark session failed: %w", err)
 	}
 	if err := s.WriteEvent(ctx, lctx.SessionID, EventSessionFailed, &lctx.UserID, map[string]any{
-		"reason": strings.TrimSpace(reason),
+		"reason":     strings.TrimSpace(reason),
+		"request_id": strings.TrimSpace(lctx.RequestID),
 	}); err != nil {
 		return err
 	}
@@ -1694,10 +1699,6 @@ func (s *Service) writeAudit(
 	eventType, action, outcome string,
 	metadata map[string]any,
 ) error {
-	blob, err := json.Marshal(payloadOrEmpty(metadata))
-	if err != nil {
-		return fmt.Errorf("marshal audit payload: %w", err)
-	}
 	const query = `
 INSERT INTO audit_events (
     actor_user_id,
@@ -1709,6 +1710,14 @@ INSERT INTO audit_events (
     metadata
 )
 VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb);`
+	meta := payloadOrEmpty(metadata)
+	if _, ok := meta["request_id"]; !ok {
+		meta["request_id"] = strings.TrimSpace(lctx.RequestID)
+	}
+	blob, err := json.Marshal(meta)
+	if err != nil {
+		return fmt.Errorf("marshal audit payload: %w", err)
+	}
 	if _, err := s.pool.Exec(ctx, query, lctx.UserID, lctx.AssetID, lctx.SessionID, eventType, action, outcome, blob); err != nil {
 		return fmt.Errorf("insert audit event: %w", err)
 	}

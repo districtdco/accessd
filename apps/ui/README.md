@@ -11,6 +11,10 @@ Minimal React + Vite frontend for integrated shell + SFTP + DBeaver + Redis brok
 | `/sessions` | My session history (`GET /sessions/my`) |
 | `/sessions/:sessionID` | Session detail/review (metadata + timeline + shell transcript/replay helper) |
 | `/admin/dashboard` | Admin/auditor recap view |
+| `/admin/users` | Admin user list |
+| `/admin/users/:userID` | Admin user detail (roles + grants) |
+| `/admin/assets` | Admin asset list/create |
+| `/admin/assets/:assetID` | Admin asset detail + credential write-only update |
 | `/admin/sessions` | Admin/auditor session history |
 | `/admin/audit/events` | Admin/auditor audit search/filter page |
 | `/admin/audit/events/:eventID` | Admin/auditor audit event detail view |
@@ -38,8 +42,8 @@ Minimal React + Vite frontend for integrated shell + SFTP + DBeaver + Redis brok
      - `connector_launch_failed`
 - Session review flow:
   1. `GET /sessions/{session_id}` for metadata + lifecycle summary
-  2. `GET /sessions/{session_id}/events` for ordered timeline events
-  3. `GET /sessions/{session_id}/replay` for first-pass shell replay chunks
+  2. `GET /sessions/{session_id}/events` for ordered timeline events (paged with `limit` + `after_id`)
+  3. `GET /sessions/{session_id}/replay` for shell replay chunks (paged with `limit` + `after_id`)
   4. Export actions:
      - `GET /sessions/{session_id}/export/summary` (JSON)
      - `GET /sessions/{session_id}/export/transcript` (shell text)
@@ -51,20 +55,20 @@ Minimal React + Vite frontend for integrated shell + SFTP + DBeaver + Redis brok
   - summary metadata + lifecycle
   - transcript view (search + in/out filter)
   - replay view (play/pause/reset, speed, slider position) from normalized replay chunks
-  - timeline view of full session events
+  - timeline view of session events with incremental loading
 - DBeaver session detail:
-  - metadata-focused review
-  - connector launch lifecycle table (`requested/succeeded/failed`)
-  - final outcome from lifecycle events/status
-  - no transcript/replay emulation
+  - query replay/timeline from `db_query` events
+  - engine/protocol/prepared indicators
+  - lightweight dangerous SQL keyword highlighting
+  - incremental loading for long histories
 - Redis session detail:
-  - metadata-focused review
-  - connector launch lifecycle table (`requested/succeeded/failed`)
-  - no command-stream capture in this slice
+  - command replay/timeline from `redis_command` events
+  - dangerous command highlighting and redacted argument summaries
+  - incremental loading for long histories
 - SFTP session detail:
-  - metadata-focused review
-  - connector launch lifecycle table (`requested/succeeded/failed`)
-  - no per-file activity replay in this slice
+  - file operation replay/timeline from `file_operation` events
+  - operation/path/path_to/size columns with destructive-operation highlighting
+  - incremental loading for long histories
 - Replay caveat:
   - replay is approximate text/event playback only; terminal-perfect rendering is intentionally deferred.
 
@@ -120,7 +124,7 @@ Current DBeaver limitations:
 - MySQL path captures common simple/prepared flows.
 - MSSQL path captures SQL batch + common RPC prepared flows, but TLS-tunneled MSSQL sessions are not yet supported in this slice.
 
-Current Redis limitation: this slice launches local `redis-cli` with managed handoff metadata only; deep Redis command/protocol auditing is deferred.
+Current Redis limitation: client-leg TLS to PAM Redis proxy is not implemented in this slice (connector typically targets loopback/session endpoint), although upstream Redis TLS from PAM proxy to target is supported.
 Current SFTP limitations:
 - SFTP sessions are relayed through PAM and file-operation events are captured (`upload_write`, `download_read`, `delete`, `rename`, `mkdir`, `rmdir`, `stat`, `list`).
 - Remaining gap: not all uncommon SFTP extensions are decoded yet, and operation-level success/failure attribution is still basic.

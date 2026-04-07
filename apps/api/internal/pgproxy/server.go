@@ -67,6 +67,8 @@ type queryLogEvent struct {
 	SessionID    string
 	UserID       string
 	AssetID      string
+	RequestID    string
+	Engine       string
 	Query        string
 	EventTime    time.Time
 	ProtocolType string // "simple" or "extended"
@@ -252,6 +254,7 @@ func (s *Service) handleSessionConn(reg SessionRegistration, client net.Conn) er
 		SessionID: reg.SessionID,
 		UserID:    reg.UserID,
 		AssetID:   reg.AssetID,
+		RequestID: reg.RequestID,
 		Action:    "dbeaver",
 		Protocol:  sessions.ProtocolDB,
 		AssetType: assets.TypeDatabase,
@@ -280,6 +283,7 @@ func (s *Service) runProxyFlow(reg SessionRegistration, client net.Conn) error {
 		SessionID: reg.SessionID,
 		UserID:    reg.UserID,
 		AssetID:   reg.AssetID,
+		RequestID: reg.RequestID,
 		Action:    "dbeaver",
 		Protocol:  sessions.ProtocolDB,
 		AssetType: assets.TypeDatabase,
@@ -460,6 +464,8 @@ func (s *Service) forwardClientMessages(reg SessionRegistration, client io.Reade
 					SessionID:    reg.SessionID,
 					UserID:       reg.UserID,
 					AssetID:      reg.AssetID,
+					RequestID:    reg.RequestID,
+					Engine:       normalizeEngine(reg.Engine),
 					Query:        truncate(query, s.cfg.QueryMaxBytes),
 					EventTime:    time.Now().UTC(),
 					ProtocolType: "simple",
@@ -481,6 +487,8 @@ func (s *Service) forwardClientMessages(reg SessionRegistration, client io.Reade
 					SessionID:    reg.SessionID,
 					UserID:       reg.UserID,
 					AssetID:      reg.AssetID,
+					RequestID:    reg.RequestID,
+					Engine:       normalizeEngine(reg.Engine),
 					Query:        truncate(query, s.cfg.QueryMaxBytes),
 					EventTime:    time.Now().UTC(),
 					ProtocolType: "extended",
@@ -529,10 +537,12 @@ func (s *Service) queryLogWorker() {
 		actor := evt.UserID
 		if err := s.sessionsSvc.WriteEvent(context.Background(), evt.SessionID, sessions.EventDBQuery, &actor, map[string]any{
 			"asset_id":      evt.AssetID,
+			"engine":        evt.Engine,
 			"event_time":    evt.EventTime.Format(time.RFC3339Nano),
 			"query":         evt.Query,
 			"protocol_type": evt.ProtocolType,
 			"prepared":      evt.Prepared,
+			"request_id":    strings.TrimSpace(evt.RequestID),
 		}); err != nil {
 			s.logger.Warn("failed to write db_query event", "session_id", evt.SessionID, "error", err)
 		}
@@ -1108,6 +1118,16 @@ type sslModeConfig struct {
 	AttemptTLS bool
 	RequireTLS bool
 	VerifyCert bool
+}
+
+func normalizeEngine(engine string) string {
+	normalized := strings.ToLower(strings.TrimSpace(engine))
+	switch normalized {
+	case "", "postgres", "postgresql":
+		return "postgres"
+	default:
+		return normalized
+	}
 }
 
 func classifySSLMode(raw string) sslModeConfig {

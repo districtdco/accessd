@@ -105,6 +105,7 @@ type queryLogEvent struct {
 	SessionID    string
 	UserID       string
 	AssetID      string
+	RequestID    string
 	Engine       string
 	Query        string
 	EventTime    time.Time
@@ -295,6 +296,7 @@ func (s *Service) handleSessionConn(reg SessionRegistration, client net.Conn) er
 		SessionID: reg.SessionID,
 		UserID:    reg.UserID,
 		AssetID:   reg.AssetID,
+		RequestID: reg.RequestID,
 		Action:    "dbeaver",
 		Protocol:  sessions.ProtocolDB,
 		AssetType: assets.TypeDatabase,
@@ -325,6 +327,7 @@ func (s *Service) runProxyFlow(reg SessionRegistration, client net.Conn) error {
 		SessionID: reg.SessionID,
 		UserID:    reg.UserID,
 		AssetID:   reg.AssetID,
+		RequestID: reg.RequestID,
 		Action:    "dbeaver",
 		Protocol:  sessions.ProtocolDB,
 		AssetType: assets.TypeDatabase,
@@ -587,6 +590,7 @@ func (s *Service) forwardCommands(reg SessionRegistration, client io.ReadWriter,
 					SessionID:    reg.SessionID,
 					UserID:       reg.UserID,
 					AssetID:      reg.AssetID,
+					RequestID:    reg.RequestID,
 					Engine:       reg.Engine,
 					Query:        truncate(q, s.cfg.QueryMaxBytes),
 					EventTime:    time.Now().UTC(),
@@ -617,6 +621,7 @@ func (s *Service) forwardCommands(reg SessionRegistration, client io.ReadWriter,
 						SessionID:    reg.SessionID,
 						UserID:       reg.UserID,
 						AssetID:      reg.AssetID,
+						RequestID:    reg.RequestID,
 						Engine:       reg.Engine,
 						Query:        truncate(q, s.cfg.QueryMaxBytes),
 						EventTime:    time.Now().UTC(),
@@ -883,6 +888,7 @@ func (s *Service) queryLogWorker() {
 			"query":         evt.Query,
 			"protocol_type": evt.ProtocolType,
 			"prepared":      evt.Prepared,
+			"request_id":    strings.TrimSpace(evt.RequestID),
 		}); err != nil {
 			s.logger.Warn("failed to write db_query event", "session_id", evt.SessionID, "error", err)
 		}

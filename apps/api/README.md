@@ -79,6 +79,8 @@ Optional:
 - `PAM_APP_NAME` (default: `pam-api`)
 - `PAM_ENV` (default: `development`)
 - `PAM_HTTP_ADDR` (default: `:8080`)
+- `PAM_CORS_ALLOWED_ORIGINS` (default in development: `http://localhost:3000,http://127.0.0.1:3000`; empty by default outside development)
+- `PAM_CONFIG_FILE` (optional path to `KEY=VALUE` env file; loaded first, explicit env vars still take precedence)
 - `PAM_SHUTDOWN_TIMEOUT` (default: `15s`)
 - `PAM_VERSION` (default: `0.1.0-dev`)
 - `PAM_COMMIT` (default: `dev`)
@@ -156,6 +158,9 @@ Optional:
 - `PAM_LDAP_GROUP_NAME_ATTR` (default: `cn`)
 - `PAM_LDAP_GROUP_ROLE_MAPPING` (optional additive mapping: `ldapGroup=role1|role2,groupDN=role3`)
 - `PAM_ALLOW_UNSAFE_MODE` (default: `false`; enables development-only unsafe settings outside `development`)
+
+Deployment note:
+- The API binary serves HTTP in this slice. Production must terminate HTTPS/TLS at an external reverse proxy or load balancer.
 
 ## Current HTTP Endpoints
 
@@ -305,6 +310,7 @@ Paste launch token when prompted. Password auth also works as first-pass fallbac
 - MySQL proxy captures `COM_QUERY` and common prepared flows (`COM_STMT_PREPARE`/`COM_STMT_EXECUTE`) with practical TLS support.
 - MSSQL proxy captures SQL batch and common RPC prepared flows (`sp_prepare`/`sp_prepexec`/`sp_executesql`/`sp_execute`) with per-connection template caching when derivable.
 - MSSQL TLS limitation in this slice: client->proxy TLS tunneling and upstream TDS-TLS tunneling are not implemented; use non-required TLS mode (for example `ssl_mode=disable`) for DBeaver MSSQL launches.
+- Redis client-leg TLS limitation in this slice: connector `redis-cli` currently connects to the PAM Redis proxy endpoint without TLS (typically loopback/session endpoint). Upstream Redis TLS from PAM proxy to target is supported via asset metadata.
 - SFTP relay captures practical operations (`upload_write`, `download_read`, `delete`, `rename`, `mkdir`, `rmdir`, `stat`, `list`) with path and size (when derivable). Remaining gap: operation-level success/failure and full protocol coverage for less-common SFTP extensions.
 
 ## Auth/RBAC Notes

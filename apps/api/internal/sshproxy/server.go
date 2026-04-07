@@ -906,6 +906,7 @@ func buildFileOperationPayload(launch sessions.LaunchContext, op sftpFileOperati
 		"operation":  op.Operation,
 		"path":       strings.TrimSpace(op.Path),
 		"event_time": when.UTC().Format(time.RFC3339Nano),
+		"request_id": strings.TrimSpace(launch.RequestID),
 	}
 	if strings.TrimSpace(op.PathTo) != "" {
 		payload["path_to"] = strings.TrimSpace(op.PathTo)

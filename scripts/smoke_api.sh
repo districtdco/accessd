@@ -109,6 +109,14 @@ if [[ -n "$SESSION_ID" ]]; then
   DETAIL_JSON="$(curl -fsS -b "$COOKIE_JAR" "${API_BASE_URL}/sessions/${SESSION_ID}")"
   DETAIL_SID="$(echo "$DETAIL_JSON" | jq -r '.session_id // empty')"
   check "session detail" test "$DETAIL_SID" = "$SESSION_ID"
+
+  EVENTS_JSON="$(curl -fsS -b "$COOKIE_JAR" "${API_BASE_URL}/sessions/${SESSION_ID}/events?limit=25")"
+  check "session events endpoint" echo "$EVENTS_JSON" | jq -e '.items' >/dev/null
+
+  if [[ "$ACTION" == "shell" ]]; then
+    REPLAY_JSON="$(curl -fsS -b "$COOKIE_JAR" "${API_BASE_URL}/sessions/${SESSION_ID}/replay?limit=25")"
+    check "session replay endpoint" echo "$REPLAY_JSON" | jq -e '.supported' >/dev/null
+  fi
 fi
 
 # ── Admin endpoints (if admin user) ──
@@ -128,6 +136,11 @@ if echo "$ROLES" | grep -q "admin"; then
 
   ADMIN_AUDIT="$(curl -fsS -b "$COOKIE_JAR" "${API_BASE_URL}/admin/audit/events" 2>/dev/null || echo "")"
   check "admin/audit/events" echo "$ADMIN_AUDIT" | jq -e '.items' >/dev/null
+  FIRST_AUDIT_ID="$(echo "$ADMIN_AUDIT" | jq -r '.items[0].id // empty')"
+  if [[ -n "$FIRST_AUDIT_ID" ]]; then
+    ADMIN_AUDIT_DETAIL="$(curl -fsS -b "$COOKIE_JAR" "${API_BASE_URL}/admin/audit/events/${FIRST_AUDIT_ID}" 2>/dev/null || echo "")"
+    check "admin/audit/events/{id}" echo "$ADMIN_AUDIT_DETAIL" | jq -e '.item.id' >/dev/null
+  fi
 fi
 
 # ── Logout ──
