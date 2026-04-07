@@ -53,3 +53,4 @@ bin/pam-api
 bin/pam-connector
 apps/api/.pam_ssh_proxy_host_key
 apps/api/.pam_upstream_known_hosts
+apps/connector/connector

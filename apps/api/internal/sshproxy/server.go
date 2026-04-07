@@ -216,7 +216,19 @@ func (s *Server) newSSHServerConfig() (*ssh.ServerConfig, error) {
 }
 
 func (s *Server) authenticate(conn ssh.ConnMetadata, token string) (authResult, error) {
+	remoteAddr := ""
+	if conn.RemoteAddr() != nil {
+		remoteAddr = conn.RemoteAddr().String()
+	}
+	s.logger.Debug("ssh proxy authentication attempt",
+		"remote_addr", remoteAddr, "proxy_user", conn.User(),
+		"expected_user", s.cfg.Username, "token_len", len(token))
 	if conn.User() != s.cfg.Username {
+		s.logger.Warn("ssh proxy authentication failed",
+			"reason", "invalid_proxy_username",
+			"remote_addr", remoteAddr,
+			"proxy_user", conn.User(),
+			"expected_user", s.cfg.Username)
 		return authResult{}, fmt.Errorf("invalid proxy username")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -224,6 +236,18 @@ func (s *Server) authenticate(conn ssh.ConnMetadata, token string) (authResult, 
 
 	lctx, err := s.sessionsSvc.ResolveLaunchToken(ctx, token)
 	if err != nil {
+		reason := "launch_token_invalid"
+		if errors.Is(err, sessions.ErrLaunchExpired) {
+			reason = "launch_token_expired"
+		} else if errors.Is(err, sessions.ErrUnauthorizedLaunch) {
+			reason = "launch_token_unauthorized"
+		}
+		s.logger.Warn("ssh proxy authentication failed",
+			"reason", reason,
+			"remote_addr", remoteAddr,
+			"proxy_user", conn.User(),
+			"token_len", len(token),
+			"error", err)
 		return authResult{}, err
 	}
 	s.logger.Info(
@@ -232,7 +256,11 @@ func (s *Server) authenticate(conn ssh.ConnMetadata, token string) (authResult, 
 		"request_id", lctx.RequestID,
 		"user_id", lctx.UserID,
 		"asset_id", lctx.AssetID,
-		"remote_addr", conn.RemoteAddr().String(),
+		"action", lctx.Action,
+		"protocol", lctx.Protocol,
+		"upstream_host", lctx.Host,
+		"upstream_port", lctx.Port,
+		"remote_addr", remoteAddr,
 	)
 	return authResult{launch: lctx}, nil
 }
@@ -290,19 +318,6 @@ func (s *Server) handleConn(rawConn net.Conn, cfg *ssh.ServerConfig) {
 		s.logger.Warn("failed to record proxy_connected", "session_id", launch.SessionID, "request_id", launch.RequestID, "error", err)
 	}
 
-	upstreamClient, upstreamSession, err := s.connectUpstream(ctx, launch)
-	if err != nil {
-		finalizeFailed("upstream_connect_failed")
-		s.logger.Error("upstream ssh connection failed", "session_id", launch.SessionID, "request_id", launch.RequestID, "error", err)
-		return
-	}
-	defer upstreamClient.Close()
-	defer upstreamSession.Close()
-
-	if err := s.sessionsSvc.MarkUpstreamConnected(ctx, launch); err != nil {
-		s.logger.Warn("failed to record upstream_connected", "session_id", launch.SessionID, "request_id", launch.RequestID, "error", err)
-	}
-
 	go ssh.DiscardRequests(reqs)
 
 	for newChannel := range chans {
@@ -312,8 +327,29 @@ func (s *Server) handleConn(rawConn net.Conn, cfg *ssh.ServerConfig) {
 			continue
 		}
 
+		// Connect upstream AFTER client opens session channel so that failures
+		// produce a proper SSH channel rejection instead of an abrupt close.
+		s.logger.Info("client session channel requested, connecting upstream",
+			"session_id", launch.SessionID, "request_id", launch.RequestID,
+			"upstream_host", launch.Host, "upstream_port", launch.Port, "action", launch.Action)
+
+		upstreamClient, upstreamSession, err := s.connectUpstream(ctx, launch)
+		if err != nil {
+			rejectMsg := "upstream connection failed: " + err.Error()
+			_ = newChannel.Reject(ssh.ConnectionFailed, rejectMsg)
+			finalizeFailed("upstream_connect_failed")
+			s.logger.Error("upstream ssh connection failed", "session_id", launch.SessionID, "request_id", launch.RequestID, "error", err)
+			return
+		}
+
+		if err := s.sessionsSvc.MarkUpstreamConnected(ctx, launch); err != nil {
+			s.logger.Warn("failed to record upstream_connected", "session_id", launch.SessionID, "request_id", launch.RequestID, "error", err)
+		}
+
 		channel, requests, err := newChannel.Accept()
 		if err != nil {
+			_ = upstreamSession.Close()
+			_ = upstreamClient.Close()
 			finalizeFailed("session_channel_accept_failed")
 			s.logger.Warn("failed to accept session channel", "session_id", launch.SessionID, "request_id", launch.RequestID, "error", err)
 			return
@@ -326,6 +362,10 @@ func (s *Server) handleConn(rawConn net.Conn, cfg *ssh.ServerConfig) {
 		default:
 			bridgeErr = s.bridgeSession(ctx, launch, channel, requests, upstreamSession)
 		}
+
+		_ = upstreamSession.Close()
+		_ = upstreamClient.Close()
+
 		if bridgeErr != nil {
 			reason := bridgeFailureReason(bridgeErr)
 			finalizeFailed(reason)
@@ -363,16 +403,27 @@ func (s *Server) connectUpstream(ctx context.Context, launch sessions.LaunchCont
 	}
 
 	endpoint := net.JoinHostPort(launch.Host, strconv.Itoa(launch.Port))
-	s.logger.Info("connecting to upstream ssh", "session_id", launch.SessionID, "request_id", launch.RequestID, "endpoint", endpoint)
+	s.logger.Info("connecting to upstream ssh",
+		"session_id", launch.SessionID, "request_id", launch.RequestID,
+		"endpoint", endpoint, "upstream_user", cred.Username, "action", launch.Action)
 	client, err := ssh.Dial("tcp", endpoint, clientCfg)
 	if err != nil {
-		return nil, nil, fmt.Errorf("dial upstream ssh: %w", err)
+		s.logger.Error("upstream ssh dial failed",
+			"session_id", launch.SessionID, "request_id", launch.RequestID,
+			"endpoint", endpoint, "error", err)
+		return nil, nil, fmt.Errorf("dial upstream ssh %s: %w", endpoint, err)
 	}
 	session, err := client.NewSession()
 	if err != nil {
 		_ = client.Close()
+		s.logger.Error("upstream ssh session open failed",
+			"session_id", launch.SessionID, "request_id", launch.RequestID,
+			"endpoint", endpoint, "error", err)
 		return nil, nil, fmt.Errorf("open upstream session: %w", err)
 	}
+	s.logger.Info("upstream ssh connected",
+		"session_id", launch.SessionID, "request_id", launch.RequestID,
+		"endpoint", endpoint)
 	return client, session, nil
 }
 

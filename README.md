@@ -278,7 +278,7 @@ npm run dev
 9. UI records connector outcome event:
    - `connector_launch_succeeded`
    - `connector_launch_failed`
-10. Complete SSH auth with launch token prompt (shell path) or continue in DBeaver (DB path).
+10. Shell launches authenticate automatically through connector bridge mode; DBeaver/Redis/SFTP continue through connector-managed flows.
 
 ## Current Launch Slice Limitations
 
@@ -289,7 +289,7 @@ npm run dev
 - MSSQL TLS tunnel mode remains limited in this slice (full client<->proxy TDS TLS tunnel support is not implemented).
 - Redis client-leg TLS to PAM proxy is not implemented in this slice (connector typically talks to loopback/session endpoint).
 - Host key verification defaults to `known-hosts`; `accept-new`/`insecure` are development-oriented and blocked outside development unless `PAM_ALLOW_UNSAFE_MODE=true`.
-- Token entry for shell remains user-driven (manual paste at prompt).
+- Shell token entry is connector-managed (automatic on macOS/Linux bridge mode; PuTTY `-pw` on Windows).
 
 ## Deployment Target (Linux VM + systemd)
 

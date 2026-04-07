@@ -364,6 +364,10 @@ func (l Launcher) LaunchDBeaver(ctx context.Context, req DBeaverRequest) (DBeave
 		return DBeaverLaunchDiagnostics{}, launchErr
 	}
 
+	if runtime.GOOS == "darwin" {
+		activateMacOSApp("DBeaver")
+	}
+
 	diagnostics.CleanupScheduled = true
 	go func(path string, ttl time.Duration) {
 		time.Sleep(ttl)
@@ -460,14 +464,27 @@ func (l Launcher) LaunchSFTPClient(ctx context.Context, req SFTPRequest) (SFTPLa
 				return SFTPLaunchDiagnostics{}, err
 			}
 		}
+		hostKey, hostKeyErr := fetchSSHHostKey(ctx, req.Launch.Host, req.Launch.Port)
+		if hostKeyErr != nil {
+			return SFTPLaunchDiagnostics{}, &LaunchError{
+				Code:    "sftp_hostkey_resolve_failed",
+				Message: "failed to resolve SSH host key for WinSCP launch",
+				Hint:    "verify PAM SSH proxy is reachable and ready",
+				Cause:   hostKeyErr,
+			}
+		}
 		target := winscpTarget(req)
-		cmd := exec.CommandContext(ctx, winscpPath, target)
+		args := []string{"/ini=nul", "/nointeractiveinput", target}
+		if hostKeyParam := winSCPHostKeyParam(hostKey); strings.TrimSpace(hostKeyParam) != "" {
+			args = append(args, "/hostkey="+hostKeyParam)
+		}
+		cmd := exec.CommandContext(ctx, winscpPath, args...)
 		if err := cmd.Start(); err != nil {
 			return SFTPLaunchDiagnostics{}, &LaunchError{
 				Code:    "sftp_launch_failed",
 				Message: "failed to launch WinSCP",
 				Hint:    "verify PAM_CONNECTOR_WINSCP_PATH or install winscp in PATH",
-				Details: fmt.Sprintf("command: %s", sanitizeCommandArgs([]string{winscpPath, target})),
+				Details: fmt.Sprintf("command: %s", sanitizeCommandArgs(append([]string{winscpPath}, args...))),
 				Cause:   err,
 			}
 		}
@@ -492,6 +509,23 @@ func (l Launcher) LaunchSFTPClient(ctx context.Context, req SFTPRequest) (SFTPLa
 				return SFTPLaunchDiagnostics{}, err
 			}
 		}
+		hostKey, hostKeyErr := fetchSSHHostKey(ctx, req.Launch.Host, req.Launch.Port)
+		if hostKeyErr != nil {
+			return SFTPLaunchDiagnostics{}, &LaunchError{
+				Code:    "sftp_hostkey_resolve_failed",
+				Message: "failed to resolve SSH host key for FileZilla launch",
+				Hint:    "verify PAM SSH proxy is reachable and ready",
+				Cause:   hostKeyErr,
+			}
+		}
+		if err := ensureFileZillaKnownHost(req.Launch.Host, req.Launch.Port, hostKey); err != nil {
+			return SFTPLaunchDiagnostics{}, &LaunchError{
+				Code:    "sftp_known_hosts_update_failed",
+				Message: "failed to prime FileZilla known hosts for automated SFTP launch",
+				Hint:    "verify local filesystem permissions for FileZilla profile directories",
+				Cause:   err,
+			}
+		}
 		target := filezillaTarget(req)
 		var launchErr error
 		if runtime.GOOS == "darwin" {
@@ -510,6 +544,9 @@ func (l Launcher) LaunchSFTPClient(ctx context.Context, req SFTPRequest) (SFTPLa
 		}
 		if launchErr != nil {
 			return SFTPLaunchDiagnostics{}, launchErr
+		}
+		if runtime.GOOS == "darwin" {
+			activateMacOSApp("FileZilla")
 		}
 		return SFTPLaunchDiagnostics{
 			Client:         "filezilla",
@@ -585,7 +622,10 @@ func launchTerminalCommand(ctx context.Context, command string) error {
 }
 
 func launchTerminalCommandMacOS(ctx context.Context, command string) error {
-	script := fmt.Sprintf(`tell application "Terminal" to do script "%s"`, escapeAppleScript(command))
+	script := fmt.Sprintf(`tell application "Terminal"
+	activate
+	do script "%s"
+end tell`, escapeAppleScript(command))
 	cmd := exec.CommandContext(ctx, "osascript", "-e", script)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -602,6 +642,7 @@ func launchTerminalCommandMacOS(ctx context.Context, command string) error {
 
 func launchTerminalCommandITerm(ctx context.Context, command string) error {
 	script := fmt.Sprintf(`tell application "iTerm"
+	activate
 	create window with default profile command "%s"
 end tell`, escapeAppleScript(command))
 	cmd := exec.CommandContext(ctx, "osascript", "-e", script)
@@ -739,32 +780,30 @@ func launchWindows(ctx context.Context, req Request, puttyPath string) error {
 }
 
 func shellCommand(req Request) (string, error) {
-	askpassPath, tokenPath, err := prepareSSHAskpassFiles(req.Launch.Token)
+	tokenPath, err := prepareLaunchTokenFile(req.Launch.Token)
 	if err != nil {
 		return "", err
 	}
-	knownHostsPath := filepath.Join(defaultUserHomeDir(), ".pam-connector", "known_hosts")
-	ssh := fmt.Sprintf(
-		"SSH_ASKPASS=%s SSH_ASKPASS_REQUIRE=force DISPLAY=${DISPLAY:-pam-connector} ssh -o PreferredAuthentications=keyboard-interactive,password -o PubkeyAuthentication=no -o NumberOfPasswordPrompts=1 -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=%s -o LogLevel=ERROR -p %d %s@%s",
-		shellEscape(askpassPath),
-		shellEscape(knownHostsPath),
+	executable, err := os.Executable()
+	if err != nil {
+		return "", &LaunchError{
+			Code:    "shell_launch_setup_failed",
+			Message: "failed to resolve connector executable path for shell launch",
+			Hint:    "restart connector from a local binary path",
+			Cause:   err,
+		}
+	}
+	command := fmt.Sprintf(
+		"%s bridge-shell --host %s --port %d --username %s --session-id %s --asset-name %s --token-file %s",
+		shellEscape(executable),
+		shellEscape(req.Launch.ProxyHost),
 		req.Launch.ProxyPort,
 		shellEscape(req.Launch.Username),
-		shellEscape(req.Launch.ProxyHost),
-	)
-	title := fmt.Sprintf("PAM session %s for %s", strings.TrimSpace(req.SessionID), strings.TrimSpace(req.AssetName))
-	prelude := fmt.Sprintf(
-		"mkdir -p %s; touch %s; chmod 600 %s 2>/dev/null || true; echo %s; %s; exit_code=$?; rm -f %s %s; echo; echo %s; exec bash",
-		shellEscape(filepath.Dir(knownHostsPath)),
-		shellEscape(knownHostsPath),
-		shellEscape(knownHostsPath),
-		shellEscape(title),
-		ssh,
-		shellEscape(askpassPath),
+		shellEscape(strings.TrimSpace(req.SessionID)),
+		shellEscape(strings.TrimSpace(req.AssetName)),
 		shellEscape(tokenPath),
-		shellEscape("SSH session ended. Close this terminal when done."),
 	)
-	return prelude, nil
+	return command, nil
 }
 
 func redisCLICommand(req RedisRequest, redisCLIPath string) string {
@@ -1069,13 +1108,17 @@ func launchDBeaverMacOS(ctx context.Context, spec, configuredPath string) error 
 			[]string{"dbeaver", "-con", spec},
 		)
 	}
-	return launchFirstAvailable(ctx, attempts, launchAttemptOptions{
+	if err := launchFirstAvailable(ctx, attempts, launchAttemptOptions{
 		Code:          "dbeaver_launch_failed",
 		MissingCode:   "dbeaver_not_installed",
 		BaseErr:       "failed to launch DBeaver on macOS",
 		Hint:          "ensure DBeaver is installed or set PAM_CONNECTOR_DBEAVER_PATH to a valid app/binary path",
 		ConfiguredEnv: "PAM_CONNECTOR_DBEAVER_PATH",
-	})
+	}); err != nil {
+		return err
+	}
+	activateMacOSApp("DBeaver")
+	return nil
 }
 
 func launchFileZillaMacOS(ctx context.Context, configuredPath, target string) error {
@@ -1096,13 +1139,17 @@ func launchFileZillaMacOS(ctx context.Context, configuredPath, target string) er
 	} else {
 		attempts = append(attempts, []string{trimmed, target})
 	}
-	return launchFirstAvailable(ctx, attempts, launchAttemptOptions{
+	if err := launchFirstAvailable(ctx, attempts, launchAttemptOptions{
 		Code:          "sftp_launch_failed",
 		MissingCode:   "filezilla_not_installed",
 		BaseErr:       "failed to launch FileZilla",
 		Hint:          "ensure FileZilla is installed or set PAM_CONNECTOR_FILEZILLA_PATH to a valid app/binary path",
 		ConfiguredEnv: "PAM_CONNECTOR_FILEZILLA_PATH",
-	})
+	}); err != nil {
+		return err
+	}
+	activateMacOSApp("FileZilla")
+	return nil
 }
 
 func macOSBundleExecutables(bundlePath string, preferred []string) ([]string, error) {
@@ -1231,19 +1278,42 @@ func launchFirstAvailable(ctx context.Context, attempts [][]string, options laun
 	allMissing := true
 	configuredPath := strings.TrimSpace(options.ConfiguredEnv) != "" && strings.TrimSpace(os.Getenv(options.ConfiguredEnv)) != ""
 	for _, args := range attempts {
+		bin := args[0]
+		// For direct binary paths (not "open"), check if the binary exists
+		// before trying to run it.
+		if bin != "open" && bin != "cmd" {
+			if _, lookErr := lookupBinary(bin); lookErr != nil {
+				if errors.Is(lookErr, exec.ErrNotFound) {
+					errs = append(errs, fmt.Sprintf("%s: not found", sanitizeCommandArgs(args)))
+					continue
+				}
+			}
+		}
+		allMissing = false
+
 		cmd := exec.CommandContext(ctx, args[0], args[1:]...)
-		out, err := cmd.CombinedOutput()
-		if err == nil {
-			return nil
+		if startErr := cmd.Start(); startErr != nil {
+			if errors.Is(startErr, exec.ErrNotFound) {
+				allMissing = true
+			}
+			errs = append(errs, fmt.Sprintf("%s: %v", sanitizeCommandArgs(args), startErr))
+			continue
 		}
-		if !errors.Is(err, exec.ErrNotFound) {
-			allMissing = false
+
+		// Probe briefly: if the process exits quickly with an error, it
+		// failed to launch. If it's still running after the probe window,
+		// it started successfully (GUI app).
+		done := make(chan error, 1)
+		go func() { done <- cmd.Wait() }()
+		select {
+		case err := <-done:
+			if err == nil {
+				return nil // exited cleanly (e.g. "open -a" returns 0)
+			}
+			errs = append(errs, fmt.Sprintf("%s: %v", sanitizeCommandArgs(args), err))
+		case <-time.After(2 * time.Second):
+			return nil // still running — GUI app launched successfully
 		}
-		msg := fmt.Sprintf("%s: %v", sanitizeCommandArgs(args), err)
-		if trimmed := strings.TrimSpace(string(out)); trimmed != "" {
-			msg += " (" + sanitizeCommandArg(trimmed) + ")"
-		}
-		errs = append(errs, msg)
 	}
 	if len(errs) == 0 {
 		return &LaunchError{Code: options.Code, Message: options.BaseErr, Hint: options.Hint}
@@ -1276,6 +1346,9 @@ func dbeaverConnectionSpec(req DBeaverRequest) string {
 		"host=" + specValue(req.Launch.Host),
 		"port=" + strconv.Itoa(req.Launch.Port),
 		"user=" + specValue(req.Launch.Username),
+		"connect=true",
+		"openConsole=true",
+		"savePassword=true",
 	}
 	if password := strings.TrimSpace(req.Launch.Password); password != "" {
 		parts = append(parts, "password="+specValue(password))
@@ -1448,24 +1521,24 @@ func runClipboardCommand(ctx context.Context, value, bin string, args ...string)
 	return true, bin
 }
 
-func prepareSSHAskpassFiles(token string) (askpassPath string, tokenPath string, err error) {
+func prepareLaunchTokenFile(token string) (string, error) {
 	tok, err := os.CreateTemp("", "pam-launch-token-*")
 	if err != nil {
-		return "", "", &LaunchError{
+		return "", &LaunchError{
 			Code:    "temp_material_create_failed",
 			Message: "failed to create temporary token file",
 			Hint:    "check local temporary directory permissions and free space",
 			Cause:   err,
 		}
 	}
-	tokenPath = tok.Name()
+	tokenPath := tok.Name()
 	cleanup := func() {
 		_ = os.Remove(tokenPath)
 	}
 	if _, writeErr := tok.WriteString(strings.TrimSpace(token) + "\n"); writeErr != nil {
 		_ = tok.Close()
 		cleanup()
-		return "", "", &LaunchError{
+		return "", &LaunchError{
 			Code:    "temp_material_write_failed",
 			Message: "failed to write temporary token file",
 			Hint:    "check local temporary directory permissions and free space",
@@ -1474,7 +1547,7 @@ func prepareSSHAskpassFiles(token string) (askpassPath string, tokenPath string,
 	}
 	if closeErr := tok.Close(); closeErr != nil {
 		cleanup()
-		return "", "", &LaunchError{
+		return "", &LaunchError{
 			Code:    "temp_material_write_failed",
 			Message: "failed to persist temporary token file",
 			Hint:    "check local temporary directory permissions and free space",
@@ -1483,66 +1556,14 @@ func prepareSSHAskpassFiles(token string) (askpassPath string, tokenPath string,
 	}
 	if chmodErr := os.Chmod(tokenPath, 0o600); chmodErr != nil {
 		cleanup()
-		return "", "", &LaunchError{
+		return "", &LaunchError{
 			Code:    "temp_material_write_failed",
 			Message: "failed to secure temporary token file",
 			Hint:    "check local temporary directory permissions",
 			Cause:   chmodErr,
 		}
 	}
-
-	ask, err := os.CreateTemp("", "pam-ssh-askpass-*")
-	if err != nil {
-		cleanup()
-		return "", "", &LaunchError{
-			Code:    "temp_material_create_failed",
-			Message: "failed to create temporary askpass helper",
-			Hint:    "check local temporary directory permissions and free space",
-			Cause:   err,
-		}
-	}
-	askpassPath = ask.Name()
-	askpassScript := "#!/bin/sh\ncat " + shellEscape(tokenPath) + "\n"
-	if _, writeErr := ask.WriteString(askpassScript); writeErr != nil {
-		_ = ask.Close()
-		_ = os.Remove(askpassPath)
-		cleanup()
-		return "", "", &LaunchError{
-			Code:    "temp_material_write_failed",
-			Message: "failed to write temporary askpass helper",
-			Hint:    "check local temporary directory permissions and free space",
-			Cause:   writeErr,
-		}
-	}
-	if closeErr := ask.Close(); closeErr != nil {
-		_ = os.Remove(askpassPath)
-		cleanup()
-		return "", "", &LaunchError{
-			Code:    "temp_material_write_failed",
-			Message: "failed to persist temporary askpass helper",
-			Hint:    "check local temporary directory permissions and free space",
-			Cause:   closeErr,
-		}
-	}
-	if chmodErr := os.Chmod(askpassPath, 0o700); chmodErr != nil {
-		_ = os.Remove(askpassPath)
-		cleanup()
-		return "", "", &LaunchError{
-			Code:    "temp_material_write_failed",
-			Message: "failed to secure temporary askpass helper",
-			Hint:    "check local temporary directory permissions",
-			Cause:   chmodErr,
-		}
-	}
-	return askpassPath, tokenPath, nil
-}
-
-func defaultUserHomeDir() string {
-	home, err := os.UserHomeDir()
-	if err != nil || strings.TrimSpace(home) == "" {
-		return os.TempDir()
-	}
-	return home
+	return tokenPath, nil
 }
 
 func shellEscape(v string) string {
@@ -1554,10 +1575,18 @@ func escapeAppleScript(v string) string {
 	return strings.ReplaceAll(v, `"`, `\"`)
 }
 
+// activateMacOSApp brings a macOS application to the foreground.
+func activateMacOSApp(name string) {
+	script := fmt.Sprintf(`tell application "%s" to activate`, escapeAppleScript(name))
+	cmd := exec.Command("osascript", "-e", script)
+	_ = cmd.Run()
+}
+
 func urlEscape(v string) string {
 	replacer := strings.NewReplacer(
 		"%", "%25",
 		" ", "%20",
+		"+", "%2B",
 		"@", "%40",
 		":", "%3A",
 		"/", "%2F",
@@ -1565,6 +1594,7 @@ func urlEscape(v string) string {
 		"#", "%23",
 		"&", "%26",
 		"=", "%3D",
+		";", "%3B",
 	)
 	return replacer.Replace(v)
 }

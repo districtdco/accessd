@@ -437,6 +437,7 @@ func (h *SessionsHandler) Launch(w http.ResponseWriter, r *http.Request) {
 			Port:     proxyPort,
 			Database: meta.Database,
 			Username: strings.TrimSpace(cred.Username),
+			Password: cred.Secret,
 			SSLMode:  meta.SSLMode,
 		})
 	}
@@ -1218,6 +1219,7 @@ func buildLaunchResponse(result sessions.LaunchResult) (launchResponse, error) {
 			Port:      result.DBeaver.Port,
 			Database:  result.DBeaver.Database,
 			Username:  result.DBeaver.Username,
+			Password:  result.DBeaver.Password,
 			SSLMode:   result.DBeaver.SSLMode,
 			ExpiresAt: result.ExpiresAt.Format("2006-01-02T15:04:05.999999999Z07:00"),
 		}

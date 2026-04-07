@@ -127,6 +127,7 @@ type DBeaverLaunchPayload struct {
 	Port     int
 	Database string
 	Username string
+	Password string
 	SSLMode  string
 }
 

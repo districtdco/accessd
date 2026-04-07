@@ -108,8 +108,8 @@ SFTP request shape:
 
 ## OS Launch Behavior
 
-- macOS: opens `Terminal.app` and runs `ssh -o PreferredAuthentications=keyboard-interactive,password ...`
-- Linux: tries `x-terminal-emulator`, `gnome-terminal`, `konsole`, then `xfce4-terminal`, each running the same SSH command
+- macOS: opens `Terminal.app` and runs connector-managed `bridge-shell` session (token injected automatically)
+- Linux: tries `x-terminal-emulator`, `gnome-terminal`, `konsole`, then `xfce4-terminal`, each running connector-managed `bridge-shell` session
 - Windows: launches PuTTY (`putty -ssh <username>@<proxy_host> -P <proxy_port>`)
 - DBeaver launch behavior:
   - macOS: `PAM_CONNECTOR_DBEAVER_PATH` (if set), else `open -a DBeaver`, then common app bundle paths, then `dbeaver`
@@ -121,16 +121,17 @@ SFTP request shape:
 - Redis launch behavior:
   - macOS/Linux/Windows: `PAM_CONNECTOR_REDIS_CLI_PATH` (if set), else `redis-cli` from PATH/common install paths, then launch inside a local terminal
 
-In this first pass, the token is displayed in the launched terminal flow so the user can paste it at prompt. Connector also attempts best-effort clipboard copy (`pbcopy`, `wl-copy`/`xclip`, or `Set-Clipboard`) to reduce manual friction. PuTTY automation for token entry is intentionally deferred.
+Connector shell launch now uses a non-interactive bridge mode on macOS/Linux that reads the short-lived launch token from secure temp material and authenticates automatically. No manual token paste is required.
+Windows shell launch continues through PuTTY with `-pw` token injection.
 
-For DBeaver in this first pass, connector creates a temporary local manifest file under OS temp directory (`pam-dbeaver-launch-*`) and launches DBeaver using CLI connection spec. The connector auto-cleans temp launch directories after a TTL (`PAM_CONNECTOR_DBEAVER_TEMP_TTL`, default `15m`) and performs stale cleanup on startup.
-The manifest intentionally omits plaintext DB password; it records non-sensitive launch metadata only.
+For DBeaver, connector creates a temporary local manifest file under OS temp directory (`pam-dbeaver-launch-*`) and launches DBeaver using CLI connection spec with `connect=true` and `savePassword=false` for immediate session usability without persistent credential storage.
+The connector auto-cleans temp launch directories after a TTL (`PAM_CONNECTOR_DBEAVER_TEMP_TTL`, default `15m`) and performs stale cleanup on startup. The manifest intentionally omits plaintext DB password; it records non-sensitive launch metadata only.
 Connector launch diagnostics also redact sensitive values (for example `password=` fields, SFTP URL passwords, and `REDISCLI_AUTH`) before returning operator-visible error details.
 Launch requests now fail fast with structured codes for common local issues (`*_not_installed`, `invalid_configured_path`, `terminal_not_installed`, `terminal_launch_failed`, etc.) instead of optimistic acceptance.
 
 For Redis in this slice, connector launches local `redis-cli` in a new terminal window against a PAM session-scoped Redis proxy endpoint. `REDISCLI_AUTH` is set to the short-lived PAM launch token; upstream Redis credentials stay managed server-side.
 Redis TLS note: connector command builders support `redis-cli --tls` when launch payload includes `redis_tls=true`; in the current PAM slice the API issues non-TLS client-leg Redis proxy endpoints, so connector launches are typically plaintext on loopback/session endpoints. Upstream Redis TLS is handled by the PAM proxy-to-target leg when enabled on the asset.
-For SFTP in this slice, connector launches FileZilla/WinSCP against the PAM SFTP relay endpoint (session token is passed as SFTP password in launch payload). File-operation telemetry is captured server-side by the PAM relay.
+For SFTP in this slice, connector launches FileZilla/WinSCP against the PAM SFTP relay endpoint (session token is passed as SFTP password in launch payload), pre-resolves proxy host key trust material, and then auto-connects without interactive host-key confirmation prompts. File-operation telemetry is captured server-side by the PAM relay.
 
 ## Configuration (env)
 

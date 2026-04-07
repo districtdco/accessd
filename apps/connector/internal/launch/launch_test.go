@@ -58,12 +58,11 @@ func TestResolveBinaryPath_FallbackPath(t *testing.T) {
 	}
 }
 
-func TestPrepareSSHAskpassFiles(t *testing.T) {
-	askpassPath, tokenPath, err := prepareSSHAskpassFiles("super-secret-token")
+func TestPrepareLaunchTokenFile(t *testing.T) {
+	tokenPath, err := prepareLaunchTokenFile("super-secret-token")
 	if err != nil {
-		t.Fatalf("prepare askpass files: %v", err)
+		t.Fatalf("prepare token file: %v", err)
 	}
-	defer os.Remove(askpassPath)
 	defer os.Remove(tokenPath)
 
 	tokenBlob, err := os.ReadFile(tokenPath)
@@ -74,16 +73,6 @@ func TestPrepareSSHAskpassFiles(t *testing.T) {
 		t.Fatalf("token file should contain token")
 	}
 
-	askpassBlob, err := os.ReadFile(askpassPath)
-	if err != nil {
-		t.Fatalf("read askpass file: %v", err)
-	}
-	if strings.Contains(string(askpassBlob), "super-secret-token") {
-		t.Fatalf("askpass helper must not embed token directly")
-	}
-	if !strings.Contains(string(askpassBlob), tokenPath) {
-		t.Fatalf("askpass helper should read token file path")
-	}
 }
 
 func TestShellCommand_DoesNotLeakToken(t *testing.T) {
@@ -103,6 +92,12 @@ func TestShellCommand_DoesNotLeakToken(t *testing.T) {
 	}
 	if strings.Contains(command, req.Launch.Token) {
 		t.Fatalf("shell command must not contain raw token")
+	}
+	if !strings.Contains(command, "bridge-shell") {
+		t.Fatalf("shell command should invoke bridge-shell mode")
+	}
+	if !strings.Contains(command, "--token-file") {
+		t.Fatalf("shell command should pass token-file path")
 	}
 }
 

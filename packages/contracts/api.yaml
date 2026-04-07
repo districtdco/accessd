@@ -2611,7 +2611,7 @@ components:
           type: string
         password:
           type: string
-          description: Optional client-side password field (unused when connecting through PAM PostgreSQL proxy).
+          description: Ephemeral launch password used by connector for immediate DBeaver connection bootstrap (`savePassword=false`).
         ssl_mode:
           type: string
         expires_at:

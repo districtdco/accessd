@@ -1,12 +1,14 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -16,6 +18,14 @@ import (
 )
 
 func main() {
+	if len(os.Args) > 1 && strings.EqualFold(strings.TrimSpace(os.Args[1]), "bridge-shell") {
+		if err := launch.RunShellBridgeCommand(context.Background(), os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "PAM shell launch failed: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	cfg := config.Load()
 	verifier := auth.NewVerifier(cfg.ConnectorSecret)
 	if verifier != nil {
