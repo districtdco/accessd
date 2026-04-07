@@ -16,6 +16,7 @@ const navItems = [
     icon: AccessIcon,
     adminOnly: false,
     adminRead: false,
+    hideForReadOnlyAuditor: true,
   },
   {
     label: 'My Sessions',
@@ -94,6 +95,7 @@ export function Sidebar({ open, onClose }: SidebarProps) {
             {navItems.map((item) => {
               if (item.adminRead && !canReadAdmin) return null
               if (item.adminOnly && !isAdmin) return null
+              if (item.hideForReadOnlyAuditor && isAuditor && !isAdmin) return null
               return (
                 <li key={item.path}>
                   <Link to={item.path} className={linkClass(item.path)} onClick={onClose}>

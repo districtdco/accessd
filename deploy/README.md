@@ -15,6 +15,9 @@ Production-oriented deployment assets for a Linux VM + `systemd` target.
   - Default connector posture remains loopback-only.
 - `env/pam-connector.env.example`
   - Example connector environment file with explicit unsafe toggles set to `false`.
+- `nginx/pam-edge.conf`
+  - Reference TLS-terminating reverse proxy config for production edge deployment.
+  - Includes HTTPS redirect, HSTS, and request-id forwarding to PAM.
 
 ## Suggested Deployment Layout
 
@@ -51,6 +54,7 @@ Production-oriented deployment assets for a Linux VM + `systemd` target.
   - forwards trusted requests to PAM over private network interfaces
   - preserves correlation headers such as `X-Request-Id`
 - Do not expose the raw API listener directly on the public internet.
+- Reference nginx edge config is provided at `deploy/nginx/pam-edge.conf` (adjust cert/key paths and upstream hosts before use).
 
 ## Connector Deployment Note
 

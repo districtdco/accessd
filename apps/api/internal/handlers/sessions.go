@@ -287,6 +287,10 @@ func (h *SessionsHandler) Launch(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
 		return
 	}
+	if isReadOnlyAuditor(currentUser) {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "forbidden"})
+		return
+	}
 
 	var req launchRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -526,6 +530,10 @@ func (h *SessionsHandler) RecordEvent(w http.ResponseWriter, r *http.Request) {
 	currentUser, ok := auth.CurrentUserFromContext(r.Context())
 	if !ok {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+	if isReadOnlyAuditor(currentUser) {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "forbidden"})
 		return
 	}
 
@@ -1421,6 +1429,10 @@ func canViewSession(currentUser auth.CurrentUser, sessionUserID string) bool {
 		return true
 	}
 	return currentUser.HasRole("admin") || currentUser.HasRole("auditor")
+}
+
+func isReadOnlyAuditor(currentUser auth.CurrentUser) bool {
+	return currentUser.HasRole("auditor") && !currentUser.HasRole("admin")
 }
 
 func mapSessionDetail(item sessions.SessionDetail, lifecycle sessions.SessionLifecycleSummary) sessionDetailResponse {

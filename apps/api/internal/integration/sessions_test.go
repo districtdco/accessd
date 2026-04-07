@@ -206,3 +206,101 @@ func TestSessionExport_Transcript(t *testing.T) {
 		t.Fatalf("expected transcript export 200, got %d: %s", transcriptResp.Code, transcriptResp.Body.String())
 	}
 }
+
+func TestSessionVisibility_AuditorCanReviewForeignSession(t *testing.T) {
+	h := newTestHarness(t)
+
+	operatorCookie := h.login(h.seed.operatorName, h.seed.operatorPass)
+	_ = h.createLocalUserWithRole("auditor3", "auditor123", "auditor3@example.com", "Auditor Three", "auditor")
+	auditorCookie := h.login("auditor3", "auditor123")
+
+	launchResp := h.requestJSON(http.MethodPost, "/sessions/launch", map[string]any{
+		"asset_id": h.seed.allowedAssetID,
+		"action":   "shell",
+	}, operatorCookie)
+	launchPayload := h.responseJSON(t, launchResp)
+	sessionID := asString(launchPayload["session_id"])
+
+	for _, path := range []string{
+		"/sessions/" + sessionID,
+		"/sessions/" + sessionID + "/events",
+		"/sessions/" + sessionID + "/replay",
+		"/sessions/" + sessionID + "/export/summary",
+		"/sessions/" + sessionID + "/export/transcript",
+	} {
+		resp := h.requestJSON(http.MethodGet, path, nil, auditorCookie)
+		if resp.Code != http.StatusOK {
+			t.Fatalf("expected auditor %s 200, got %d: %s", path, resp.Code, resp.Body.String())
+		}
+	}
+}
+
+func TestSessionVisibility_NonOwnerUserDeniedForeignSessionArtifacts(t *testing.T) {
+	h := newTestHarness(t)
+
+	operatorCookie := h.login(h.seed.operatorName, h.seed.operatorPass)
+	viewerCookie := h.login(h.seed.viewerName, h.seed.viewerPass)
+
+	launchResp := h.requestJSON(http.MethodPost, "/sessions/launch", map[string]any{
+		"asset_id": h.seed.allowedAssetID,
+		"action":   "shell",
+	}, operatorCookie)
+	launchPayload := h.responseJSON(t, launchResp)
+	sessionID := asString(launchPayload["session_id"])
+
+	for _, path := range []string{
+		"/sessions/" + sessionID + "/events",
+		"/sessions/" + sessionID + "/replay",
+		"/sessions/" + sessionID + "/export/summary",
+		"/sessions/" + sessionID + "/export/transcript",
+	} {
+		resp := h.requestJSON(http.MethodGet, path, nil, viewerCookie)
+		if resp.Code != http.StatusForbidden {
+			t.Fatalf("expected non-owner user %s 403, got %d", path, resp.Code)
+		}
+	}
+}
+
+func TestSessionLaunch_AuditorDeniedEvenWithDirectGrant(t *testing.T) {
+	h := newTestHarness(t)
+
+	auditorID := h.createLocalUserWithRole("auditor4", "auditor123", "auditor4@example.com", "Auditor Four", "auditor")
+	createdBy := &h.seed.adminID
+	if err := h.access.GrantUserAction(h.ctx, auditorID, h.seed.allowedAssetID, "shell", createdBy); err != nil {
+		t.Fatalf("grant auditor access: %v", err)
+	}
+	auditorCookie := h.login("auditor4", "auditor123")
+
+	resp := h.requestJSON(http.MethodPost, "/sessions/launch", map[string]any{
+		"asset_id": h.seed.allowedAssetID,
+		"action":   "shell",
+	}, auditorCookie)
+	if resp.Code != http.StatusForbidden {
+		t.Fatalf("expected auditor launch 403, got %d: %s", resp.Code, resp.Body.String())
+	}
+}
+
+func TestSessionEventMutation_AuditorDenied(t *testing.T) {
+	h := newTestHarness(t)
+
+	operatorCookie := h.login(h.seed.operatorName, h.seed.operatorPass)
+	_ = h.createLocalUserWithRole("auditor5", "auditor123", "auditor5@example.com", "Auditor Five", "auditor")
+	auditorCookie := h.login("auditor5", "auditor123")
+
+	launchResp := h.requestJSON(http.MethodPost, "/sessions/launch", map[string]any{
+		"asset_id": h.seed.allowedAssetID,
+		"action":   "shell",
+	}, operatorCookie)
+	launchPayload := h.responseJSON(t, launchResp)
+	sessionID := asString(launchPayload["session_id"])
+
+	resp := h.requestJSON(http.MethodPost, "/sessions/"+sessionID+"/events", map[string]any{
+		"event_type": "connector_launch_requested",
+		"metadata": map[string]any{
+			"source": "integration_test",
+		},
+	}, auditorCookie)
+	if resp.Code != http.StatusForbidden {
+		t.Fatalf("expected auditor record event 403, got %d: %s", resp.Code, resp.Body.String())
+	}
+}

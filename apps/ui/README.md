@@ -7,7 +7,7 @@ Minimal React + Vite frontend for integrated shell + SFTP + DBeaver + Redis brok
 | Route | Purpose |
 |------|---------|
 | `/login` | Local dev login (`POST /auth/login`) |
-| `/` | Auth-protected My Access table (`GET /me`, `GET /access/my`) |
+| `/` | Auth-protected My Access table (`GET /me`, `GET /access/my`) for non-read-only users |
 | `/sessions` | My session history (`GET /sessions/my`) |
 | `/sessions/:sessionID` | Session detail/review (metadata + timeline + shell transcript/replay helper) |
 | `/admin/dashboard` | Admin/auditor recap view |
@@ -24,6 +24,7 @@ Minimal React + Vite frontend for integrated shell + SFTP + DBeaver + Redis brok
 - Cookie session model is used as-is from backend (`credentials: include`).
 - App boot fetches `/me`; unauthenticated users are redirected to `/login`.
 - Logout calls `POST /auth/logout` and returns to login route.
+- Read-only auditors are redirected from `/` to `/admin/dashboard`.
 - My Access table renders `asset_name`, `asset_type`, `endpoint`, `allowed_actions`.
 - `Shell` button is shown only for `linux_vm` assets with `shell` action.
 - `SFTP` button is shown only for `linux_vm` assets with `sftp` action.
@@ -124,7 +125,7 @@ Current DBeaver limitations:
 - MySQL path captures common simple/prepared flows.
 - MSSQL path captures SQL batch + common RPC prepared flows, but TLS-tunneled MSSQL sessions are not yet supported in this slice.
 
-Current Redis limitation: client-leg TLS to PAM Redis proxy is not implemented in this slice (connector typically targets loopback/session endpoint), although upstream Redis TLS from PAM proxy to target is supported.
+Current Redis limitation: the connector supports `redis-cli --tls` when `redis_tls=true` is present in launch payload, but PAM currently issues non-TLS client-leg Redis proxy endpoints in this slice; upstream Redis TLS from PAM proxy to target is supported.
 Current SFTP limitations:
 - SFTP sessions are relayed through PAM and file-operation events are captured (`upload_write`, `download_read`, `delete`, `rename`, `mkdir`, `rmdir`, `stat`, `list`).
 - Remaining gap: not all uncommon SFTP extensions are decoded yet, and operation-level success/failure attribution is still basic.

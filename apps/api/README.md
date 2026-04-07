@@ -161,6 +161,7 @@ Optional:
 
 Deployment note:
 - The API binary serves HTTP in this slice. Production must terminate HTTPS/TLS at an external reverse proxy or load balancer.
+- Reference edge configuration is available at `deploy/nginx/pam-edge.conf`.
 
 ## Current HTTP Endpoints
 
@@ -171,15 +172,15 @@ Deployment note:
 - `POST /auth/logout`
 - `GET /me`
 - `GET /auth/ping` (authenticated)
-- `GET /access/my` (authenticated)
+- `GET /access/my` (authenticated; denied to read-only auditors)
 - `GET /sessions/my` (authenticated)
 - `GET /sessions/{sessionID}` (authenticated; owner/admin/auditor)
 - `GET /sessions/{sessionID}/events` (authenticated; owner/admin/auditor)
 - `GET /sessions/{sessionID}/replay` (authenticated; owner/admin/auditor; shell-first helper)
 - `GET /sessions/{sessionID}/export/summary` (authenticated; owner/admin/auditor; JSON recap export)
 - `GET /sessions/{sessionID}/export/transcript` (authenticated; owner/admin/auditor; shell text export)
-- `POST /sessions/launch` (authenticated)
-- `POST /sessions/{sessionID}/events` (authenticated)
+- `POST /sessions/launch` (authenticated; denied to read-only auditors)
+- `POST /sessions/{sessionID}/events` (authenticated; denied to read-only auditors)
 - `GET /admin/ping` (admin only)
 - `GET /admin/sessions` (admin/auditor)
 - `GET /admin/sessions/export` (admin/auditor; CSV export)
@@ -330,6 +331,10 @@ Paste launch token when prompted. Password auth also works as first-pass fallbac
   - `operator`
   - `auditor`
   - `user`
+- Effective v1 authorization intent:
+  - `admin`: full admin + mutation access
+  - `auditor`: read-only review (`/admin/sessions*`, `/admin/audit*`, `/admin/summary`, and owner/admin/auditor session detail paths); no launch, session-event, or access-assignment actions (`/access/my` denied for read-only auditors)
+  - `operator` / `user`: assigned-access launch paths + own-session visibility, no admin surfaces
 - LDAP provider is production-usable for Samba AD auth/login mapping in this slice; full directory sync/reconciliation is still deferred.
 
 ## Samba AD Example Configuration

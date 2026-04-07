@@ -90,8 +90,8 @@
 - [ ] Implement asset CRUD API (`GET/POST/PUT/DELETE /assets`)
 - [x] Asset types: `linux_vm`, `database`, `redis` *(service-level model implemented for this slice)*
 - [x] Asset fields: id, name, type, host, port, metadata_json, created_at *(service + migration `000003_assets_credentials_access_v1.up.sql`)*
-- [x] Build admin assets page *(minimal helper: list assets and inspect grants only; create/edit/delete deferred)*
-- [x] Build "my assets" page (user-facing table via `GET /access/my`, shell action only in this slice)
+- [x] Build admin assets page *(list + create + detail/edit + grant inspection; delete remains deferred)*
+- [x] Build "my assets" page (user-facing table via `GET /access/my` with action-aware launch controls for `shell`/`sftp`/`dbeaver`/`redis`)
 - [ ] Write tests: CRUD, validation, type-specific fields
 
 ## Phase 8: Access Policy / Assignments
@@ -139,11 +139,11 @@ This is the critical path — highest-value v1 feature.
 
 ## Phase 11: File Transfer Path
 
-- [ ] Implement SFTP relay server (using `pkg/sftp` or similar)
-- [ ] Accept connections, authenticate via session token
-- [ ] Connect upstream to target SFTP using stored credentials
-- [ ] Relay SFTP operations
-- [ ] Log file operations: upload, download, delete, rename (path, size, timestamp)
+- [x] Implement SFTP relay server (using `pkg/sftp` or similar) *(implemented in SSH proxy SFTP relay slice with session-scoped auth + relay path)*
+- [x] Accept connections, authenticate via session token *(session-bound launch token auth enforced before relay path)*
+- [x] Connect upstream to target SFTP using stored credentials *(credentials resolved server-side from vault-backed store)*
+- [x] Relay SFTP operations *(client<->upstream relay wired through PAM)*
+- [x] Log file operations: upload, download, delete, rename (path, size, timestamp) *(first-pass operation telemetry via `file_operation` events)*
 - [x] Create session record for SFTP sessions (managed launch lifecycle via `sessions` + connector events)
 - [x] Implement `POST /sessions/launch` for SFTP assets
 - [x] Connector: launch FileZilla (macOS/Linux) or WinSCP (Windows) in managed connector flow
@@ -151,10 +151,10 @@ This is the critical path — highest-value v1 feature.
 
 ## Phase 12: DB Broker / DBeaver Path
 
-- [ ] Implement TCP proxy for database connections
-- [ ] Allocate ephemeral port per session (or multiplex on single port with session routing)
-- [ ] Authenticate session, retrieve DB credential from vault
-- [ ] Proxy TCP traffic to target database *(deferred in this slice)*
+- [x] Implement TCP proxy for database connections *(implemented for PostgreSQL, MySQL, MSSQL paths with session-scoped listeners)*
+- [x] Allocate ephemeral port per session (or multiplex on single port with session routing) *(session registration allocates ephemeral listener per launch)*
+- [x] Authenticate session, retrieve DB credential from vault *(credential resolution and launch/session binding enforced server-side)*
+- [x] Proxy TCP traffic to target database *(active for PostgreSQL/MySQL/MSSQL in current slice; MSSQL TLS tunnel limitation still applies)*
 - [x] Log connection/session lifecycle launch events for connector handoff (`launch_created`, `connector_launch_requested`, `connector_launch_succeeded`/`connector_launch_failed`, `session_ended`/`session_failed`)
 - [x] Implement `POST /sessions/launch` support for database assets (`action=dbeaver`)
 - [x] Connector: launch DBeaver with launch payload parameters (`/launch/dbeaver`)
@@ -164,13 +164,13 @@ This is the critical path — highest-value v1 feature.
 
 ## Phase 13: Redis Path
 
-- [ ] Implement TCP proxy for Redis (RESP protocol)
-- [ ] Authenticate via session token, connect upstream with stored Redis password
+- [x] Implement TCP proxy for Redis (RESP protocol) *(session-scoped RESP proxy implemented)*
+- [x] Authenticate via session token, connect upstream with stored Redis password *(launch token-gated client auth + upstream credential resolution in proxy)*
 - [x] Log connector/session lifecycle metadata events for Redis managed launch path (`launch_created`, `connector_launch_requested`, `connector_launch_succeeded`/`connector_launch_failed`, `session_ended`/`session_failed`)
 - [x] Implement `POST /sessions/launch` for Redis assets
 - [x] Connector: launch terminal with `redis-cli` in managed connector flow
 - [ ] Test: connect, run commands, verify audit log
-- [ ] Parse RESP protocol to log individual commands (include only if simple within proxy design; otherwise defer)
+- [x] Parse RESP protocol to log individual commands (include only if simple within proxy design; otherwise defer) *(command parsing + redacted argument summaries + dangerous-command flags implemented)*
 
 ## Phase 14: Audit + Session Storage
 
@@ -218,6 +218,7 @@ This is the critical path — highest-value v1 feature.
 - [x] Rate limiting on auth endpoints *(in-memory sliding window rate limiter: 10 attempts / 5min per username, with cleanup goroutine)*
 - [ ] JWT secret/key configuration for production
 - [ ] HTTPS/TLS configuration for API server *(app-level TLS listener intentionally not implemented in this slice; deploy docs now require external reverse proxy/LB TLS termination in front of API/connector routes)*
+- [x] Add reference edge TLS reverse-proxy deployment example *(nginx sample at `deploy/nginx/pam-edge.conf` with HTTPS redirect, HSTS, and `X-Request-Id` forwarding)*
 - [x] SSH host key management for PAM's SSH proxy *(added persistent proxy host key file + upstream host-key modes: `known-hosts` (default), `accept-new`, `insecure`; unsafe modes gated outside development)*
 - [x] Enforce explicit LDAP transport mode controls (`PAM_LDAP_USE_TLS` or `PAM_LDAP_STARTTLS`; mutually exclusive)
 - [x] Harden session cookie defaults and controls (`PAM_AUTH_COOKIE_SECURE` env-aware default, `PAM_AUTH_COOKIE_SAMESITE`, production validation guards)
@@ -230,6 +231,7 @@ This is the critical path — highest-value v1 feature.
 - [x] Structured login failure diagnostics (differentiate user_not_found, invalid_password, bind/config, TLS/connectivity in logs and audit)
 - [x] Hybrid auth mode clarity (explicit fallback logging with failure reason classification)
 - [x] Startup configuration summary log (provider mode, session settings, connector trust, unsafe mode status)
+- [x] Final RBAC sync audit pass across backend/API guards/UI visibility (admin vs auditor read-only vs operator/user), including session/audit visibility checks and integration coverage for critical authorization paths
 - [ ] Ensure no credentials leak in logs, error messages, or API responses *(targeted review completed for launch/session/audit/connector diagnostics; full repo-wide formal security review still pending)*
 - [x] Add request ID tracking across API and proxy layers *(request id now propagated through API middleware, launch/proxy registration, and session/audit event payload metadata)*
 - [x] Timeout configuration for proxy connections (idle timeout, max session duration) *(SSH/DB/Redis proxies enforce configurable idle and max session duration guards)*

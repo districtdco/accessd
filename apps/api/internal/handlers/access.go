@@ -36,6 +36,10 @@ func (h *AccessHandler) MyAccess(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
 		return
 	}
+	if currentUser.HasRole("auditor") && !currentUser.HasRole("admin") {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "forbidden"})
+		return
+	}
 
 	points, err := h.accessService.AllowedAssetsForUser(r.Context(), currentUser.ID)
 	if err != nil {

@@ -64,6 +64,12 @@ deploy/         Deployment-oriented templates/docs
   - SSH proxy service (`golang.org/x/crypto/ssh`) for first proxied shell path
 - development bootstrap seeds assets, encrypted credentials, and access grants for default admin (idempotent in `development` env)
 
+## Production TLS Posture
+
+- API listener (`PAM_HTTP_ADDR`) is HTTP in this slice by design.
+- Production must terminate TLS at an edge reverse proxy/load balancer and forward traffic to private PAM listeners.
+- A reference nginx edge config is included at `deploy/nginx/pam-edge.conf`.
+
 ## Auth Providers
 
 - Authentication mode is controlled by `PAM_AUTH_PROVIDER_MODE`:
@@ -73,6 +79,10 @@ deploy/         Deployment-oriented templates/docs
 - Passwords are stored as bcrypt hashes in PostgreSQL.
 - API auth uses server-controlled HTTP-only session cookies.
 - RBAC is active in backend middleware with roles: `admin`, `operator`, `auditor`, `user`.
+- RBAC v1 intent:
+  - `admin`: full admin/mutation access
+  - `auditor`: read-only review surfaces (admin sessions/audit/summary + broad session visibility), no launch/mutation actions (`/access/my` denied for read-only auditors)
+  - `operator` and `user`: assigned access workflows + own-session visibility, no admin surfaces
 - Default development admin is bootstrapped idempotently from environment settings.
 - LDAP-authenticated users are mapped into local PAM users on successful login (create/update by username, `auth_provider=ldap`).
 - LDAP defaults are tuned for Samba Active Directory (`sAMAccountName`, AD-friendly filters/attrs), with local/hybrid fallback behavior unchanged.

@@ -19,7 +19,7 @@ function App() {
     <AuthProvider>
       <Routes>
         <Route path="/login" element={<LoginRoute />} />
-        <Route path="/" element={<ProtectedRoute><AccessPage /></ProtectedRoute>} />
+        <Route path="/" element={<AccessRoute><AccessPage /></AccessRoute>} />
         <Route path="/sessions" element={<ProtectedRoute><MySessionsPage /></ProtectedRoute>} />
         <Route path="/sessions/:sessionID" element={<ProtectedRoute><SessionDetailPage /></ProtectedRoute>} />
         <Route path="/admin/users" element={<AdminRoute><AdminUsersPage /></AdminRoute>} />
@@ -54,6 +54,21 @@ function ProtectedRoute({ children }: { children: JSX.Element }) {
   }
   if (status === 'unauthenticated') {
     return <Navigate to="/login" replace />
+  }
+  return <AppLayout>{children}</AppLayout>
+}
+
+function AccessRoute({ children }: { children: JSX.Element }) {
+  const { status, user } = useAuth()
+  if (status === 'loading') {
+    return <PageLoader />
+  }
+  if (status === 'unauthenticated') {
+    return <Navigate to="/login" replace />
+  }
+  const isReadOnlyAuditor = user?.roles.includes('auditor') === true && user?.roles.includes('admin') !== true
+  if (isReadOnlyAuditor) {
+    return <Navigate to="/admin/dashboard" replace />
   }
   return <AppLayout>{children}</AppLayout>
 }
