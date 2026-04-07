@@ -17,6 +17,11 @@ import (
 	"github.com/districtd/pam/api/internal/assets"
 	"github.com/districtd/pam/api/internal/auth"
 	"github.com/districtd/pam/api/internal/credentials"
+	"github.com/districtd/pam/api/internal/mssqlproxy"
+	"github.com/districtd/pam/api/internal/mysqlproxy"
+	"github.com/districtd/pam/api/internal/pgproxy"
+	"github.com/districtd/pam/api/internal/redisproxy"
+	"github.com/districtd/pam/api/internal/requestctx"
 	"github.com/districtd/pam/api/internal/sessions"
 )
 
@@ -25,6 +30,10 @@ type SessionsHandler struct {
 	accessService      *access.Service
 	credentialsService *credentials.Service
 	sessionsService    *sessions.Service
+	pgProxyService     *pgproxy.Service
+	mysqlProxyService  *mysqlproxy.Service
+	mssqlProxyService  *mssqlproxy.Service
+	redisProxyService  *redisproxy.Service
 }
 
 type launchRequest struct {
@@ -80,12 +89,18 @@ type sessionReplayResponse struct {
 }
 
 type sessionReplayChunk struct {
-	EventID   int64  `json:"event_id"`
-	EventTime string `json:"event_time"`
-	Direction string `json:"direction"`
-	Stream    string `json:"stream,omitempty"`
-	Size      int    `json:"size,omitempty"`
-	Text      string `json:"text"`
+	EventID   int64   `json:"event_id"`
+	EventTime string  `json:"event_time"`
+	EventType string  `json:"event_type"`
+	Direction string  `json:"direction,omitempty"`
+	Stream    string  `json:"stream,omitempty"`
+	Size      int     `json:"size,omitempty"`
+	Text      string  `json:"text,omitempty"`
+	OffsetSec float64 `json:"offset_sec"`
+	DelaySec  float64 `json:"delay_sec"`
+	Cols      int     `json:"cols,omitempty"`
+	Rows      int     `json:"rows,omitempty"`
+	Asciicast []any   `json:"asciicast,omitempty"`
 }
 
 type sessionEventUser struct {
@@ -249,12 +264,20 @@ func NewSessionsHandler(
 	accessService *access.Service,
 	credentialsService *credentials.Service,
 	sessionsService *sessions.Service,
+	pgProxyService *pgproxy.Service,
+	mysqlProxyService *mysqlproxy.Service,
+	mssqlProxyService *mssqlproxy.Service,
+	redisProxyService *redisproxy.Service,
 ) *SessionsHandler {
 	return &SessionsHandler{
 		assetsService:      assetsService,
 		accessService:      accessService,
 		credentialsService: credentialsService,
 		sessionsService:    sessionsService,
+		pgProxyService:     pgProxyService,
+		mysqlProxyService:  mysqlProxyService,
+		mssqlProxyService:  mssqlProxyService,
+		redisProxyService:  redisProxyService,
 	}
 }
 
@@ -309,6 +332,7 @@ func (h *SessionsHandler) Launch(w http.ResponseWriter, r *http.Request) {
 		AssetID:   req.AssetID,
 		Action:    req.Action,
 		Protocol:  protocol,
+		RequestID: requestctx.FromContext(r.Context()),
 		ClientIP:  r.RemoteAddr,
 		UserAgent: r.UserAgent(),
 	})
@@ -328,32 +352,105 @@ func (h *SessionsHandler) Launch(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "database asset metadata is invalid"})
 			return
 		}
+		lctx := sessions.LaunchContext{
+			SessionID: launch.SessionID,
+			UserID:    currentUser.ID,
+			AssetID:   asset.ID,
+			Action:    req.Action,
+			Protocol:  sessions.ProtocolDB,
+			AssetType: assets.TypeDatabase,
+			Host:      asset.Host,
+			Port:      asset.Port,
+		}
+		if auditErr := h.sessionsService.RecordCredentialUsage(r.Context(), lctx, credentials.TypeDBPassword, "launch_prepare", requestctx.FromContext(r.Context())); auditErr != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to record credential usage audit"})
+			return
+		}
+
+		var proxyHost string
+		var proxyPort int
+
+		switch meta.Engine {
+		case "mysql", "mariadb":
+			if h.mysqlProxyService == nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "mysql proxy is not configured"})
+				return
+			}
+			proxyHost, proxyPort, err = h.mysqlProxyService.RegisterSession(mysqlproxy.SessionRegistration{
+				SessionID:    launch.SessionID,
+				UserID:       currentUser.ID,
+				AssetID:      asset.ID,
+				Engine:       meta.Engine,
+				Database:     meta.Database,
+				SSLMode:      meta.SSLMode,
+				UpstreamHost: asset.Host,
+				UpstreamPort: asset.Port,
+				Username:     strings.TrimSpace(cred.Username),
+				RequestID:    requestctx.FromContext(r.Context()),
+			})
+		case "mssql", "sqlserver", "sql_server":
+			if h.mssqlProxyService == nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "mssql proxy is not configured"})
+				return
+			}
+			proxyHost, proxyPort, err = h.mssqlProxyService.RegisterSession(mssqlproxy.SessionRegistration{
+				SessionID:    launch.SessionID,
+				UserID:       currentUser.ID,
+				AssetID:      asset.ID,
+				Engine:       meta.Engine,
+				Database:     meta.Database,
+				SSLMode:      meta.SSLMode,
+				UpstreamHost: asset.Host,
+				UpstreamPort: asset.Port,
+				Username:     strings.TrimSpace(cred.Username),
+				RequestID:    requestctx.FromContext(r.Context()),
+			})
+		default:
+			if h.pgProxyService == nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "database proxy is not configured"})
+				return
+			}
+			proxyHost, proxyPort, err = h.pgProxyService.RegisterSession(pgproxy.SessionRegistration{
+				SessionID:    launch.SessionID,
+				UserID:       currentUser.ID,
+				AssetID:      asset.ID,
+				Engine:       meta.Engine,
+				Database:     meta.Database,
+				SSLMode:      meta.SSLMode,
+				UpstreamHost: asset.Host,
+				UpstreamPort: asset.Port,
+				Username:     strings.TrimSpace(cred.Username),
+				RequestID:    requestctx.FromContext(r.Context()),
+			})
+		}
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to allocate database proxy endpoint"})
+			return
+		}
 		launch = h.sessionsService.AttachDBeaverPayload(launch, sessions.DBeaverLaunchPayload{
 			Engine:   meta.Engine,
-			Host:     asset.Host,
-			Port:     asset.Port,
+			Host:     proxyHost,
+			Port:     proxyPort,
 			Database: meta.Database,
 			Username: strings.TrimSpace(cred.Username),
-			Password: cred.Secret,
 			SSLMode:  meta.SSLMode,
 		})
 	}
 	if asset.Type == assets.TypeLinuxVM && req.Action == access.ActionSFTP {
-		cred, err := h.credentialsService.ResolveForAsset(r.Context(), asset.ID, credentials.TypePassword)
-		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to resolve sftp credential"})
-			return
-		}
 		meta, err := parseSFTPMetadata(asset.MetadataJSON)
 		if err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "sftp asset metadata is invalid"})
 			return
 		}
+		if launch.SFTP == nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to allocate sftp proxy endpoint"})
+			return
+		}
 		launch = h.sessionsService.AttachSFTPPayload(launch, sessions.SFTPLaunchPayload{
-			Host:     asset.Host,
-			Port:     asset.Port,
-			Username: strings.TrimSpace(cred.Username),
-			Password: cred.Secret,
+			Host:     launch.SFTP.Host,
+			Port:     launch.SFTP.Port,
+			Username: launch.SFTP.Username,
+			Password: launch.SFTP.Password,
 			Path:     meta.Path,
 		})
 	}
@@ -363,19 +460,57 @@ func (h *SessionsHandler) Launch(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to resolve redis credential"})
 			return
 		}
+		if h.redisProxyService == nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "redis proxy is not configured"})
+			return
+		}
+		if launch.Redis == nil || strings.TrimSpace(launch.Redis.Password) == "" {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "redis launch token was not issued"})
+			return
+		}
 		meta, err := parseRedisMetadata(asset.MetadataJSON)
 		if err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "redis asset metadata is invalid"})
 			return
 		}
-		launch = h.sessionsService.AttachRedisPayload(launch, sessions.RedisLaunchPayload{
-			Host:                  asset.Host,
-			Port:                  asset.Port,
-			Username:              strings.TrimSpace(cred.Username),
-			Password:              cred.Secret,
-			Database:              meta.Database,
+		lctx := sessions.LaunchContext{
+			SessionID: launch.SessionID,
+			UserID:    currentUser.ID,
+			AssetID:   asset.ID,
+			Action:    req.Action,
+			Protocol:  sessions.ProtocolRedis,
+			AssetType: assets.TypeRedis,
+			Host:      asset.Host,
+			Port:      asset.Port,
+		}
+		if auditErr := h.sessionsService.RecordCredentialUsage(r.Context(), lctx, credentials.TypePassword, "launch_prepare", requestctx.FromContext(r.Context())); auditErr != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to record credential usage audit"})
+			return
+		}
+		proxyHost, proxyPort, err := h.redisProxyService.RegisterSession(redisproxy.SessionRegistration{
+			SessionID:             launch.SessionID,
+			UserID:                currentUser.ID,
+			AssetID:               asset.ID,
+			UpstreamHost:          asset.Host,
+			UpstreamPort:          asset.Port,
 			UseTLS:                meta.TLS,
 			InsecureSkipVerifyTLS: meta.InsecureSkipVerifyTLS,
+			Database:              meta.Database,
+			ClientAuthToken:       launch.Redis.Password,
+			RequestID:             requestctx.FromContext(r.Context()),
+		})
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to allocate redis proxy endpoint"})
+			return
+		}
+		launch = h.sessionsService.AttachRedisPayload(launch, sessions.RedisLaunchPayload{
+			Host:                  proxyHost,
+			Port:                  proxyPort,
+			Username:              strings.TrimSpace(cred.Username),
+			Password:              launch.Redis.Password,
+			Database:              meta.Database,
+			UseTLS:                false,
+			InsecureSkipVerifyTLS: false,
 		})
 	}
 
@@ -887,6 +1022,12 @@ func (h *SessionsHandler) ExportSessionTranscript(w http.ResponseWriter, r *http
 	b.WriteString(fmt.Sprintf("# generated_at: %s\n\n", time.Now().UTC().Format(time.RFC3339Nano)))
 
 	for _, chunk := range chunks {
+		if chunk.Direction != "in" && chunk.Direction != "out" {
+			continue
+		}
+		if strings.TrimSpace(chunk.Text) == "" {
+			continue
+		}
 		prefix := "OUT"
 		if chunk.Direction == "in" {
 			prefix = "IN "
@@ -998,6 +1139,15 @@ func parseDBMetadata(raw json.RawMessage) (dbAssetMetadata, error) {
 	if meta.Engine == "" {
 		meta.Engine = "postgres"
 	}
+	switch strings.ToLower(meta.Engine) {
+	case "postgresql":
+		meta.Engine = "postgres"
+	case "sqlserver", "sql_server":
+		meta.Engine = "mssql"
+	}
+	if meta.Engine == "mssql" && meta.SSLMode == "" {
+		meta.SSLMode = "disable"
+	}
 	return meta, nil
 }
 
@@ -1056,7 +1206,6 @@ func buildLaunchResponse(result sessions.LaunchResult) (launchResponse, error) {
 			Port:      result.DBeaver.Port,
 			Database:  result.DBeaver.Database,
 			Username:  result.DBeaver.Username,
-			Password:  result.DBeaver.Password,
 			SSLMode:   result.DBeaver.SSLMode,
 			ExpiresAt: result.ExpiresAt.Format("2006-01-02T15:04:05.999999999Z07:00"),
 		}
@@ -1349,10 +1498,16 @@ func mapReplayChunks(chunks []sessions.ReplayChunk) []sessionReplayChunk {
 		resp = append(resp, sessionReplayChunk{
 			EventID:   chunk.EventID,
 			EventTime: chunk.EventTime.UTC().Format(time.RFC3339Nano),
+			EventType: chunk.EventType,
 			Direction: chunk.Direction,
 			Stream:    chunk.Stream,
 			Size:      chunk.Size,
 			Text:      chunk.Text,
+			OffsetSec: chunk.OffsetSec,
+			DelaySec:  chunk.DelaySec,
+			Cols:      chunk.Cols,
+			Rows:      chunk.Rows,
+			Asciicast: chunk.Asciicast,
 		})
 	}
 	return resp

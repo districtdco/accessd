@@ -18,6 +18,7 @@ type LaunchTokenClaims struct {
 	UserID    string `json:"uid"`
 	AssetID   string `json:"aid"`
 	Action    string `json:"act"`
+	RequestID string `json:"rid,omitempty"`
 	ExpiresAt int64  `json:"exp"`
 	Version   string `json:"v"`
 }

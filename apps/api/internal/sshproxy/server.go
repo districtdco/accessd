@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
+	"encoding/binary"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -18,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/districtd/pam/api/internal/connutil"
 	"github.com/districtd/pam/api/internal/credentials"
 	"github.com/districtd/pam/api/internal/sessions"
 	"golang.org/x/crypto/ssh"
@@ -30,6 +32,8 @@ type Config struct {
 	HostKeyPath            string
 	UpstreamHostKeyMode    string
 	UpstreamKnownHostsPath string
+	IdleTimeout            time.Duration
+	MaxSessionAge          time.Duration
 }
 
 type Server struct {
@@ -42,6 +46,8 @@ type Server struct {
 	wg       sync.WaitGroup
 
 	hostKeyCallback ssh.HostKeyCallback
+	mu              sync.Mutex
+	active          map[net.Conn]struct{}
 }
 
 func New(cfg Config, sessionsSvc *sessions.Service, credSvc *credentials.Service, logger *slog.Logger) (*Server, error) {
@@ -69,6 +75,13 @@ func New(cfg Config, sessionsSvc *sessions.Service, credSvc *credentials.Service
 		logger:      logger.With("component", "ssh_proxy"),
 		sessionsSvc: sessionsSvc,
 		credSvc:     credSvc,
+		active:      map[net.Conn]struct{}{},
+	}
+	if s.cfg.IdleTimeout <= 0 {
+		s.cfg.IdleTimeout = 5 * time.Minute
+	}
+	if s.cfg.MaxSessionAge <= 0 {
+		s.cfg.MaxSessionAge = 8 * time.Hour
 	}
 	callback, err := s.buildUpstreamHostKeyCallback()
 	if err != nil {
@@ -106,9 +119,12 @@ func (s *Server) ListenAndServe() error {
 			return fmt.Errorf("accept ssh connection: %w", err)
 		}
 
+		conn = connutil.WrapIdleTimeout(conn, s.cfg.IdleTimeout)
+		s.trackConn(conn)
 		s.wg.Add(1)
 		go func() {
 			defer s.wg.Done()
+			defer s.untrackConn(conn)
 			s.handleConn(conn, serverConfig)
 		}()
 	}
@@ -127,6 +143,8 @@ func (s *Server) Shutdown(ctx context.Context) error {
 
 	select {
 	case <-ctx.Done():
+		s.closeActiveConns()
+		<-done
 		return ctx.Err()
 	case <-done:
 		return nil
@@ -154,15 +172,18 @@ func (s *Server) newSSHServerConfig() (*ssh.ServerConfig, error) {
 					"session_id": result.launch.SessionID,
 					"user_id":    result.launch.UserID,
 					"asset_id":   result.launch.AssetID,
+					"request_id": result.launch.RequestID,
 					"host":       result.launch.Host,
 					"port":       strconv.Itoa(result.launch.Port),
+					"protocol":   result.launch.Protocol,
+					"action":     result.launch.Action,
 				},
 			}, nil
 		},
 		KeyboardInteractiveCallback: func(conn ssh.ConnMetadata, challenge ssh.KeyboardInteractiveChallenge) (*ssh.Permissions, error) {
 			answers, err := challenge(
 				conn.User(),
-				"Enter launch token for this shell session.",
+				"Enter launch token for this PAM session.",
 				[]string{"Launch token:"},
 				[]bool{false},
 			)
@@ -181,8 +202,11 @@ func (s *Server) newSSHServerConfig() (*ssh.ServerConfig, error) {
 					"session_id": result.launch.SessionID,
 					"user_id":    result.launch.UserID,
 					"asset_id":   result.launch.AssetID,
+					"request_id": result.launch.RequestID,
 					"host":       result.launch.Host,
 					"port":       strconv.Itoa(result.launch.Port),
+					"protocol":   result.launch.Protocol,
+					"action":     result.launch.Action,
 				},
 			}, nil
 		},
@@ -205,6 +229,7 @@ func (s *Server) authenticate(conn ssh.ConnMetadata, token string) (authResult, 
 	s.logger.Info(
 		"ssh proxy authentication succeeded",
 		"session_id", lctx.SessionID,
+		"request_id", lctx.RequestID,
 		"user_id", lctx.UserID,
 		"asset_id", lctx.AssetID,
 		"remote_addr", conn.RemoteAddr().String(),
@@ -214,6 +239,13 @@ func (s *Server) authenticate(conn ssh.ConnMetadata, token string) (authResult, 
 
 func (s *Server) handleConn(rawConn net.Conn, cfg *ssh.ServerConfig) {
 	defer rawConn.Close()
+	if s.cfg.MaxSessionAge > 0 {
+		timer := time.AfterFunc(s.cfg.MaxSessionAge, func() {
+			s.logger.Warn("ssh proxy max session duration reached; closing connection", "remote_addr", rawConn.RemoteAddr().String())
+			_ = rawConn.Close()
+		})
+		defer timer.Stop()
+	}
 
 	serverConn, chans, reqs, err := ssh.NewServerConn(rawConn, cfg)
 	if err != nil {
@@ -236,7 +268,7 @@ func (s *Server) handleConn(rawConn net.Conn, cfg *ssh.ServerConfig) {
 		}
 		finalized = true
 		if err := s.sessionsSvc.MarkFailed(ctx, launch, reason); err != nil {
-			s.logger.Warn("failed to mark session failed", "session_id", launch.SessionID, "reason", reason, "error", err)
+			s.logger.Warn("failed to mark session failed", "session_id", launch.SessionID, "request_id", launch.RequestID, "reason", reason, "error", err)
 		}
 	}
 	finalizeEnded := func(reason string) {
@@ -245,7 +277,7 @@ func (s *Server) handleConn(rawConn net.Conn, cfg *ssh.ServerConfig) {
 		}
 		finalized = true
 		if err := s.sessionsSvc.MarkEnded(ctx, launch, reason); err != nil {
-			s.logger.Warn("failed to record session end", "session_id", launch.SessionID, "error", err)
+			s.logger.Warn("failed to record session end", "session_id", launch.SessionID, "request_id", launch.RequestID, "error", err)
 		}
 	}
 	defer func() {
@@ -255,20 +287,20 @@ func (s *Server) handleConn(rawConn net.Conn, cfg *ssh.ServerConfig) {
 	}()
 
 	if err := s.sessionsSvc.MarkProxyConnected(ctx, launch, serverConn.RemoteAddr().String()); err != nil {
-		s.logger.Warn("failed to record proxy_connected", "session_id", launch.SessionID, "error", err)
+		s.logger.Warn("failed to record proxy_connected", "session_id", launch.SessionID, "request_id", launch.RequestID, "error", err)
 	}
 
 	upstreamClient, upstreamSession, err := s.connectUpstream(ctx, launch)
 	if err != nil {
 		finalizeFailed("upstream_connect_failed")
-		s.logger.Error("upstream ssh connection failed", "session_id", launch.SessionID, "error", err)
+		s.logger.Error("upstream ssh connection failed", "session_id", launch.SessionID, "request_id", launch.RequestID, "error", err)
 		return
 	}
 	defer upstreamClient.Close()
 	defer upstreamSession.Close()
 
 	if err := s.sessionsSvc.MarkUpstreamConnected(ctx, launch); err != nil {
-		s.logger.Warn("failed to record upstream_connected", "session_id", launch.SessionID, "error", err)
+		s.logger.Warn("failed to record upstream_connected", "session_id", launch.SessionID, "request_id", launch.RequestID, "error", err)
 	}
 
 	go ssh.DiscardRequests(reqs)
@@ -276,25 +308,32 @@ func (s *Server) handleConn(rawConn net.Conn, cfg *ssh.ServerConfig) {
 	for newChannel := range chans {
 		if newChannel.ChannelType() != "session" {
 			_ = newChannel.Reject(ssh.UnknownChannelType, "only session channels are supported")
-			s.logger.Warn("rejected non-session channel", "session_id", launch.SessionID, "channel_type", newChannel.ChannelType())
+			s.logger.Warn("rejected non-session channel", "session_id", launch.SessionID, "request_id", launch.RequestID, "channel_type", newChannel.ChannelType())
 			continue
 		}
 
 		channel, requests, err := newChannel.Accept()
 		if err != nil {
 			finalizeFailed("session_channel_accept_failed")
-			s.logger.Warn("failed to accept session channel", "session_id", launch.SessionID, "error", err)
+			s.logger.Warn("failed to accept session channel", "session_id", launch.SessionID, "request_id", launch.RequestID, "error", err)
 			return
 		}
 
-		if err := s.bridgeSession(ctx, launch, channel, requests, upstreamSession); err != nil {
-			reason := bridgeFailureReason(err)
+		var bridgeErr error
+		switch launch.Action {
+		case "sftp":
+			bridgeErr = s.bridgeSFTPSession(ctx, launch, channel, requests, upstreamSession)
+		default:
+			bridgeErr = s.bridgeSession(ctx, launch, channel, requests, upstreamSession)
+		}
+		if bridgeErr != nil {
+			reason := bridgeFailureReason(bridgeErr)
 			finalizeFailed(reason)
-			s.logger.Warn("ssh bridge failed", "session_id", launch.SessionID, "reason", reason, "error", err)
+			s.logger.Warn("ssh bridge failed", "session_id", launch.SessionID, "request_id", launch.RequestID, "reason", reason, "error", bridgeErr, "action", launch.Action)
 			return
 		}
 		finalizeEnded("client_disconnected")
-		s.logger.Info("ssh session bridge completed", "session_id", launch.SessionID)
+		s.logger.Info("ssh session bridge completed", "session_id", launch.SessionID, "request_id", launch.RequestID, "action", launch.Action)
 
 		return
 	}
@@ -306,6 +345,9 @@ func (s *Server) connectUpstream(ctx context.Context, launch sessions.LaunchCont
 	cred, err := s.credSvc.ResolveForAsset(ctx, launch.AssetID, credentials.TypePassword)
 	if err != nil {
 		return nil, nil, fmt.Errorf("resolve password credential: %w", err)
+	}
+	if err := s.sessionsSvc.RecordCredentialUsage(ctx, launch, credentials.TypePassword, "proxy_upstream_auth", launch.RequestID); err != nil {
+		s.logger.Warn("failed to write credential usage audit", "session_id", launch.SessionID, "request_id", launch.RequestID, "error", err)
 	}
 	if strings.TrimSpace(cred.Username) == "" {
 		return nil, nil, fmt.Errorf("credential username is required for ssh")
@@ -321,7 +363,7 @@ func (s *Server) connectUpstream(ctx context.Context, launch sessions.LaunchCont
 	}
 
 	endpoint := net.JoinHostPort(launch.Host, strconv.Itoa(launch.Port))
-	s.logger.Info("connecting to upstream ssh", "session_id", launch.SessionID, "endpoint", endpoint)
+	s.logger.Info("connecting to upstream ssh", "session_id", launch.SessionID, "request_id", launch.RequestID, "endpoint", endpoint)
 	client, err := ssh.Dial("tcp", endpoint, clientCfg)
 	if err != nil {
 		return nil, nil, fmt.Errorf("dial upstream ssh: %w", err)
@@ -342,6 +384,7 @@ func (s *Server) bridgeSession(
 	upstreamSession *ssh.Session,
 ) error {
 	defer clientCh.Close()
+	recorder := newShellRecorder()
 
 	upstreamIn, err := upstreamSession.StdinPipe()
 	if err != nil {
@@ -360,7 +403,7 @@ func (s *Server) bridgeSession(
 	reqErrs := make(chan error, 1)
 	go func() {
 		for req := range requests {
-			ok, reqErr := handleSessionRequest(req, upstreamSession)
+			ok, reqErr := s.handleSessionRequest(ctx, launch, recorder, req, upstreamSession)
 			if req.WantReply {
 				_ = req.Reply(ok, nil)
 			}
@@ -389,9 +432,9 @@ func (s *Server) bridgeSession(
 	}
 
 	copyErrs := make(chan error, 3)
-	go s.copyWithEvents(ctx, launch, upstreamIn, clientCh, sessions.EventDataIn, "stdin", true, copyErrs)
-	go s.copyWithEvents(ctx, launch, clientCh, upstreamOut, sessions.EventDataOut, "stdout", false, copyErrs)
-	go s.copyWithEvents(ctx, launch, clientCh.Stderr(), upstreamErr, sessions.EventDataOut, "stderr", false, copyErrs)
+	go s.copyWithEvents(ctx, launch, recorder, upstreamIn, clientCh, sessions.EventDataIn, "stdin", true, copyErrs)
+	go s.copyWithEvents(ctx, launch, recorder, clientCh, upstreamOut, sessions.EventDataOut, "stdout", false, copyErrs)
+	go s.copyWithEvents(ctx, launch, recorder, clientCh.Stderr(), upstreamErr, sessions.EventDataOut, "stderr", false, copyErrs)
 
 	waitErr := upstreamSession.Wait()
 
@@ -420,11 +463,516 @@ func (s *Server) bridgeSession(
 	return nil
 }
 
+const (
+	sftpPacketInit     byte = 1
+	sftpPacketVersion  byte = 2
+	sftpPacketOpen     byte = 3
+	sftpPacketClose    byte = 4
+	sftpPacketRead     byte = 5
+	sftpPacketWrite    byte = 6
+	sftpPacketLstat    byte = 7
+	sftpPacketFstat    byte = 8
+	sftpPacketSetstat  byte = 9
+	sftpPacketOpendir  byte = 11
+	sftpPacketReaddir  byte = 12
+	sftpPacketRemove   byte = 13
+	sftpPacketMkdir    byte = 14
+	sftpPacketRmdir    byte = 15
+	sftpPacketRealpath byte = 16
+	sftpPacketStat     byte = 17
+	sftpPacketRename   byte = 18
+
+	sftpPacketStatus byte = 101
+	sftpPacketHandle byte = 102
+	sftpPacketData   byte = 103
+	sftpPacketName   byte = 104
+)
+
+type sftpPendingRequest struct {
+	Operation string
+	Path      string
+	PathTo    string
+	Handle    string
+	Size      int64
+}
+
+type sftpFileOperation struct {
+	Operation string
+	Path      string
+	PathTo    string
+	Size      int64
+}
+
+type sftpRelayState struct {
+	mu      sync.Mutex
+	pending map[uint32]sftpPendingRequest
+	handles map[string]string
+}
+
+func newSFTPRelayState() *sftpRelayState {
+	return &sftpRelayState{
+		pending: map[uint32]sftpPendingRequest{},
+		handles: map[string]string{},
+	}
+}
+
+func (s *Server) bridgeSFTPSession(
+	ctx context.Context,
+	launch sessions.LaunchContext,
+	clientCh ssh.Channel,
+	requests <-chan *ssh.Request,
+	upstreamSession *ssh.Session,
+) error {
+	defer clientCh.Close()
+
+	upstreamIn, err := upstreamSession.StdinPipe()
+	if err != nil {
+		return fmt.Errorf("open upstream stdin: %w", err)
+	}
+	upstreamOut, err := upstreamSession.StdoutPipe()
+	if err != nil {
+		return fmt.Errorf("open upstream stdout: %w", err)
+	}
+	upstreamErr, err := upstreamSession.StderrPipe()
+	if err != nil {
+		return fmt.Errorf("open upstream stderr: %w", err)
+	}
+
+	subsystemStarted := make(chan struct{}, 1)
+	reqErrs := make(chan error, 1)
+	go func() {
+		for req := range requests {
+			ok, started, reqErr := handleSFTPRequest(req, upstreamSession)
+			if req.WantReply {
+				_ = req.Reply(ok, nil)
+			}
+			if reqErr != nil {
+				reqErrs <- reqErr
+				return
+			}
+			if started {
+				select {
+				case subsystemStarted <- struct{}{}:
+				default:
+				}
+			}
+		}
+	}()
+
+	select {
+	case <-subsystemStarted:
+	case reqErr := <-reqErrs:
+		return fmt.Errorf("session_request_failed: %w", reqErr)
+	case <-time.After(10 * time.Second):
+		return fmt.Errorf("sftp_subsystem_timeout")
+	}
+
+	state := newSFTPRelayState()
+	copyErrs := make(chan error, 3)
+
+	go s.copySFTPClientToUpstream(ctx, launch, upstreamIn, clientCh, state, copyErrs)
+	go s.copySFTPUpstreamToClient(ctx, launch, clientCh, upstreamOut, state, copyErrs)
+	go s.copySFTPRaw(clientCh.Stderr(), upstreamErr, copyErrs)
+
+	waitErr := upstreamSession.Wait()
+	for i := 0; i < 3; i++ {
+		if copyErr := <-copyErrs; copyErr != nil {
+			s.logger.Warn("sftp stream copy ended with error", "session_id", launch.SessionID, "error", copyErr)
+		}
+	}
+	if waitErr != nil {
+		if exitErr, ok := waitErr.(*ssh.ExitError); ok {
+			status := exitErr.ExitStatus()
+			_, _ = clientCh.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{Status: uint32(status)}))
+		} else {
+			return fmt.Errorf("upstream_wait_failed: %w", waitErr)
+		}
+	} else {
+		_, _ = clientCh.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{Status: 0}))
+	}
+	return nil
+}
+
+func handleSFTPRequest(req *ssh.Request, upstreamSession *ssh.Session) (ok bool, started bool, err error) {
+	switch req.Type {
+	case "subsystem":
+		var payload struct {
+			Name string
+		}
+		if unmarshalErr := ssh.Unmarshal(req.Payload, &payload); unmarshalErr != nil {
+			return false, false, fmt.Errorf("invalid subsystem payload: %w", unmarshalErr)
+		}
+		if strings.TrimSpace(payload.Name) != "sftp" {
+			return false, false, nil
+		}
+		if subErr := upstreamSession.RequestSubsystem("sftp"); subErr != nil {
+			return false, false, fmt.Errorf("request upstream sftp subsystem: %w", subErr)
+		}
+		return true, true, nil
+	case "env":
+		// Accept and ignore env for compatibility.
+		return true, false, nil
+	default:
+		return false, false, nil
+	}
+}
+
+func (s *Server) copySFTPRaw(dst io.Writer, src io.Reader, done chan<- error) {
+	_, err := io.Copy(dst, src)
+	if errors.Is(err, io.EOF) {
+		done <- nil
+		return
+	}
+	done <- err
+}
+
+func (s *Server) copySFTPClientToUpstream(
+	ctx context.Context,
+	launch sessions.LaunchContext,
+	dst io.WriteCloser,
+	src io.Reader,
+	state *sftpRelayState,
+	done chan<- error,
+) {
+	defer func() {
+		_ = dst.Close()
+	}()
+	parser := newSFTPPacketParser(func(payload []byte) {
+		s.handleSFTPClientPacket(ctx, launch, payload, state)
+	})
+	done <- copyWithParser(dst, src, parser)
+}
+
+func (s *Server) copySFTPUpstreamToClient(
+	ctx context.Context,
+	launch sessions.LaunchContext,
+	dst io.Writer,
+	src io.Reader,
+	state *sftpRelayState,
+	done chan<- error,
+) {
+	parser := newSFTPPacketParser(func(payload []byte) {
+		s.handleSFTPServerPacket(ctx, launch, payload, state)
+	})
+	done <- copyWithParser(dst, src, parser)
+}
+
+func copyWithParser(dst io.Writer, src io.Reader, parser *sftpPacketParser) error {
+	buf := make([]byte, 16*1024)
+	for {
+		n, err := src.Read(buf)
+		if n > 0 {
+			chunk := buf[:n]
+			if _, wErr := dst.Write(chunk); wErr != nil {
+				return wErr
+			}
+			parser.Feed(chunk)
+		}
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return nil
+			}
+			return err
+		}
+	}
+}
+
+type sftpPacketParser struct {
+	buf      []byte
+	onPacket func([]byte)
+}
+
+func newSFTPPacketParser(onPacket func([]byte)) *sftpPacketParser {
+	return &sftpPacketParser{onPacket: onPacket}
+}
+
+func (p *sftpPacketParser) Feed(chunk []byte) {
+	if len(chunk) == 0 {
+		return
+	}
+	p.buf = append(p.buf, chunk...)
+	for {
+		if len(p.buf) < 4 {
+			return
+		}
+		packetLen := int(binary.BigEndian.Uint32(p.buf[:4]))
+		total := 4 + packetLen
+		if packetLen <= 0 || total > 16*1024*1024 {
+			p.buf = nil
+			return
+		}
+		if len(p.buf) < total {
+			return
+		}
+		payload := make([]byte, packetLen)
+		copy(payload, p.buf[4:total])
+		p.onPacket(payload)
+		p.buf = p.buf[total:]
+	}
+}
+
+func (s *Server) handleSFTPClientPacket(ctx context.Context, launch sessions.LaunchContext, payload []byte, state *sftpRelayState) {
+	for _, op := range parseSFTPClientPacket(payload, state) {
+		s.recordFileOperation(ctx, launch, op)
+	}
+}
+
+func parseSFTPClientPacket(payload []byte, state *sftpRelayState) []sftpFileOperation {
+	ops := make([]sftpFileOperation, 0, 2)
+	if len(payload) < 1 {
+		return ops
+	}
+	packetType := payload[0]
+	if packetType == sftpPacketInit {
+		return ops
+	}
+	if len(payload) < 5 {
+		return ops
+	}
+	reqID := binary.BigEndian.Uint32(payload[1:5])
+	body := payload[5:]
+
+	switch packetType {
+	case sftpPacketOpen:
+		path, _, ok := readSFTPString(body, 0)
+		if !ok {
+			return ops
+		}
+		state.storePending(reqID, sftpPendingRequest{Operation: "open", Path: path})
+	case sftpPacketOpendir:
+		path, _, ok := readSFTPString(body, 0)
+		if !ok {
+			return ops
+		}
+		state.storePending(reqID, sftpPendingRequest{Operation: "opendir", Path: path})
+		ops = append(ops, sftpFileOperation{Operation: "list", Path: path, Size: 0})
+	case sftpPacketRead:
+		handle, offset, ok := readSFTPString(body, 0)
+		if !ok {
+			return ops
+		}
+		if offset+12 > len(body) {
+			return ops
+		}
+		size := int64(binary.BigEndian.Uint32(body[offset+8 : offset+12]))
+		path := state.lookupPathByHandle(handle)
+		state.storePending(reqID, sftpPendingRequest{Operation: "download_read", Path: path, Handle: handle, Size: size})
+	case sftpPacketWrite:
+		handle, offset, ok := readSFTPString(body, 0)
+		if !ok {
+			return ops
+		}
+		if offset+8 > len(body) {
+			return ops
+		}
+		data, _, ok := readSFTPString(body, offset+8)
+		if !ok {
+			return ops
+		}
+		path := state.lookupPathByHandle(handle)
+		ops = append(ops, sftpFileOperation{
+			Operation: "upload_write",
+			Path:      path,
+			Size:      int64(len(data)),
+		})
+	case sftpPacketRemove:
+		path, _, ok := readSFTPString(body, 0)
+		if !ok {
+			return ops
+		}
+		ops = append(ops, sftpFileOperation{Operation: "delete", Path: path})
+	case sftpPacketRename:
+		oldPath, next, ok := readSFTPString(body, 0)
+		if !ok {
+			return ops
+		}
+		newPath, _, ok := readSFTPString(body, next)
+		if !ok {
+			return ops
+		}
+		ops = append(ops, sftpFileOperation{Operation: "rename", Path: oldPath, PathTo: newPath})
+	case sftpPacketMkdir:
+		path, _, ok := readSFTPString(body, 0)
+		if !ok {
+			return ops
+		}
+		ops = append(ops, sftpFileOperation{Operation: "mkdir", Path: path})
+	case sftpPacketRmdir:
+		path, _, ok := readSFTPString(body, 0)
+		if !ok {
+			return ops
+		}
+		ops = append(ops, sftpFileOperation{Operation: "rmdir", Path: path})
+	case sftpPacketStat, sftpPacketLstat, sftpPacketSetstat, sftpPacketRealpath:
+		path, _, ok := readSFTPString(body, 0)
+		if !ok {
+			return ops
+		}
+		ops = append(ops, sftpFileOperation{Operation: "stat", Path: path})
+	case sftpPacketReaddir:
+		handle, _, ok := readSFTPString(body, 0)
+		if !ok {
+			return ops
+		}
+		path := state.lookupPathByHandle(handle)
+		if path != "" {
+			ops = append(ops, sftpFileOperation{Operation: "list", Path: path})
+		}
+	case sftpPacketClose:
+		handle, _, ok := readSFTPString(body, 0)
+		if !ok {
+			return ops
+		}
+		state.deleteHandle(handle)
+	}
+	return ops
+}
+
+func (s *Server) handleSFTPServerPacket(ctx context.Context, launch sessions.LaunchContext, payload []byte, state *sftpRelayState) {
+	for _, op := range parseSFTPServerPacket(payload, state) {
+		s.recordFileOperation(ctx, launch, op)
+	}
+}
+
+func parseSFTPServerPacket(payload []byte, state *sftpRelayState) []sftpFileOperation {
+	ops := make([]sftpFileOperation, 0, 1)
+	if len(payload) < 1 {
+		return ops
+	}
+	packetType := payload[0]
+	if packetType == sftpPacketVersion || len(payload) < 5 {
+		return ops
+	}
+	reqID := binary.BigEndian.Uint32(payload[1:5])
+	body := payload[5:]
+
+	switch packetType {
+	case sftpPacketHandle:
+		handleRaw, _, ok := readSFTPString(body, 0)
+		if !ok {
+			return ops
+		}
+		pending, ok := state.popPending(reqID)
+		if !ok {
+			return ops
+		}
+		if pending.Operation == "open" || pending.Operation == "opendir" {
+			state.mapHandleToPath(handleRaw, pending.Path)
+		}
+	case sftpPacketData:
+		data, _, ok := readSFTPString(body, 0)
+		if !ok {
+			return ops
+		}
+		pending, ok := state.popPending(reqID)
+		if !ok || pending.Operation != "download_read" {
+			return ops
+		}
+		path := pending.Path
+		if path == "" && pending.Handle != "" {
+			path = state.lookupPathByHandle(pending.Handle)
+		}
+		ops = append(ops, sftpFileOperation{
+			Operation: "download_read",
+			Path:      path,
+			Size:      int64(len(data)),
+		})
+	case sftpPacketStatus:
+		// Drop pending read/open bookkeeping on status replies.
+		state.popPending(reqID)
+	case sftpPacketName:
+		// READDIR result; clear pending bookkeeping if set.
+		state.popPending(reqID)
+	}
+	return ops
+}
+
+func (s *Server) recordFileOperation(ctx context.Context, launch sessions.LaunchContext, op sftpFileOperation) {
+	if strings.TrimSpace(op.Operation) == "" {
+		return
+	}
+	payload := buildFileOperationPayload(launch, op, time.Now().UTC())
+	actor := launch.UserID
+	if err := s.sessionsSvc.WriteEvent(ctx, launch.SessionID, sessions.EventFileOperation, &actor, payload); err != nil {
+		s.logger.Warn("failed to write file operation event", "session_id", launch.SessionID, "operation", op.Operation, "error", err)
+	}
+}
+
+func buildFileOperationPayload(launch sessions.LaunchContext, op sftpFileOperation, when time.Time) map[string]any {
+	payload := map[string]any{
+		"session_id": launch.SessionID,
+		"user_id":    launch.UserID,
+		"asset_id":   launch.AssetID,
+		"operation":  op.Operation,
+		"path":       strings.TrimSpace(op.Path),
+		"event_time": when.UTC().Format(time.RFC3339Nano),
+	}
+	if strings.TrimSpace(op.PathTo) != "" {
+		payload["path_to"] = strings.TrimSpace(op.PathTo)
+	}
+	if op.Size > 0 {
+		payload["size"] = op.Size
+	}
+	return payload
+}
+
+func readSFTPString(payload []byte, offset int) (string, int, bool) {
+	if offset+4 > len(payload) {
+		return "", 0, false
+	}
+	ln := int(binary.BigEndian.Uint32(payload[offset : offset+4]))
+	start := offset + 4
+	end := start + ln
+	if ln < 0 || end > len(payload) {
+		return "", 0, false
+	}
+	return string(payload[start:end]), end, true
+}
+
+func (s *sftpRelayState) storePending(id uint32, req sftpPendingRequest) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pending[id] = req
+}
+
+func (s *sftpRelayState) popPending(id uint32) (sftpPendingRequest, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	req, ok := s.pending[id]
+	if ok {
+		delete(s.pending, id)
+	}
+	return req, ok
+}
+
+func (s *sftpRelayState) mapHandleToPath(handle, path string) {
+	if strings.TrimSpace(handle) == "" || strings.TrimSpace(path) == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.handles[handle] = path
+}
+
+func (s *sftpRelayState) lookupPathByHandle(handle string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.handles[handle]
+}
+
+func (s *sftpRelayState) deleteHandle(handle string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.handles, handle)
+}
+
 func bridgeFailureReason(err error) string {
 	text := strings.ToLower(strings.TrimSpace(err.Error()))
 	switch {
 	case strings.Contains(text, "shell_request_timeout"):
 		return "shell_request_timeout"
+	case strings.Contains(text, "sftp_subsystem_timeout"):
+		return "sftp_subsystem_timeout"
 	case strings.Contains(text, "session_request_failed"):
 		return "session_request_failed"
 	case strings.Contains(text, "upstream_wait_failed"):
@@ -437,6 +985,7 @@ func bridgeFailureReason(err error) string {
 func (s *Server) copyWithEvents(
 	ctx context.Context,
 	launch sessions.LaunchContext,
+	recorder *shellRecorder,
 	dst io.Writer,
 	src io.Reader,
 	eventType, stream string,
@@ -461,7 +1010,11 @@ func (s *Server) copyWithEvents(
 				result = werr
 				return
 			}
-			if recErr := s.sessionsSvc.RecordDataEvent(ctx, launch.SessionID, eventType, stream, chunk); recErr != nil {
+			offset := 0.0
+			if recorder != nil {
+				offset = recorder.elapsed()
+			}
+			if recErr := s.sessionsSvc.RecordDataEvent(ctx, launch.SessionID, eventType, stream, chunk, offset); recErr != nil {
 				s.logger.Warn("failed to record data event", "session_id", launch.SessionID, "event_type", eventType, "error", recErr)
 			}
 		}
@@ -473,6 +1026,25 @@ func (s *Server) copyWithEvents(
 			return
 		}
 	}
+}
+
+type shellRecorder struct {
+	startedAt time.Time
+}
+
+func newShellRecorder() *shellRecorder {
+	return &shellRecorder{startedAt: time.Now().UTC()}
+}
+
+func (r *shellRecorder) elapsed() float64 {
+	if r == nil || r.startedAt.IsZero() {
+		return 0
+	}
+	seconds := time.Since(r.startedAt).Seconds()
+	if seconds < 0 {
+		return 0
+	}
+	return seconds
 }
 
 func (s *Server) loadOrCreateProxyHostSigner() (ssh.Signer, error) {
@@ -588,7 +1160,13 @@ func knownHostsAddrString(hostname string, remote net.Addr) string {
 	return trimmed
 }
 
-func handleSessionRequest(req *ssh.Request, upstreamSession *ssh.Session) (bool, error) {
+func (s *Server) handleSessionRequest(
+	ctx context.Context,
+	launch sessions.LaunchContext,
+	recorder *shellRecorder,
+	req *ssh.Request,
+	upstreamSession *ssh.Session,
+) (bool, error) {
 	switch req.Type {
 	case "pty-req":
 		var payload struct {
@@ -606,6 +1184,9 @@ func handleSessionRequest(req *ssh.Request, upstreamSession *ssh.Session) (bool,
 		if err := upstreamSession.RequestPty(payload.Term, int(payload.Rows), int(payload.Columns), modes); err != nil {
 			return false, fmt.Errorf("request upstream pty: %w", err)
 		}
+		if recErr := s.sessionsSvc.RecordTerminalResizeEvent(ctx, launch.SessionID, int(payload.Columns), int(payload.Rows), recorder.elapsed()); recErr != nil {
+			s.logger.Warn("failed to record terminal resize", "session_id", launch.SessionID, "error", recErr)
+		}
 		return true, nil
 	case "window-change":
 		var payload struct {
@@ -619,6 +1200,9 @@ func handleSessionRequest(req *ssh.Request, upstreamSession *ssh.Session) (bool,
 		}
 		if err := upstreamSession.WindowChange(int(payload.Rows), int(payload.Columns)); err != nil {
 			return false, fmt.Errorf("forward window change: %w", err)
+		}
+		if recErr := s.sessionsSvc.RecordTerminalResizeEvent(ctx, launch.SessionID, int(payload.Columns), int(payload.Rows), recorder.elapsed()); recErr != nil {
+			s.logger.Warn("failed to record terminal resize", "session_id", launch.SessionID, "error", recErr)
 		}
 		return true, nil
 	case "shell":
@@ -665,9 +1249,44 @@ func launchFromPermissions(perms *ssh.Permissions) (sessions.LaunchContext, erro
 		SessionID: get("session_id"),
 		UserID:    get("user_id"),
 		AssetID:   get("asset_id"),
+		RequestID: get("request_id"),
 		Host:      get("host"),
 		Port:      port,
-		Protocol:  sessions.ProtocolSSH,
-		Action:    "shell",
+		Protocol:  defaultIfEmpty(get("protocol"), sessions.ProtocolSSH),
+		Action:    defaultIfEmpty(get("action"), "shell"),
 	}, nil
+}
+
+func defaultIfEmpty(v, fallback string) string {
+	trimmed := strings.TrimSpace(v)
+	if trimmed == "" {
+		return fallback
+	}
+	return trimmed
+}
+
+func (s *Server) trackConn(conn net.Conn) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if conn != nil {
+		s.active[conn] = struct{}{}
+	}
+}
+
+func (s *Server) untrackConn(conn net.Conn) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.active, conn)
+}
+
+func (s *Server) closeActiveConns() {
+	s.mu.Lock()
+	conns := make([]net.Conn, 0, len(s.active))
+	for conn := range s.active {
+		conns = append(conns, conn)
+	}
+	s.mu.Unlock()
+	for _, conn := range conns {
+		_ = conn.Close()
+	}
 }

@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from "react"
-import { Link, useParams } from "react-router-dom"
+import { useEffect, useMemo, useState } from 'react'
+import { useParams } from 'react-router-dom'
 import {
   adminAddUserGrant,
   adminAssignRole,
@@ -10,27 +10,26 @@ import {
   adminListUserGrants,
   adminRemoveRole,
   adminRemoveUserGrant,
-} from "../api"
-import { useAuth } from "../auth"
+} from '../api'
 import type {
   AdminAsset,
   AdminEffectiveAccessItem,
   AdminGrant,
   AdminRole,
   AdminUserDetail,
-} from "../types"
+} from '../types'
+import { Badge, Button, Card, CardBody, CardHeader, EmptyRow, ErrorState, InfoRow, LoadingState, PageHeader, Select, SuccessState, Table, Td, Th } from '../components/ui'
 
-const SUPPORTED_ACTIONS: Array<"shell" | "sftp" | "dbeaver" | "redis"> = [
-  "shell",
-  "sftp",
-  "dbeaver",
-  "redis",
+const SUPPORTED_ACTIONS = [
+  { value: 'shell', label: 'Shell' },
+  { value: 'sftp', label: 'SFTP' },
+  { value: 'dbeaver', label: 'DBeaver' },
+  { value: 'redis', label: 'Redis' },
 ]
 
 export function AdminUserDetailPage() {
-  const { user, logout } = useAuth()
   const params = useParams<{ userID: string }>()
-  const userID = params.userID || ""
+  const userID = params.userID || ''
 
   const [detail, setDetail] = useState<AdminUserDetail | null>(null)
   const [roles, setRoles] = useState<AdminRole[]>([])
@@ -42,13 +41,13 @@ export function AdminUserDetailPage() {
   const [error, setError] = useState<string | null>(null)
   const [message, setMessage] = useState<string | null>(null)
 
-  const [selectedRole, setSelectedRole] = useState<string>("")
-  const [selectedAssetID, setSelectedAssetID] = useState<string>("")
-  const [selectedAction, setSelectedAction] = useState<string>("shell")
+  const [selectedRole, setSelectedRole] = useState<string>('')
+  const [selectedAssetID, setSelectedAssetID] = useState<string>('')
+  const [selectedAction, setSelectedAction] = useState<string>('shell')
 
   const loadData = async () => {
-    if (userID === "") {
-      setError("missing user id")
+    if (userID === '') {
+      setError('missing user id')
       return
     }
 
@@ -71,7 +70,7 @@ export function AdminUserDetailPage() {
 
       if (assetsResp.items.length > 0) {
         setSelectedAssetID((prev) => {
-          if (prev !== "") {
+          if (prev !== '') {
             return prev
           }
           return assetsResp.items[0].id
@@ -82,10 +81,10 @@ export function AdminUserDetailPage() {
       if (availableRole) {
         setSelectedRole(availableRole.name)
       } else {
-        setSelectedRole("")
+        setSelectedRole('')
       }
     } catch (err) {
-      const messageText = err instanceof Error ? err.message : "failed to load user detail"
+      const messageText = err instanceof Error ? err.message : 'failed to load user detail'
       setError(messageText)
     } finally {
       setLoading(false)
@@ -94,7 +93,6 @@ export function AdminUserDetailPage() {
 
   useEffect(() => {
     void loadData()
-    // userID is the route key for this page.
   }, [userID])
 
   const assignableRoles = useMemo(() => {
@@ -105,17 +103,14 @@ export function AdminUserDetailPage() {
   }, [detail, roles])
 
   const addRole = async () => {
-    if (selectedRole === "") {
-      return
-    }
+    if (selectedRole === '') return
     setMessage(null)
     try {
       await adminAssignRole(userID, selectedRole)
-      setMessage("role assigned")
+      setMessage('Role assigned')
       await loadData()
     } catch (err) {
-      const messageText = err instanceof Error ? err.message : "failed to assign role"
-      setError(messageText)
+      setError(err instanceof Error ? err.message : 'failed to assign role')
     }
   }
 
@@ -123,26 +118,22 @@ export function AdminUserDetailPage() {
     setMessage(null)
     try {
       await adminRemoveRole(userID, roleName)
-      setMessage("role removed")
+      setMessage('Role removed')
       await loadData()
     } catch (err) {
-      const messageText = err instanceof Error ? err.message : "failed to remove role"
-      setError(messageText)
+      setError(err instanceof Error ? err.message : 'failed to remove role')
     }
   }
 
   const addGrant = async () => {
-    if (selectedAssetID === "" || selectedAction === "") {
-      return
-    }
+    if (selectedAssetID === '' || selectedAction === '') return
     setMessage(null)
     try {
       await adminAddUserGrant(userID, selectedAssetID, selectedAction)
-      setMessage("grant added")
+      setMessage('Grant added')
       await loadData()
     } catch (err) {
-      const messageText = err instanceof Error ? err.message : "failed to add grant"
-      setError(messageText)
+      setError(err instanceof Error ? err.message : 'failed to add grant')
     }
   }
 
@@ -150,182 +141,172 @@ export function AdminUserDetailPage() {
     setMessage(null)
     try {
       await adminRemoveUserGrant(userID, assetID, action)
-      setMessage("grant removed")
+      setMessage('Grant removed')
       await loadData()
     } catch (err) {
-      const messageText = err instanceof Error ? err.message : "failed to remove grant"
-      setError(messageText)
+      setError(err instanceof Error ? err.message : 'failed to remove grant')
     }
   }
 
   return (
-    <main className="page-shell">
-      <header className="topbar">
-        <div>
-          <h1>Admin · User Detail</h1>
-          <p className="muted">
-            Signed in as <strong>{user?.username}</strong>
-          </p>
-        </div>
-        <div className="actions-inline">
-          <Link to="/">My Access</Link>
-          <Link to="/admin/dashboard">Dashboard</Link>
-          <Link to="/sessions">My Sessions</Link>
-          <Link to="/admin/users">Users</Link>
-          <Link to="/admin/assets">Assets</Link>
-          <Link to="/admin/sessions">Sessions</Link>
-          <button onClick={() => void logout()}>Logout</button>
-        </div>
-      </header>
+    <>
+      <PageHeader title="User Detail" />
 
-      {loading ? <p>Loading user detail...</p> : null}
-      {error === null ? null : <p className="error">{error}</p>}
-      {message === null ? null : <p className="status">{message}</p>}
+      {error && <div className="mb-4"><ErrorState message={error} /></div>}
+      {message && <div className="mb-4"><SuccessState message={message} /></div>}
+      {loading && <LoadingState message="Loading user detail..." />}
 
-      {loading === false && error === null && detail !== null ? (
-        <>
-          <section className="section-block card">
-            <h2>User</h2>
-            <p>
-              <strong>Username:</strong> {detail.username}
-            </p>
-            <p>
-              <strong>Email:</strong> {detail.email || "-"}
-            </p>
-            <p>
-              <strong>Display Name:</strong> {detail.display_name || "-"}
-            </p>
-            <p>
-              <strong>Status:</strong> {detail.is_active ? "active" : "inactive"}
-            </p>
-          </section>
+      {!loading && !error && detail && (
+        <div className="space-y-4">
+          <Card>
+            <CardHeader title="Profile" />
+            <CardBody>
+              <div className="grid gap-x-8 gap-y-1 sm:grid-cols-2">
+                <InfoRow label="Username" value={detail.username} />
+                <InfoRow label="Email" value={detail.email || '-'} />
+                <InfoRow label="Display Name" value={detail.display_name || '-'} />
+                <InfoRow label="Status" value={
+                  <Badge color={detail.is_active ? 'green' : 'red'}>
+                    {detail.is_active ? 'Active' : 'Inactive'}
+                  </Badge>
+                } />
+              </div>
+            </CardBody>
+          </Card>
 
-          <section className="section-block card">
-            <h2>Roles</h2>
-            <div className="actions-inline">
-              <select value={selectedRole} onChange={(e) => setSelectedRole(e.target.value)}>
-                {assignableRoles.length === 0 ? <option value="">No available roles</option> : null}
-                {assignableRoles.map((role) => (
-                  <option key={role.id} value={role.name}>
-                    {role.name}
-                  </option>
+          <Card>
+            <CardHeader title="Roles" />
+            <CardBody>
+              <div className="mb-4 flex items-end gap-2">
+                <div className="w-48">
+                  <Select
+                    value={selectedRole}
+                    onChange={setSelectedRole}
+                    options={
+                      assignableRoles.length === 0
+                        ? [{ value: '', label: 'No available roles' }]
+                        : assignableRoles.map((r) => ({ value: r.name, label: r.name }))
+                    }
+                  />
+                </div>
+                <Button size="sm" disabled={assignableRoles.length === 0} onClick={() => void addRole()}>
+                  Add role
+                </Button>
+              </div>
+              <div className="space-y-2">
+                {detail.roles.map((roleName) => (
+                  <div key={roleName} className="flex items-center justify-between rounded-lg border border-gray-200 px-4 py-2.5">
+                    <div className="flex items-center gap-2">
+                      <Badge color="indigo">{roleName}</Badge>
+                    </div>
+                    <Button size="sm" variant="danger" onClick={() => void removeRole(roleName)}>Remove</Button>
+                  </div>
                 ))}
-              </select>
-              <button onClick={() => void addRole()} disabled={assignableRoles.length === 0}>
-                Add role
-              </button>
-            </div>
-            <ul className="simple-list">
-              {detail.roles.map((roleName) => (
-                <li key={roleName}>
-                  <span>{roleName}</span>
-                  <button onClick={() => void removeRole(roleName)}>Remove</button>
-                </li>
-              ))}
-              {detail.roles.length === 0 ? <li className="muted">No roles assigned.</li> : null}
-            </ul>
-          </section>
+                {detail.roles.length === 0 && (
+                  <p className="py-4 text-center text-sm text-gray-400">No roles assigned.</p>
+                )}
+              </div>
+            </CardBody>
+          </Card>
 
-          <section className="section-block card">
-            <h2>Groups</h2>
-            <ul className="simple-list">
-              {detail.groups.map((group) => (
-                <li key={group.id}>
-                  <span>{group.name}</span>
-                </li>
-              ))}
-              {detail.groups.length === 0 ? <li className="muted">No groups assigned.</li> : null}
-            </ul>
-          </section>
+          <Card>
+            <CardHeader title="Groups" />
+            <CardBody>
+              <div className="space-y-2">
+                {detail.groups.map((group) => (
+                  <div key={group.id} className="rounded-lg border border-gray-200 px-4 py-2.5">
+                    <span className="text-sm font-medium text-gray-900">{group.name}</span>
+                  </div>
+                ))}
+                {detail.groups.length === 0 && (
+                  <p className="py-4 text-center text-sm text-gray-400">No groups assigned.</p>
+                )}
+              </div>
+            </CardBody>
+          </Card>
 
-          <section className="section-block card">
-            <h2>User Grants</h2>
-            <div className="actions-inline">
-              <select value={selectedAssetID} onChange={(e) => setSelectedAssetID(e.target.value)}>
-                {assets.map((asset) => (
-                  <option key={asset.id} value={asset.id}>
-                    {asset.name}
-                  </option>
-                ))}
-              </select>
-              <select value={selectedAction} onChange={(e) => setSelectedAction(e.target.value)}>
-                {SUPPORTED_ACTIONS.map((action) => (
-                  <option key={action} value={action}>
-                    {action}
-                  </option>
-                ))}
-              </select>
-              <button onClick={() => void addGrant()} disabled={assets.length === 0}>
-                Add grant
-              </button>
-            </div>
-            <div className="table-wrap">
-              <table>
+          <Card>
+            <CardHeader title="User Grants" />
+            <CardBody>
+              <div className="mb-4 flex items-end gap-2">
+                <div className="w-48">
+                  <Select
+                    label="Asset"
+                    value={selectedAssetID}
+                    onChange={setSelectedAssetID}
+                    options={assets.map((a) => ({ value: a.id, label: a.name }))}
+                  />
+                </div>
+                <div className="w-36">
+                  <Select
+                    label="Action"
+                    value={selectedAction}
+                    onChange={setSelectedAction}
+                    options={SUPPORTED_ACTIONS}
+                  />
+                </div>
+                <Button size="sm" disabled={assets.length === 0} onClick={() => void addGrant()}>
+                  Add grant
+                </Button>
+              </div>
+              <Table>
                 <thead>
                   <tr>
-                    <th>Asset</th>
-                    <th>Action</th>
-                    <th>Effect</th>
-                    <th>Remove</th>
+                    <Th>Asset</Th>
+                    <Th>Action</Th>
+                    <Th>Effect</Th>
+                    <Th>Remove</Th>
                   </tr>
                 </thead>
-                <tbody>
+                <tbody className="divide-y divide-gray-100">
                   {grants.map((grant) => (
-                    <tr key={grant.asset_id + ":" + grant.action}>
-                      <td>{grant.asset_name}</td>
-                      <td>{grant.action}</td>
-                      <td>{grant.effect}</td>
-                      <td>
-                        <button onClick={() => void removeGrant(grant.asset_id, grant.action)}>Remove</button>
-                      </td>
+                    <tr key={grant.asset_id + ':' + grant.action} className="hover:bg-gray-50">
+                      <Td className="font-medium text-gray-900">{grant.asset_name}</Td>
+                      <Td><Badge color="indigo">{grant.action}</Badge></Td>
+                      <Td><Badge color={grant.effect === 'allow' ? 'green' : 'red'}>{grant.effect}</Badge></Td>
+                      <Td>
+                        <Button size="sm" variant="danger" onClick={() => void removeGrant(grant.asset_id, grant.action)}>
+                          Remove
+                        </Button>
+                      </Td>
                     </tr>
                   ))}
-                  {grants.length === 0 ? (
-                    <tr>
-                      <td colSpan={4} className="muted">
-                        No direct user grants.
-                      </td>
-                    </tr>
-                  ) : null}
+                  {grants.length === 0 && <EmptyRow colSpan={4} message="No direct user grants." />}
                 </tbody>
-              </table>
-            </div>
-          </section>
+              </Table>
+            </CardBody>
+          </Card>
 
-          <section className="section-block card">
-            <h2>Effective Access</h2>
-            <div className="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Asset</th>
-                    <th>Actions</th>
+          <Card>
+            <CardHeader title="Effective Access" />
+            <Table>
+              <thead>
+                <tr>
+                  <Th>Asset</Th>
+                  <Th>Actions</Th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {effective.map((item) => (
+                  <tr key={item.asset_id} className="hover:bg-gray-50">
+                    <Td className="font-medium text-gray-900">{item.asset_name}</Td>
+                    <Td>
+                      <div className="flex flex-wrap gap-1">
+                        {item.actions.map((action) => (
+                          <Badge key={action.action} color="indigo">
+                            {action.action} ({action.sources.join(', ')})
+                          </Badge>
+                        ))}
+                      </div>
+                    </Td>
                   </tr>
-                </thead>
-                <tbody>
-                  {effective.map((item) => (
-                    <tr key={item.asset_id}>
-                      <td>{item.asset_name}</td>
-                      <td>
-                        {item.actions
-                          .map((action) => action.action + " (" + action.sources.join(", ") + ")")
-                          .join("; ")}
-                      </td>
-                    </tr>
-                  ))}
-                  {effective.length === 0 ? (
-                    <tr>
-                      <td colSpan={2} className="muted">
-                        No effective access found.
-                      </td>
-                    </tr>
-                  ) : null}
-                </tbody>
-              </table>
-            </div>
-          </section>
-        </>
-      ) : null}
-    </main>
+                ))}
+                {effective.length === 0 && <EmptyRow colSpan={2} message="No effective access found." />}
+              </tbody>
+            </Table>
+          </Card>
+        </div>
+      )}
+    </>
   )
 }

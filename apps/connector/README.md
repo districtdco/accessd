@@ -55,11 +55,10 @@ DBeaver request shape:
   "asset_name": "postgres-app",
   "launch": {
     "engine": "postgres",
-    "host": "10.0.20.21",
-    "port": 5432,
+    "host": "pam.example.internal",
+    "port": 45432,
     "database": "app",
     "username": "app_user",
-    "password": "resolved-db-password",
     "ssl_mode": "disable",
     "expires_at": "2026-04-06T14:30:00Z"
   }
@@ -74,10 +73,10 @@ Redis request shape:
   "asset_id": "uuid",
   "asset_name": "redis-cache",
   "launch": {
-    "redis_host": "10.0.30.31",
-    "redis_port": 6379,
+    "redis_host": "pam.example.internal",
+    "redis_port": 46379,
     "redis_username": "default",
-    "redis_password": "resolved-redis-password",
+    "redis_password": "short-lived-launch-token",
     "redis_database": 0,
     "redis_tls": false,
     "redis_insecure_skip_verify_tls": false,
@@ -94,10 +93,10 @@ SFTP request shape:
   "asset_id": "uuid",
   "asset_name": "linux-app-01",
   "launch": {
-    "host": "10.0.10.11",
-    "port": 22,
-    "username": "ubuntu",
-    "password": "resolved-sftp-password",
+    "host": "127.0.0.1",
+    "port": 2222,
+    "username": "pam",
+    "password": "short-lived-launch-token",
     "path": "/home/ubuntu",
     "expires_at": "2026-04-06T14:30:00Z"
   }
@@ -121,9 +120,10 @@ In this first pass, the token is displayed in the launched terminal flow so the 
 
 For DBeaver in this first pass, connector creates a temporary local manifest file under OS temp directory (`pam-dbeaver-launch-*`) and launches DBeaver using CLI connection spec. The connector auto-cleans temp launch directories after a TTL (`PAM_CONNECTOR_DBEAVER_TEMP_TTL`, default `15m`) and performs stale cleanup on startup.
 The manifest intentionally omits plaintext DB password; it records non-sensitive launch metadata only.
+Connector launch diagnostics also redact sensitive values (for example `password=` fields, SFTP URL passwords, and `REDISCLI_AUTH`) before returning operator-visible error details.
 
-For Redis in this slice, connector launches local `redis-cli` in a new terminal window and injects the password via `REDISCLI_AUTH` environment variable. Deep Redis protocol inspection is intentionally deferred.
-For SFTP in this slice, connector launches FileZilla/WinSCP with managed connection material from PAM launch payload. Deep per-file activity telemetry is intentionally deferred.
+For Redis in this slice, connector launches local `redis-cli` in a new terminal window against a PAM session-scoped Redis proxy endpoint. `REDISCLI_AUTH` is set to the short-lived PAM launch token; upstream Redis credentials stay managed server-side.
+For SFTP in this slice, connector launches FileZilla/WinSCP against the PAM SFTP relay endpoint (session token is passed as SFTP password in launch payload). File-operation telemetry is captured server-side by the PAM relay.
 
 ## Configuration (env)
 

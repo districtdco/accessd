@@ -1,19 +1,27 @@
 import { useEffect, useState } from 'react'
-import { Link, useParams } from 'react-router-dom'
+import { useParams } from 'react-router-dom'
 import {
   adminGetAssetDetail,
   adminListAssetGrants,
   adminUpdateAsset,
   adminUpsertAssetCredential,
 } from '../api'
-import { useAuth } from '../auth'
 import type { AdminAssetDetail, AdminGrant } from '../types'
+import { Badge, Button, Card, CardBody, CardHeader, EmptyRow, ErrorState, InfoRow, Input, LoadingState, PageHeader, Select, SuccessState, Table, Td, TextArea, Th } from '../components/ui'
 
-const CREDENTIAL_TYPES: Array<'password' | 'ssh_key' | 'db_password'> = ['password', 'ssh_key', 'db_password']
-const ASSET_TYPES: Array<'linux_vm' | 'database' | 'redis'> = ['linux_vm', 'database', 'redis']
+const CREDENTIAL_TYPE_OPTIONS = [
+  { value: 'password', label: 'Password' },
+  { value: 'ssh_key', label: 'SSH Key' },
+  { value: 'db_password', label: 'DB Password' },
+]
+
+const ASSET_TYPE_OPTIONS = [
+  { value: 'linux_vm', label: 'Linux VM' },
+  { value: 'database', label: 'Database' },
+  { value: 'redis', label: 'Redis' },
+]
 
 export function AdminAssetDetailPage() {
-  const { user, logout } = useAuth()
   const { assetID = '' } = useParams<{ assetID: string }>()
   const [detail, setDetail] = useState<AdminAssetDetail | null>(null)
   const [grants, setGrants] = useState<AdminGrant[]>([])
@@ -22,12 +30,12 @@ export function AdminAssetDetailPage() {
   const [message, setMessage] = useState<string | null>(null)
 
   const [name, setName] = useState('')
-  const [assetType, setAssetType] = useState<'linux_vm' | 'database' | 'redis'>('linux_vm')
+  const [assetType, setAssetType] = useState('linux_vm')
   const [host, setHost] = useState('')
   const [port, setPort] = useState('22')
   const [metadataText, setMetadataText] = useState('{}')
 
-  const [credentialType, setCredentialType] = useState<'password' | 'ssh_key' | 'db_password'>('password')
+  const [credentialType, setCredentialType] = useState('password')
   const [credentialUsername, setCredentialUsername] = useState('')
   const [credentialSecret, setCredentialSecret] = useState('')
   const [credentialMetadataText, setCredentialMetadataText] = useState('{}')
@@ -65,9 +73,7 @@ export function AdminAssetDetailPage() {
   }, [assetID])
 
   const saveAsset = async () => {
-    if (!assetID) {
-      return
-    }
+    if (!assetID) return
     setMessage(null)
     setError(null)
     let metadata: Record<string, unknown>
@@ -87,12 +93,12 @@ export function AdminAssetDetailPage() {
     try {
       await adminUpdateAsset(assetID, {
         name,
-        asset_type: assetType,
+        asset_type: assetType as 'linux_vm' | 'database' | 'redis',
         host,
         port: parsedPort,
         metadata,
       })
-      setMessage('asset updated')
+      setMessage('Asset updated')
       await load()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'failed to update asset')
@@ -102,9 +108,7 @@ export function AdminAssetDetailPage() {
   }
 
   const saveCredential = async () => {
-    if (!assetID) {
-      return
-    }
+    if (!assetID) return
     setMessage(null)
     setError(null)
     let metadata: Record<string, unknown>
@@ -117,13 +121,13 @@ export function AdminAssetDetailPage() {
 
     setSavingCredential(true)
     try {
-      await adminUpsertAssetCredential(assetID, credentialType, {
+      await adminUpsertAssetCredential(assetID, credentialType as 'password' | 'ssh_key' | 'db_password', {
         username: credentialUsername,
         secret: credentialSecret,
         metadata,
       })
       setCredentialSecret('')
-      setMessage('credential updated (secret is write-only and not shown)')
+      setMessage('Credential updated (secret is write-only and not shown)')
       await load()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'failed to update credential')
@@ -133,175 +137,121 @@ export function AdminAssetDetailPage() {
   }
 
   return (
-    <main className="page-shell">
-      <header className="topbar">
-        <div>
-          <h1>Admin · Asset Detail</h1>
-          <p className="muted">
-            Signed in as <strong>{user?.username}</strong>
-          </p>
-        </div>
-        <div className="actions-inline">
-          <Link to="/">My Access</Link>
-          <Link to="/admin/dashboard">Dashboard</Link>
-          <Link to="/admin/assets">Assets</Link>
-          <Link to="/admin/sessions">Sessions</Link>
-          <button onClick={() => void logout()}>Logout</button>
-        </div>
-      </header>
+    <>
+      <PageHeader title="Asset Detail" />
 
-      {loading ? <p>Loading asset detail...</p> : null}
-      {error ? <p className="error">{error}</p> : null}
-      {message ? <p className="status">{message}</p> : null}
+      {error && <div className="mb-4"><ErrorState message={error} /></div>}
+      {message && <div className="mb-4"><SuccessState message={message} /></div>}
+      {loading && <LoadingState message="Loading asset detail..." />}
 
-      {loading === false && error === null && detail ? (
-        <>
-          <section className="card section-block">
-            <h2>Asset Summary</h2>
-            <p><strong>ID:</strong> {detail.id}</p>
-            <p><strong>Endpoint:</strong> {detail.endpoint}</p>
-          </section>
+      {!loading && !error && detail && (
+        <div className="space-y-4">
+          <Card>
+            <CardHeader title="Asset Summary" />
+            <CardBody>
+              <div className="grid gap-x-8 gap-y-1 sm:grid-cols-2">
+                <InfoRow label="ID" value={<span className="font-mono text-xs">{detail.id}</span>} />
+                <InfoRow label="Endpoint" value={<span className="font-mono text-xs">{detail.endpoint}</span>} />
+              </div>
+            </CardBody>
+          </Card>
 
-          <section className="card section-block">
-            <h2>Edit Asset</h2>
-            <div className="form-grid">
-              <label>
-                Name
-                <input value={name} onChange={(e) => setName(e.target.value)} />
-              </label>
-              <label>
-                Asset Type
-                <select value={assetType} onChange={(e) => setAssetType(e.target.value as typeof assetType)}>
-                  {ASSET_TYPES.map((item) => (
-                    <option key={item} value={item}>{item}</option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                Host
-                <input value={host} onChange={(e) => setHost(e.target.value)} />
-              </label>
-              <label>
-                Port
-                <input value={port} onChange={(e) => setPort(e.target.value)} />
-              </label>
-              <label className="full-width">
-                Metadata (JSON object)
-                <textarea rows={6} value={metadataText} onChange={(e) => setMetadataText(e.target.value)} />
-              </label>
-            </div>
-            <button onClick={() => void saveAsset()} disabled={savingAsset}>
-              {savingAsset ? 'Saving...' : 'Save Asset'}
-            </button>
-          </section>
+          <Card>
+            <CardHeader title="Edit Asset" />
+            <CardBody>
+              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+                <Input label="Name" value={name} onChange={setName} />
+                <Select label="Asset Type" value={assetType} onChange={setAssetType} options={ASSET_TYPE_OPTIONS} />
+                <Input label="Host" value={host} onChange={setHost} />
+                <Input label="Port" value={port} onChange={setPort} />
+              </div>
+              <div className="mt-4">
+                <TextArea label="Metadata (JSON)" value={metadataText} onChange={setMetadataText} rows={5} />
+              </div>
+              <div className="mt-4">
+                <Button disabled={savingAsset} onClick={() => void saveAsset()}>
+                  {savingAsset ? 'Saving...' : 'Save Asset'}
+                </Button>
+              </div>
+            </CardBody>
+          </Card>
 
-          <section className="card section-block">
-            <h2>Credential Metadata</h2>
-            <div className="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Type</th>
-                    <th>Username</th>
-                    <th>Algorithm</th>
-                    <th>Key ID</th>
-                    <th>Rotated</th>
+          <Card>
+            <CardHeader title="Credential Metadata" />
+            <Table>
+              <thead>
+                <tr>
+                  <Th>Type</Th>
+                  <Th>Username</Th>
+                  <Th>Algorithm</Th>
+                  <Th>Key ID</Th>
+                  <Th>Rotated</Th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {detail.credentials.map((item) => (
+                  <tr key={item.id} className="hover:bg-gray-50">
+                    <Td><Badge>{item.credential_type}</Badge></Td>
+                    <Td>{item.username || '-'}</Td>
+                    <Td mono>{item.algorithm}</Td>
+                    <Td mono>{item.key_id}</Td>
+                    <Td>{item.last_rotated_at ? new Date(item.last_rotated_at).toLocaleString() : '-'}</Td>
                   </tr>
-                </thead>
-                <tbody>
-                  {detail.credentials.map((item) => (
-                    <tr key={item.id}>
-                      <td>{item.credential_type}</td>
-                      <td>{item.username || '-'}</td>
-                      <td>{item.algorithm}</td>
-                      <td>{item.key_id}</td>
-                      <td>{item.last_rotated_at ? new Date(item.last_rotated_at).toLocaleString() : '-'}</td>
-                    </tr>
-                  ))}
-                  {detail.credentials.length === 0 ? (
-                    <tr>
-                      <td colSpan={5} className="muted">No credential saved for this asset.</td>
-                    </tr>
-                  ) : null}
-                </tbody>
-              </table>
-            </div>
-          </section>
+                ))}
+                {detail.credentials.length === 0 && <EmptyRow colSpan={5} message="No credential saved for this asset." />}
+              </tbody>
+            </Table>
+          </Card>
 
-          <section className="card section-block">
-            <h2>Update Credential</h2>
-            <p className="muted">Secret values are write-only and are never returned after save.</p>
-            <div className="form-grid">
-              <label>
-                Credential Type
-                <select
-                  value={credentialType}
-                  onChange={(e) => setCredentialType(e.target.value as typeof credentialType)}
-                >
-                  {CREDENTIAL_TYPES.map((item) => (
-                    <option key={item} value={item}>{item}</option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                Username (optional)
-                <input value={credentialUsername} onChange={(e) => setCredentialUsername(e.target.value)} />
-              </label>
-              <label className="full-width">
-                Secret
-                <input
-                  type="password"
-                  value={credentialSecret}
-                  onChange={(e) => setCredentialSecret(e.target.value)}
-                  placeholder="enter new credential secret"
-                />
-              </label>
-              <label className="full-width">
-                Credential Metadata (JSON object)
-                <textarea
-                  rows={5}
-                  value={credentialMetadataText}
-                  onChange={(e) => setCredentialMetadataText(e.target.value)}
-                />
-              </label>
-            </div>
-            <button onClick={() => void saveCredential()} disabled={savingCredential}>
-              {savingCredential ? 'Saving...' : 'Save Credential'}
-            </button>
-          </section>
+          <Card>
+            <CardHeader title="Update Credential">
+              <span className="text-xs text-gray-400">Secret values are write-only</span>
+            </CardHeader>
+            <CardBody>
+              <div className="grid gap-4 sm:grid-cols-2">
+                <Select label="Credential Type" value={credentialType} onChange={setCredentialType} options={CREDENTIAL_TYPE_OPTIONS} />
+                <Input label="Username (optional)" value={credentialUsername} onChange={setCredentialUsername} />
+              </div>
+              <div className="mt-4">
+                <Input label="Secret" value={credentialSecret} onChange={setCredentialSecret} type="password" placeholder="enter new credential secret" />
+              </div>
+              <div className="mt-4">
+                <TextArea label="Credential Metadata (JSON)" value={credentialMetadataText} onChange={setCredentialMetadataText} rows={4} />
+              </div>
+              <div className="mt-4">
+                <Button disabled={savingCredential} onClick={() => void saveCredential()}>
+                  {savingCredential ? 'Saving...' : 'Save Credential'}
+                </Button>
+              </div>
+            </CardBody>
+          </Card>
 
-          <section className="card section-block">
-            <h2>Asset Access Summary</h2>
-            <div className="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Subject</th>
-                    <th>Type</th>
-                    <th>Action</th>
-                    <th>Effect</th>
+          <Card>
+            <CardHeader title="Asset Access Summary" />
+            <Table>
+              <thead>
+                <tr>
+                  <Th>Subject</Th>
+                  <Th>Type</Th>
+                  <Th>Action</Th>
+                  <Th>Effect</Th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {grants.map((item) => (
+                  <tr key={`${item.subject_type}:${item.subject_id}:${item.action}`} className="hover:bg-gray-50">
+                    <Td className="font-medium text-gray-900">{item.subject_name}</Td>
+                    <Td><Badge>{item.subject_type}</Badge></Td>
+                    <Td><Badge color="indigo">{item.action}</Badge></Td>
+                    <Td><Badge color={item.effect === 'allow' ? 'green' : 'red'}>{item.effect}</Badge></Td>
                   </tr>
-                </thead>
-                <tbody>
-                  {grants.map((item) => (
-                    <tr key={`${item.subject_type}:${item.subject_id}:${item.action}`}>
-                      <td>{item.subject_name}</td>
-                      <td>{item.subject_type}</td>
-                      <td>{item.action}</td>
-                      <td>{item.effect}</td>
-                    </tr>
-                  ))}
-                  {grants.length === 0 ? (
-                    <tr>
-                      <td colSpan={4} className="muted">No grants for this asset.</td>
-                    </tr>
-                  ) : null}
-                </tbody>
-              </table>
-            </div>
-          </section>
-        </>
-      ) : null}
-    </main>
+                ))}
+                {grants.length === 0 && <EmptyRow colSpan={4} message="No grants for this asset." />}
+              </tbody>
+            </Table>
+          </Card>
+        </div>
+      )}
+    </>
   )
 }

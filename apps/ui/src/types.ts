@@ -39,7 +39,7 @@ export type DBeaverLaunchConnection = {
   port: number
   database?: string
   username: string
-  password: string
+  password?: string
   ssl_mode?: string
   expires_at: string
 }
@@ -300,10 +300,16 @@ export type SessionEventsResponse = {
 export type SessionReplayChunk = {
   event_id: number
   event_time: string
-  direction: 'in' | 'out'
+  event_type: 'input' | 'output' | 'resize'
+  direction?: 'in' | 'out'
   stream?: string
   size?: number
-  text: string
+  text?: string
+  offset_sec: number
+  delay_sec: number
+  cols?: number
+  rows?: number
+  asciicast?: unknown[]
 }
 
 export type SessionReplayResponse = {

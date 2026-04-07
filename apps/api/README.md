@@ -102,6 +102,36 @@ Optional:
 - `PAM_SSH_PROXY_PUBLIC_HOST` (default: `127.0.0.1`)
 - `PAM_SSH_PROXY_PUBLIC_PORT` (default: `2222`)
 - `PAM_SSH_PROXY_USERNAME` (default: `pam`)
+- `PAM_SSH_PROXY_IDLE_TIMEOUT` (default: `5m`)
+- `PAM_SSH_PROXY_MAX_SESSION_DURATION` (default: `8h`)
+- `PAM_PG_PROXY_BIND_HOST` (default: `127.0.0.1`)
+- `PAM_PG_PROXY_PUBLIC_HOST` (default: `127.0.0.1`)
+- `PAM_PG_PROXY_CONNECT_TIMEOUT` (default: `10s`)
+- `PAM_PG_PROXY_QUERY_LOG_QUEUE` (default: `1024`)
+- `PAM_PG_PROXY_QUERY_MAX_BYTES` (default: `16384`)
+- `PAM_PG_PROXY_IDLE_TIMEOUT` (default: `5m`)
+- `PAM_PG_PROXY_MAX_SESSION_DURATION` (default: `8h`)
+- `PAM_MYSQL_PROXY_BIND_HOST` (default: `127.0.0.1`)
+- `PAM_MYSQL_PROXY_PUBLIC_HOST` (default: `127.0.0.1`)
+- `PAM_MYSQL_PROXY_CONNECT_TIMEOUT` (default: `10s`)
+- `PAM_MYSQL_PROXY_QUERY_LOG_QUEUE` (default: `1024`)
+- `PAM_MYSQL_PROXY_QUERY_MAX_BYTES` (default: `16384`)
+- `PAM_MYSQL_PROXY_IDLE_TIMEOUT` (default: `5m`)
+- `PAM_MYSQL_PROXY_MAX_SESSION_DURATION` (default: `8h`)
+- `PAM_MSSQL_PROXY_BIND_HOST` (default: `127.0.0.1`)
+- `PAM_MSSQL_PROXY_PUBLIC_HOST` (default: `127.0.0.1`)
+- `PAM_MSSQL_PROXY_CONNECT_TIMEOUT` (default: `10s`)
+- `PAM_MSSQL_PROXY_QUERY_LOG_QUEUE` (default: `1024`)
+- `PAM_MSSQL_PROXY_QUERY_MAX_BYTES` (default: `16384`)
+- `PAM_MSSQL_PROXY_IDLE_TIMEOUT` (default: `5m`)
+- `PAM_MSSQL_PROXY_MAX_SESSION_DURATION` (default: `8h`)
+- `PAM_REDIS_PROXY_BIND_HOST` (default: `127.0.0.1`)
+- `PAM_REDIS_PROXY_PUBLIC_HOST` (default: `127.0.0.1`)
+- `PAM_REDIS_PROXY_CONNECT_TIMEOUT` (default: `10s`)
+- `PAM_REDIS_PROXY_COMMAND_LOG_QUEUE` (default: `1024`)
+- `PAM_REDIS_PROXY_ARG_MAX_LEN` (default: `128`)
+- `PAM_REDIS_PROXY_IDLE_TIMEOUT` (default: `5m`)
+- `PAM_REDIS_PROXY_MAX_SESSION_DURATION` (default: `8h`)
 - `PAM_SSH_PROXY_HOST_KEY_PATH` (default: `.pam_ssh_proxy_host_key`)
 - `PAM_SSH_PROXY_UPSTREAM_HOSTKEY_MODE` (default: `known-hosts`; options: `accept-new`, `known-hosts`, `insecure`)
 - `PAM_SSH_PROXY_UPSTREAM_KNOWN_HOSTS_PATH` (default: `.pam_upstream_known_hosts`)
@@ -237,20 +267,21 @@ Paste launch token when prompted. Password auth also works as first-pass fallbac
 ## Current Limitations (First Pass)
 
 - Supports `linux_vm + shell`, `linux_vm + sftp`, `database + dbeaver`, and `redis + redis` launch creation in this slice.
-- DBeaver path is brokered launch + metadata audit only; no DB proxy or SQL statement capture yet.
-- Redis path is brokered launch + metadata audit only; no RESP proxy or deep command inspection yet.
-- SFTP path is brokered launch + metadata audit only; no SFTP relay/proxy or per-file activity capture yet.
-- DBeaver launch payload currently includes resolved DB username/password for connector-local launch material creation.
+- DBeaver path now launches through an engine-specific PAM DB proxy endpoint (`postgres`, `mysql`, `mssql`) with query capture into `session_events` (`event_type=db_query`).
+- Redis launch now targets a session-scoped PAM RESP proxy endpoint and captures commands into `session_events` (`event_type=redis_command`).
+- Redis command audit payload uses argument summaries with value/script redaction for sensitive patterns (`AUTH`, `SET`/`MSET`/`HMSET`, `CONFIG SET`, `EVAL`, `ACL SETUSER`).
+- SFTP path now launches through PAM SSH/SFTP relay using session launch token authentication and logs file operations (`event_type=file_operation`) in `session_events`.
+- DBeaver launch payload no longer includes the DB password; connector connects to a session-scoped PAM proxy endpoint.
 - Connector now returns richer launch diagnostics and DBeaver temp-material cleanup metadata to improve operator troubleshooting.
 - Connector lifecycle metadata currently tracks:
   - `launch_created`
   - `connector_launch_requested`
   - `connector_launch_succeeded` / `connector_launch_failed`
-  - `session_ended` / `session_failed` (for DBeaver, Redis, and SFTP one-shot connector outcome)
+  - `session_ended` / `session_failed` (proxy-driven lifecycle for SSH, SFTP, DBeaver DB proxies, and Redis proxy sessions)
 - Session review helpers in this slice:
   - `GET /sessions/{id}` includes lifecycle summary (`started/ended/failed`, connector flags, event count, first/last event time)
   - `GET /sessions/{id}/events` returns ordered raw events plus decoded transcript hints for shell `data_in/data_out` events when payload is valid base64 text
-  - `GET /sessions/{id}/replay` returns normalized shell replay chunks (`in`/`out`, text, stream/size) and marks non-shell sessions as `supported=false`
+  - `GET /sessions/{id}/replay` returns timed shell replay chunks with asciicast-v2-like tuples (`[offset, code, data]`) for input/output plus terminal resize events when captured
 - Session recap/export helpers in this slice:
   - `GET /sessions/{id}/export/summary` returns session detail + event type counts + total event count
   - `GET /sessions/{id}/export/transcript` returns first-pass shell transcript text (`data_in`/`data_out` decode path)
@@ -263,9 +294,18 @@ Paste launch token when prompted. Password auth also works as first-pass fallbac
 - `accept-new` and `insecure` SSH host-key modes are blocked outside `development` unless `PAM_ALLOW_UNSAFE_MODE=true`.
 - `PAM_AUTH_COOKIE_SECURE=false`, `PAM_AUTH_COOKIE_SAMESITE=none`, and `PAM_LDAP_INSECURE_SKIP_VERIFY=true` are blocked outside `development` unless `PAM_ALLOW_UNSAFE_MODE=true`.
 - Admin credential updates (`PUT /admin/assets/{assetID}/credentials/{credentialType}`) now write an explicit `audit_events` record (`event_type=admin_action`, `action=credential_upsert`).
-- Session stream capture is minimal event chunks (`data_in`/`data_out`, base64 payload) in `session_events`.
-- Shell replay is approximate event-text playback, not a terminal emulator (no ANSI/stateful cursor fidelity yet).
-- No asciicast format, compression, DB proxying, or SQL-level auditing yet.
+- Session stream capture stores `data_in`/`data_out` chunks in `session_events` with base64 payload plus asciicast-v2-like timing tuples; terminal resizes are tracked as `terminal_resize`.
+- Shell replay uses recorded timing and resize events but is still text-stream playback, not a full terminal state emulator (no CSI/stateful cursor fidelity yet).
+- API request logging now propagates and emits `X-Request-Id`, and launch-to-proxy registration carries `request_id` into proxy logs for correlation.
+- Launch tokens now also carry `request_id` so SSH/SFTP/Redis token-authenticated proxy activity can be correlated back to originating API request logs.
+- Proxy services enforce configurable idle timeout + max session duration and perform graceful shutdown draining of active sessions before forced close on shutdown timeout.
+- Credential usage is now audited (`audit_events.event_type=credential_usage`) for launch-time credential resolution and proxy upstream authentication stages.
+- No asciicast format or compression yet.
+- PostgreSQL proxy captures simple and extended query traffic, supports TLS negotiation on both client and upstream links, and supports upstream auth methods `cleartext`/`md5`/`SCRAM-SHA-256`.
+- MySQL proxy captures `COM_QUERY` and common prepared flows (`COM_STMT_PREPARE`/`COM_STMT_EXECUTE`) with practical TLS support.
+- MSSQL proxy captures SQL batch and common RPC prepared flows (`sp_prepare`/`sp_prepexec`/`sp_executesql`/`sp_execute`) with per-connection template caching when derivable.
+- MSSQL TLS limitation in this slice: client->proxy TLS tunneling and upstream TDS-TLS tunneling are not implemented; use non-required TLS mode (for example `ssl_mode=disable`) for DBeaver MSSQL launches.
+- SFTP relay captures practical operations (`upload_write`, `download_read`, `delete`, `rename`, `mkdir`, `rmdir`, `stat`, `list`) with path and size (when derivable). Remaining gap: operation-level success/failure and full protocol coverage for less-common SFTP extensions.
 
 ## Auth/RBAC Notes
 

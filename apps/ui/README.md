@@ -105,21 +105,25 @@ For DBeaver launches the frontend forwards:
   "asset_name": "postgres-app",
   "launch": {
     "engine": "postgres",
-    "host": "10.0.20.21",
-    "port": 5432,
+    "host": "127.0.0.1",
+    "port": 58xxx,
     "database": "app",
     "username": "app_user",
-    "password": "resolved-db-password",
     "ssl_mode": "disable",
     "expires_at": "2026-04-06T14:30:00Z"
   }
 }
 ```
 
-Current DBeaver limitation: this first slice forwards DB credential material to local connector for temporary launch setup; deep DB traffic auditing is intentionally deferred.
+Current DBeaver limitations:
+- PostgreSQL path captures simple and extended traffic.
+- MySQL path captures common simple/prepared flows.
+- MSSQL path captures SQL batch + common RPC prepared flows, but TLS-tunneled MSSQL sessions are not yet supported in this slice.
 
 Current Redis limitation: this slice launches local `redis-cli` with managed handoff metadata only; deep Redis command/protocol auditing is deferred.
-Current SFTP limitation: this slice launches WinSCP/FileZilla with managed handoff metadata only; deep file-operation auditing is deferred.
+Current SFTP limitations:
+- SFTP sessions are relayed through PAM and file-operation events are captured (`upload_write`, `download_read`, `delete`, `rename`, `mkdir`, `rmdir`, `stat`, `list`).
+- Remaining gap: not all uncommon SFTP extensions are decoded yet, and operation-level success/failure attribution is still basic.
 
 ## Development
 

@@ -61,7 +61,7 @@ type DBeaverPayload struct {
 	Port      int    `json:"port"`
 	Database  string `json:"database,omitempty"`
 	Username  string `json:"username"`
-	Password  string `json:"password"`
+	Password  string `json:"password,omitempty"`
 	SSLMode   string `json:"ssl_mode,omitempty"`
 	ExpiresAt string `json:"expires_at"`
 }
@@ -184,9 +184,6 @@ func (r DBeaverRequest) Validate() error {
 	}
 	if strings.TrimSpace(r.Launch.Username) == "" {
 		return fmt.Errorf("launch.username is required")
-	}
-	if strings.TrimSpace(r.Launch.Password) == "" {
-		return fmt.Errorf("launch.password is required")
 	}
 	if strings.TrimSpace(r.Launch.ExpiresAt) == "" {
 		return fmt.Errorf("launch.expires_at is required")
@@ -684,7 +681,7 @@ func launchFirstAvailable(ctx context.Context, attempts [][]string, code, baseEr
 			if !errors.Is(err, exec.ErrNotFound) {
 				allMissing = false
 			}
-			errs = append(errs, fmt.Sprintf("%s: %v", strings.Join(args, " "), err))
+			errs = append(errs, fmt.Sprintf("%s: %v", sanitizeCommandArgs(args), err))
 		}
 	}
 	if len(errs) == 0 {
@@ -710,7 +707,9 @@ func dbeaverConnectionSpec(req DBeaverRequest) string {
 		"host=" + specValue(req.Launch.Host),
 		"port=" + strconv.Itoa(req.Launch.Port),
 		"user=" + specValue(req.Launch.Username),
-		"password=" + specValue(req.Launch.Password),
+	}
+	if password := strings.TrimSpace(req.Launch.Password); password != "" {
+		parts = append(parts, "password="+specValue(password))
 	}
 	if db := strings.TrimSpace(req.Launch.Database); db != "" {
 		parts = append(parts, "database="+specValue(db))
@@ -722,6 +721,46 @@ func dbeaverConnectionSpec(req DBeaverRequest) string {
 		parts = append(parts, "name="+specValue("PAM - "+name))
 	}
 	return strings.Join(parts, "|")
+}
+
+func sanitizeCommandArgs(args []string) string {
+	if len(args) == 0 {
+		return ""
+	}
+	safe := make([]string, len(args))
+	for i, arg := range args {
+		safe[i] = sanitizeCommandArg(arg)
+	}
+	return strings.Join(safe, " ")
+}
+
+func sanitizeCommandArg(arg string) string {
+	if strings.HasPrefix(arg, "sftp://") {
+		if scheme := strings.Index(arg, "://"); scheme >= 0 {
+			rest := arg[scheme+3:]
+			if at := strings.Index(rest, "@"); at >= 0 {
+				creds := rest[:at]
+				if colon := strings.Index(creds, ":"); colon >= 0 {
+					rest = creds[:colon] + ":<redacted>@" + rest[at+1:]
+					return arg[:scheme+3] + rest
+				}
+			}
+		}
+	}
+	if strings.Contains(arg, "password=") {
+		parts := strings.Split(arg, "|")
+		for i, part := range parts {
+			if strings.HasPrefix(strings.ToLower(strings.TrimSpace(part)), "password=") {
+				parts[i] = "password=<redacted>"
+			}
+		}
+		arg = strings.Join(parts, "|")
+	}
+	if idx := strings.Index(strings.ToUpper(arg), "REDISCLI_AUTH="); idx >= 0 {
+		prefix := arg[:idx]
+		return prefix + "REDISCLI_AUTH=<redacted>"
+	}
+	return arg
 }
 
 func normalizeEngine(engine string) string {

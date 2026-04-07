@@ -1,15 +1,28 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { getMySessions } from '../api'
-import { useAuth } from '../auth'
 import type { SessionSummary } from '../types'
+import { Badge, Card, EmptyRow, ErrorState, LoadingState, PageHeader, Select, statusColor, Table, Td, Th } from '../components/ui'
 
-const ACTION_OPTIONS = ['', 'shell', 'dbeaver', 'sftp', 'redis']
-const STATUS_OPTIONS = ['', 'pending', 'active', 'completed', 'failed', 'terminated', 'expired']
+const ACTION_OPTIONS = [
+  { value: '', label: 'All actions' },
+  { value: 'shell', label: 'Shell' },
+  { value: 'dbeaver', label: 'DBeaver' },
+  { value: 'sftp', label: 'SFTP' },
+  { value: 'redis', label: 'Redis' },
+]
+
+const STATUS_OPTIONS = [
+  { value: '', label: 'All statuses' },
+  { value: 'pending', label: 'Pending' },
+  { value: 'active', label: 'Active' },
+  { value: 'completed', label: 'Completed' },
+  { value: 'failed', label: 'Failed' },
+  { value: 'terminated', label: 'Terminated' },
+  { value: 'expired', label: 'Expired' },
+]
 
 export function MySessionsPage() {
-  const { user, logout } = useAuth()
-  const canReadAdmin = user?.roles.includes('admin') || user?.roles.includes('auditor')
   const [items, setItems] = useState<SessionSummary[]>([])
   const [status, setStatus] = useState('')
   const [action, setAction] = useState('')
@@ -32,96 +45,63 @@ export function MySessionsPage() {
 
   useEffect(() => {
     void load(status, action)
-    // Filter changes trigger reloads.
   }, [status, action])
 
   return (
-    <main className="page-shell">
-      <header className="topbar">
-        <div>
-          <h1>My Sessions</h1>
-          <p className="muted">
-            Signed in as <strong>{user?.username}</strong>
-          </p>
-        </div>
-        <div className="actions-inline">
-          <Link to="/">My Access</Link>
-          {canReadAdmin ? <Link to="/admin/dashboard">Admin Dashboard</Link> : null}
-          {canReadAdmin ? <Link to="/admin/sessions">Admin Sessions</Link> : null}
-          <button onClick={() => void logout()}>Logout</button>
-        </div>
-      </header>
+    <>
+      <PageHeader title="My Sessions" />
 
-      <section className="card section-block">
-        <h2>Filters</h2>
-        <div className="actions-inline">
-          <label>
-            Action{' '}
-            <select value={action} onChange={(e) => setAction(e.target.value)}>
-              {ACTION_OPTIONS.map((option) => (
-                <option key={option || 'all-actions'} value={option}>
-                  {option || 'all'}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            Status{' '}
-            <select value={status} onChange={(e) => setStatus(e.target.value)}>
-              {STATUS_OPTIONS.map((option) => (
-                <option key={option || 'all-status'} value={option}>
-                  {option || 'all'}
-                </option>
-              ))}
-            </select>
-          </label>
+      <Card className="mb-4">
+        <div className="flex flex-wrap items-end gap-3 p-4">
+          <div className="w-40">
+            <Select label="Action" value={action} onChange={setAction} options={ACTION_OPTIONS} />
+          </div>
+          <div className="w-40">
+            <Select label="Status" value={status} onChange={setStatus} options={STATUS_OPTIONS} />
+          </div>
         </div>
-      </section>
+      </Card>
 
-      {loading ? <p>Loading sessions...</p> : null}
-      {error === null ? null : <p className="error">{error}</p>}
+      {error && <div className="mb-4"><ErrorState message={error} /></div>}
+      {loading && <LoadingState message="Loading sessions..." />}
 
-      {loading === false && error === null ? (
-        <div className="table-wrap">
-          <table>
+      {!loading && !error && (
+        <Card>
+          <Table>
             <thead>
               <tr>
-                <th>Session</th>
-                <th>Asset</th>
-                <th>Asset Type</th>
-                <th>Action</th>
-                <th>Launch Type</th>
-                <th>Status</th>
-                <th>Created</th>
-                <th>Duration (s)</th>
+                <Th>Session</Th>
+                <Th>Asset</Th>
+                <Th>Type</Th>
+                <Th>Action</Th>
+                <Th>Launch</Th>
+                <Th>Status</Th>
+                <Th>Created</Th>
+                <Th>Duration</Th>
               </tr>
             </thead>
-            <tbody>
+            <tbody className="divide-y divide-gray-100">
               {items.map((item) => (
-                <tr key={item.session_id}>
-                  <td>
-                    <Link to={`/sessions/${item.session_id}`}>{item.session_id}</Link>
-                  </td>
-                  <td>{item.asset.name}</td>
-                  <td>{item.asset.asset_type}</td>
-                  <td>{item.action}</td>
-                  <td>{item.launch_type}</td>
-                  <td>{item.status}</td>
-                  <td>{new Date(item.created_at).toLocaleString()}</td>
-                  <td>{item.duration_seconds === undefined ? '-' : item.duration_seconds}</td>
+                <tr key={item.session_id} className="hover:bg-gray-50">
+                  <Td mono>
+                    <Link to={`/sessions/${item.session_id}`} className="text-indigo-600 hover:text-indigo-800">
+                      {item.session_id.slice(0, 8)}...
+                    </Link>
+                  </Td>
+                  <Td className="font-medium text-gray-900">{item.asset.name}</Td>
+                  <Td><Badge>{item.asset.asset_type}</Badge></Td>
+                  <Td><Badge color="indigo">{item.action}</Badge></Td>
+                  <Td>{item.launch_type}</Td>
+                  <Td><Badge color={statusColor(item.status)}>{item.status}</Badge></Td>
+                  <Td>{new Date(item.created_at).toLocaleString()}</Td>
+                  <Td>{item.duration_seconds === undefined ? '-' : `${item.duration_seconds}s`}</Td>
                 </tr>
               ))}
-              {items.length === 0 ? (
-                <tr>
-                  <td colSpan={8} className="muted">
-                    No sessions found for the selected filters.
-                  </td>
-                </tr>
-              ) : null}
+              {items.length === 0 && <EmptyRow colSpan={8} message="No sessions found for the selected filters." />}
             </tbody>
-          </table>
-        </div>
-      ) : null}
-    </main>
+          </Table>
+        </Card>
+      )}
+    </>
   )
 }

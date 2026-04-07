@@ -28,36 +28,66 @@ export function LoginPage() {
   }
 
   return (
-    <main className="page-center">
-      <form className="card login-card" onSubmit={onSubmit}>
-        <h1>PAM Login</h1>
-        <p className="muted">Local dev auth (cookie session)</p>
+    <div className="flex min-h-screen items-center justify-center bg-gray-50 px-4">
+      <div className="w-full max-w-sm">
+        <div className="mb-8 text-center">
+          <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-xl bg-indigo-600 text-white text-xl font-bold">
+            P
+          </div>
+          <h1 className="mt-4 text-2xl font-bold text-gray-900">Sign in to PAM</h1>
+          <p className="mt-1 text-sm text-gray-500">Privileged Access Management</p>
+        </div>
 
-        <label htmlFor="username">Username</label>
-        <input
-          id="username"
-          value={username}
-          onChange={(e) => setUsername(e.target.value)}
-          autoComplete="username"
-          required
-        />
+        <form
+          className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm"
+          onSubmit={onSubmit}
+        >
+          {error && (
+            <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3">
+              <p className="text-sm text-red-700">{error}</p>
+            </div>
+          )}
 
-        <label htmlFor="password">Password</label>
-        <input
-          id="password"
-          type="password"
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-          autoComplete="current-password"
-          required
-        />
+          <div className="space-y-4">
+            <label className="block">
+              <span className="mb-1 block text-sm font-medium text-gray-700">Username</span>
+              <input
+                id="username"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                autoComplete="username"
+                required
+                className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900 placeholder-gray-400 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+              />
+            </label>
 
-        {error && <p className="error">{error}</p>}
+            <label className="block">
+              <span className="mb-1 block text-sm font-medium text-gray-700">Password</span>
+              <input
+                id="password"
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                autoComplete="current-password"
+                required
+                className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900 placeholder-gray-400 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+              />
+            </label>
+          </div>
 
-        <button type="submit" disabled={isSubmitting}>
-          {isSubmitting ? 'Signing in...' : 'Sign in'}
-        </button>
-      </form>
-    </main>
+          <button
+            type="submit"
+            disabled={isSubmitting}
+            className="mt-6 w-full rounded-lg bg-indigo-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          >
+            {isSubmitting ? 'Signing in...' : 'Sign in'}
+          </button>
+
+          <p className="mt-4 text-center text-xs text-gray-400">
+            Local dev auth (cookie session)
+          </p>
+        </form>
+      </div>
+    </div>
   )
 }

@@ -43,6 +43,20 @@ func main() {
 		"session_samesite", cfg.Auth.SessionSameSite,
 		"ssh_proxy_addr", cfg.SSHProxy.ListenAddr,
 		"ssh_proxy_public", fmt.Sprintf("%s:%d", cfg.SSHProxy.PublicHost, cfg.SSHProxy.PublicPort),
+		"ssh_proxy_idle_timeout", cfg.SSHProxy.IdleTimeout.String(),
+		"ssh_proxy_max_session_duration", cfg.SSHProxy.MaxSessionAge.String(),
+		"pg_proxy_public_host", cfg.PGProxy.PublicHost,
+		"pg_proxy_idle_timeout", cfg.PGProxy.IdleTimeout.String(),
+		"pg_proxy_max_session_duration", cfg.PGProxy.MaxSessionAge.String(),
+		"mysql_proxy_public_host", cfg.MySQLProxy.PublicHost,
+		"mysql_proxy_idle_timeout", cfg.MySQLProxy.IdleTimeout.String(),
+		"mysql_proxy_max_session_duration", cfg.MySQLProxy.MaxSessionAge.String(),
+		"mssql_proxy_public_host", cfg.MSSQLProxy.PublicHost,
+		"mssql_proxy_idle_timeout", cfg.MSSQLProxy.IdleTimeout.String(),
+		"mssql_proxy_max_session_duration", cfg.MSSQLProxy.MaxSessionAge.String(),
+		"redis_proxy_public_host", cfg.RedisProxy.PublicHost,
+		"redis_proxy_idle_timeout", cfg.RedisProxy.IdleTimeout.String(),
+		"redis_proxy_max_session_duration", cfg.RedisProxy.MaxSessionAge.String(),
 		"ssh_host_key_mode", cfg.SSHProxy.UpstreamHostKeyMode,
 		"connector_trust", cfg.Sessions.ConnectorSecret != "",
 		"unsafe_mode", cfg.App.AllowUnsafeMode,
@@ -148,6 +162,18 @@ func runServer(a *app.App) error {
 	}
 	if err := a.SSHProxyServer.Shutdown(shutdownCtx); err != nil {
 		return fmt.Errorf("ssh proxy shutdown failed: %w", err)
+	}
+	if err := a.PGProxyServer.Shutdown(shutdownCtx); err != nil {
+		return fmt.Errorf("pg proxy shutdown failed: %w", err)
+	}
+	if err := a.MySQLProxyServer.Shutdown(shutdownCtx); err != nil {
+		return fmt.Errorf("mysql proxy shutdown failed: %w", err)
+	}
+	if err := a.MSSQLProxyServer.Shutdown(shutdownCtx); err != nil {
+		return fmt.Errorf("mssql proxy shutdown failed: %w", err)
+	}
+	if err := a.RedisProxyServer.Shutdown(shutdownCtx); err != nil {
+		return fmt.Errorf("redis proxy shutdown failed: %w", err)
 	}
 
 	for i := 0; i < 2; i++ {

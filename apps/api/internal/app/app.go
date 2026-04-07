@@ -17,6 +17,10 @@ import (
 	"github.com/districtd/pam/api/internal/handlers"
 	"github.com/districtd/pam/api/internal/httpserver"
 	"github.com/districtd/pam/api/internal/migrate"
+	"github.com/districtd/pam/api/internal/mssqlproxy"
+	"github.com/districtd/pam/api/internal/mysqlproxy"
+	"github.com/districtd/pam/api/internal/pgproxy"
+	"github.com/districtd/pam/api/internal/redisproxy"
 	"github.com/districtd/pam/api/internal/sessions"
 	"github.com/districtd/pam/api/internal/sshproxy"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -37,6 +41,10 @@ type App struct {
 	SessionsService    *sessions.Service
 	AuditService       *audit.Service
 	SSHProxyServer     *sshproxy.Server
+	PGProxyServer      *pgproxy.Service
+	MySQLProxyServer   *mysqlproxy.Service
+	MSSQLProxyServer   *mssqlproxy.Service
+	RedisProxyServer   *redisproxy.Service
 }
 
 func New(_ context.Context, cfg config.Config, logger *slog.Logger, pool *pgxpool.Pool) (*App, error) {
@@ -72,9 +80,59 @@ func New(_ context.Context, cfg config.Config, logger *slog.Logger, pool *pgxpoo
 		HostKeyPath:            cfg.SSHProxy.HostKeyPath,
 		UpstreamHostKeyMode:    cfg.SSHProxy.UpstreamHostKeyMode,
 		UpstreamKnownHostsPath: cfg.SSHProxy.UpstreamKnownHostsPath,
+		IdleTimeout:            cfg.SSHProxy.IdleTimeout,
+		MaxSessionAge:          cfg.SSHProxy.MaxSessionAge,
 	}, sessionsService, credentialsService, logger)
 	if err != nil {
 		return nil, fmt.Errorf("initialize ssh proxy server: %w", err)
+	}
+	pgProxyServer, err := pgproxy.New(pgproxy.Config{
+		BindHost:       cfg.PGProxy.BindHost,
+		PublicHost:     cfg.PGProxy.PublicHost,
+		ConnectTimeout: cfg.PGProxy.ConnectTimeout,
+		QueryLogQueue:  cfg.PGProxy.QueryLogQueue,
+		QueryMaxBytes:  cfg.PGProxy.QueryMaxBytes,
+		IdleTimeout:    cfg.PGProxy.IdleTimeout,
+		MaxSessionAge:  cfg.PGProxy.MaxSessionAge,
+	}, sessionsService, credentialsService, logger)
+	if err != nil {
+		return nil, fmt.Errorf("initialize pg proxy server: %w", err)
+	}
+	mysqlProxyServer, err := mysqlproxy.New(mysqlproxy.Config{
+		BindHost:       cfg.MySQLProxy.BindHost,
+		PublicHost:     cfg.MySQLProxy.PublicHost,
+		ConnectTimeout: cfg.MySQLProxy.ConnectTimeout,
+		QueryLogQueue:  cfg.MySQLProxy.QueryLogQueue,
+		QueryMaxBytes:  cfg.MySQLProxy.QueryMaxBytes,
+		IdleTimeout:    cfg.MySQLProxy.IdleTimeout,
+		MaxSessionAge:  cfg.MySQLProxy.MaxSessionAge,
+	}, sessionsService, credentialsService, logger)
+	if err != nil {
+		return nil, fmt.Errorf("initialize mysql proxy server: %w", err)
+	}
+	mssqlProxyServer, err := mssqlproxy.New(mssqlproxy.Config{
+		BindHost:       cfg.MSSQLProxy.BindHost,
+		PublicHost:     cfg.MSSQLProxy.PublicHost,
+		ConnectTimeout: cfg.MSSQLProxy.ConnectTimeout,
+		QueryLogQueue:  cfg.MSSQLProxy.QueryLogQueue,
+		QueryMaxBytes:  cfg.MSSQLProxy.QueryMaxBytes,
+		IdleTimeout:    cfg.MSSQLProxy.IdleTimeout,
+		MaxSessionAge:  cfg.MSSQLProxy.MaxSessionAge,
+	}, sessionsService, credentialsService, logger)
+	if err != nil {
+		return nil, fmt.Errorf("initialize mssql proxy server: %w", err)
+	}
+	redisProxyServer, err := redisproxy.New(redisproxy.Config{
+		BindHost:       cfg.RedisProxy.BindHost,
+		PublicHost:     cfg.RedisProxy.PublicHost,
+		ConnectTimeout: cfg.RedisProxy.ConnectTimeout,
+		LogQueue:       cfg.RedisProxy.CommandLogQueue,
+		ArgMaxLen:      cfg.RedisProxy.ArgMaxLen,
+		IdleTimeout:    cfg.RedisProxy.IdleTimeout,
+		MaxSessionAge:  cfg.RedisProxy.MaxSessionAge,
+	}, sessionsService, credentialsService, logger)
+	if err != nil {
+		return nil, fmt.Errorf("initialize redis proxy server: %w", err)
 	}
 
 	router := httpserver.NewRouter(httpserver.RouteHandlers{
@@ -82,7 +140,7 @@ func New(_ context.Context, cfg config.Config, logger *slog.Logger, pool *pgxpoo
 		Version:  handlers.NewVersionHandler(cfg.App.Version),
 		Auth:     handlers.NewAuthHandler(authService),
 		Access:   handlers.NewAccessHandler(accessService),
-		Sessions: handlers.NewSessionsHandler(assetsService, accessService, credentialsService, sessionsService),
+		Sessions: handlers.NewSessionsHandler(assetsService, accessService, credentialsService, sessionsService, pgProxyServer, mysqlProxyServer, mssqlProxyServer, redisProxyServer),
 		Admin:    handlers.NewAdminHandler(adminService, assetsService, credentialsService),
 		AuthSvc:  authService,
 	})
@@ -103,6 +161,10 @@ func New(_ context.Context, cfg config.Config, logger *slog.Logger, pool *pgxpoo
 		SessionsService:    sessionsService,
 		AuditService:       auditService,
 		SSHProxyServer:     sshProxyServer,
+		PGProxyServer:      pgProxyServer,
+		MySQLProxyServer:   mysqlProxyServer,
+		MSSQLProxyServer:   mssqlProxyServer,
+		RedisProxyServer:   redisProxyServer,
 	}, nil
 }
 
@@ -197,6 +259,28 @@ func (a *App) bootstrapDevAccess(ctx context.Context) error {
 			metadata:  `{"engine":"postgres","database":"app","env":"dev"}`,
 			username:  "app_user",
 			secret:    "pam-dev-db-password",
+			credType:  credentials.TypeDBPassword,
+			actions:   []string{access.ActionDBeaver},
+		},
+		{
+			name:      "mysql-app",
+			assetType: assets.TypeDatabase,
+			host:      "10.0.20.22",
+			port:      3306,
+			metadata:  `{"engine":"mysql","database":"appdb","env":"dev"}`,
+			username:  "app_user",
+			secret:    "pam-dev-mysql-password",
+			credType:  credentials.TypeDBPassword,
+			actions:   []string{access.ActionDBeaver},
+		},
+		{
+			name:      "mssql-app",
+			assetType: assets.TypeDatabase,
+			host:      "10.0.20.23",
+			port:      1433,
+			metadata:  `{"engine":"mssql","database":"appdb","ssl_mode":"disable","env":"dev"}`,
+			username:  "app_user",
+			secret:    "pam-dev-mssql-password",
 			credType:  credentials.TypeDBPassword,
 			actions:   []string{access.ActionDBeaver},
 		},

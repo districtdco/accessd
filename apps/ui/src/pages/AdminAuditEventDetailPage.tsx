@@ -3,10 +3,11 @@ import { Link, useParams } from 'react-router-dom'
 import { getAdminAuditEventDetail } from '../api'
 import { useAuth } from '../auth'
 import type { AdminAuditItem } from '../types'
+import { Badge, Card, CardBody, CardHeader, ErrorState, InfoRow, LoadingState, PageHeader } from '../components/ui'
 
 export function AdminAuditEventDetailPage() {
   const { eventID = '' } = useParams<{ eventID: string }>()
-  const { user, logout } = useAuth()
+  const { user } = useAuth()
   const isAdmin = user?.roles.includes('admin') === true
 
   const [item, setItem] = useState<AdminAuditItem | null>(null)
@@ -34,8 +35,7 @@ export function AdminAuditEventDetailPage() {
         }
       } catch (err) {
         if (!cancelled) {
-          const message = err instanceof Error ? err.message : 'failed to load audit event detail'
-          setError(message)
+          setError(err instanceof Error ? err.message : 'failed to load audit event detail')
         }
       } finally {
         if (!cancelled) {
@@ -51,96 +51,96 @@ export function AdminAuditEventDetailPage() {
   }, [eventID])
 
   return (
-    <main className="page-shell">
-      <header className="topbar">
-        <div>
-          <h1>Audit Event Detail</h1>
-          <p className="muted">
-            Signed in as <strong>{user?.username}</strong>
-          </p>
+    <>
+      <PageHeader title="Audit Event Detail" />
+
+      {loading && <LoadingState message="Loading audit event detail..." />}
+      {error && <ErrorState message={error} />}
+
+      {!loading && !error && item && (
+        <div className="space-y-4">
+          <Card>
+            <CardHeader title="Event" />
+            <CardBody>
+              <div className="grid gap-x-8 gap-y-1 sm:grid-cols-2">
+                <InfoRow label="ID" value={String(item.id)} />
+                <InfoRow label="Time" value={new Date(item.event_time).toLocaleString()} />
+                <InfoRow label="Type" value={<Badge>{item.event_type}</Badge>} />
+                <InfoRow label="Action" value={item.action || '-'} />
+                <InfoRow label="Outcome" value={item.outcome || '-'} />
+              </div>
+            </CardBody>
+          </Card>
+
+          <Card>
+            <CardHeader title="Correlations" />
+            <CardBody>
+              <div className="space-y-1">
+                <InfoRow
+                  label="Actor User"
+                  value={
+                    item.actor_user?.id ? (
+                      isAdmin ? (
+                        <Link to={`/admin/users/${item.actor_user.id}`} className="text-indigo-600 hover:text-indigo-800">
+                          {item.actor_user.username || item.actor_user.id}
+                        </Link>
+                      ) : (
+                        item.actor_user.username || item.actor_user.id
+                      )
+                    ) : '-'
+                  }
+                />
+                <InfoRow
+                  label="Asset"
+                  value={
+                    item.asset?.id ? (
+                      <>
+                        {isAdmin ? (
+                          <Link to={`/admin/assets/${item.asset.id}`} className="text-indigo-600 hover:text-indigo-800">
+                            {item.asset.name || item.asset.id}
+                          </Link>
+                        ) : (
+                          item.asset.name || item.asset.id
+                        )}
+                        {item.asset.asset_type && (
+                          <> <Badge>{item.asset.asset_type}</Badge></>
+                        )}
+                      </>
+                    ) : '-'
+                  }
+                />
+                <InfoRow
+                  label="Session"
+                  value={
+                    item.session_id ? (
+                      <Link to={`/sessions/${item.session_id}`} className="font-mono text-xs text-indigo-600 hover:text-indigo-800">
+                        {item.session_id}
+                      </Link>
+                    ) : '-'
+                  }
+                />
+                {item.session && (
+                  <InfoRow
+                    label="Session Summary"
+                    value={`action=${item.session.action || '-'} status=${item.session.status || '-'} created=${item.session.created_at ? new Date(item.session.created_at).toLocaleString() : '-'}`}
+                  />
+                )}
+              </div>
+            </CardBody>
+          </Card>
+
+          <Card>
+            <CardHeader title="Metadata" />
+            <CardBody>
+              <div className="rounded-lg border border-gray-200 bg-gray-900 p-4">
+                <pre className="max-h-64 overflow-auto font-mono text-sm text-green-400 whitespace-pre-wrap">
+                  {JSON.stringify(item.metadata ?? {}, null, 2)}
+                </pre>
+              </div>
+            </CardBody>
+          </Card>
         </div>
-        <div className="actions-inline">
-          <Link to="/">My Access</Link>
-          <Link to="/admin/dashboard">Dashboard</Link>
-          <Link to="/admin/audit/events">Audit Events</Link>
-          <Link to="/admin/sessions">Sessions</Link>
-          <button onClick={() => void logout()}>Logout</button>
-        </div>
-      </header>
-
-      {loading ? <p>Loading audit event detail...</p> : null}
-      {error ? <p className="error">{error}</p> : null}
-
-      {loading === false && error === null && item ? (
-        <>
-          <section className="card section-block">
-            <h2>Event</h2>
-            <p>
-              <strong>ID:</strong> {item.id}
-            </p>
-            <p>
-              <strong>Time:</strong> {new Date(item.event_time).toLocaleString()}
-            </p>
-            <p>
-              <strong>Type:</strong> {item.event_type}
-            </p>
-            <p>
-              <strong>Action:</strong> {item.action || '-'}
-            </p>
-            <p>
-              <strong>Outcome:</strong> {item.outcome || '-'}
-            </p>
-          </section>
-
-          <section className="card section-block">
-            <h2>Correlations</h2>
-            <p>
-              <strong>Actor User:</strong>{' '}
-              {item.actor_user?.id ? (
-                isAdmin ? (
-                  <Link to={`/admin/users/${item.actor_user.id}`}>
-                    {item.actor_user.username || item.actor_user.id}
-                  </Link>
-                ) : (
-                  item.actor_user.username || item.actor_user.id
-                )
-              ) : (
-                '-'
-              )}
-            </p>
-            <p>
-              <strong>Asset:</strong>{' '}
-              {item.asset?.id ? (
-                isAdmin ? (
-                  <Link to={`/admin/assets/${item.asset.id}`}>{item.asset.name || item.asset.id}</Link>
-                ) : (
-                  item.asset.name || item.asset.id
-                )
-              ) : (
-                '-'
-              )}
-              {item.asset?.asset_type ? ` (${item.asset.asset_type})` : ''}
-            </p>
-            <p>
-              <strong>Session:</strong>{' '}
-              {item.session_id ? <Link to={`/sessions/${item.session_id}`}>{item.session_id}</Link> : '-'}
-            </p>
-            {item.session ? (
-              <p>
-                <strong>Session Summary:</strong> action={item.session.action || '-'} status={item.session.status || '-'} created=
-                {item.session.created_at ? new Date(item.session.created_at).toLocaleString() : '-'}
-              </p>
-            ) : null}
-          </section>
-
-          <section className="card section-block">
-            <h2>Metadata</h2>
-            <div className="transcript-panel">
-              <pre>{JSON.stringify(item.metadata ?? {}, null, 2)}</pre>
-            </div>
-          </section>
-        </>
-      ) : null}
-    </main>
+      )}
+    </>
   )
 }

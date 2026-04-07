@@ -1,15 +1,28 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { getAdminSessions } from '../api'
-import { useAuth } from '../auth'
 import type { SessionSummary } from '../types'
+import { Badge, Card, EmptyRow, ErrorState, Input, LoadingState, PageHeader, Select, statusColor, Table, Td, Th } from '../components/ui'
 
-const ACTION_OPTIONS = ['', 'shell', 'dbeaver', 'sftp', 'redis']
-const STATUS_OPTIONS = ['', 'pending', 'active', 'completed', 'failed', 'terminated', 'expired']
+const ACTION_OPTIONS = [
+  { value: '', label: 'All actions' },
+  { value: 'shell', label: 'Shell' },
+  { value: 'dbeaver', label: 'DBeaver' },
+  { value: 'sftp', label: 'SFTP' },
+  { value: 'redis', label: 'Redis' },
+]
+
+const STATUS_OPTIONS = [
+  { value: '', label: 'All statuses' },
+  { value: 'pending', label: 'Pending' },
+  { value: 'active', label: 'Active' },
+  { value: 'completed', label: 'Completed' },
+  { value: 'failed', label: 'Failed' },
+  { value: 'terminated', label: 'Terminated' },
+  { value: 'expired', label: 'Expired' },
+]
 
 export function AdminSessionsPage() {
-  const { user, logout } = useAuth()
-  const isAdmin = user?.roles.includes('admin') === true
   const [items, setItems] = useState<SessionSummary[]>([])
   const [status, setStatus] = useState('')
   const [action, setAction] = useState('')
@@ -20,18 +33,10 @@ export function AdminSessionsPage() {
 
   const exportHref = (() => {
     const params = new URLSearchParams()
-    if (status) {
-      params.set('status', status)
-    }
-    if (action) {
-      params.set('action', action)
-    }
-    if (userID) {
-      params.set('user_id', userID)
-    }
-    if (assetID) {
-      params.set('asset_id', assetID)
-    }
+    if (status) params.set('status', status)
+    if (action) params.set('action', action)
+    if (userID) params.set('user_id', userID)
+    if (assetID) params.set('asset_id', assetID)
     params.set('limit', '200')
     const query = params.toString()
     return `/api/admin/sessions/export${query ? `?${query}` : ''}`
@@ -50,8 +55,7 @@ export function AdminSessionsPage() {
       })
       setItems(response.items)
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'failed to load admin sessions'
-      setError(message)
+      setError(err instanceof Error ? err.message : 'failed to load admin sessions')
     } finally {
       setLoading(false)
     }
@@ -59,109 +63,78 @@ export function AdminSessionsPage() {
 
   useEffect(() => {
     void load()
-    // Filter changes trigger reloads.
   }, [status, action, userID, assetID])
 
   return (
-    <main className="page-shell">
-      <header className="topbar">
-        <div>
-          <h1>Admin Sessions</h1>
-          <p className="muted">
-            Signed in as <strong>{user?.username}</strong>
-          </p>
-        </div>
-        <div className="actions-inline">
-          <Link to="/">My Access</Link>
-          <Link to="/admin/dashboard">Dashboard</Link>
-          <Link to="/admin/audit/events">Audit Events</Link>
-          <Link to="/sessions">My Sessions</Link>
-          {isAdmin ? <Link to="/admin/users">Admin Users</Link> : null}
-          <button onClick={() => void logout()}>Logout</button>
-        </div>
-      </header>
+    <>
+      <PageHeader title="All Sessions">
+        <a
+          href={exportHref}
+          className="rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50"
+        >
+          Export CSV
+        </a>
+      </PageHeader>
 
-      <section className="card section-block">
-        <h2>Filters</h2>
-        <div className="actions-inline">
-          <label>
-            Action{' '}
-            <select value={action} onChange={(e) => setAction(e.target.value)}>
-              {ACTION_OPTIONS.map((option) => (
-                <option key={option || 'all-actions'} value={option}>
-                  {option || 'all'}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            Status{' '}
-            <select value={status} onChange={(e) => setStatus(e.target.value)}>
-              {STATUS_OPTIONS.map((option) => (
-                <option key={option || 'all-status'} value={option}>
-                  {option || 'all'}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            User ID{' '}
-            <input value={userID} onChange={(e) => setUserID(e.target.value)} placeholder="optional" />
-          </label>
-          <label>
-            Asset ID{' '}
-            <input value={assetID} onChange={(e) => setAssetID(e.target.value)} placeholder="optional" />
-          </label>
-          <a href={exportHref}>Export CSV</a>
+      <Card className="mb-4">
+        <div className="flex flex-wrap items-end gap-3 p-4">
+          <div className="w-40">
+            <Select label="Action" value={action} onChange={setAction} options={ACTION_OPTIONS} />
+          </div>
+          <div className="w-40">
+            <Select label="Status" value={status} onChange={setStatus} options={STATUS_OPTIONS} />
+          </div>
+          <div className="w-48">
+            <Input label="User ID" value={userID} onChange={setUserID} placeholder="optional" />
+          </div>
+          <div className="w-48">
+            <Input label="Asset ID" value={assetID} onChange={setAssetID} placeholder="optional" />
+          </div>
         </div>
-      </section>
+      </Card>
 
-      {loading ? <p>Loading sessions...</p> : null}
-      {error === null ? null : <p className="error">{error}</p>}
+      {error && <div className="mb-4"><ErrorState message={error} /></div>}
+      {loading && <LoadingState message="Loading sessions..." />}
 
-      {loading === false && error === null ? (
-        <div className="table-wrap">
-          <table>
+      {!loading && !error && (
+        <Card>
+          <Table>
             <thead>
               <tr>
-                <th>Session</th>
-                <th>User</th>
-                <th>Asset</th>
-                <th>Asset Type</th>
-                <th>Action</th>
-                <th>Launch Type</th>
-                <th>Status</th>
-                <th>Created</th>
-                <th>Duration (s)</th>
+                <Th>Session</Th>
+                <Th>User</Th>
+                <Th>Asset</Th>
+                <Th>Type</Th>
+                <Th>Action</Th>
+                <Th>Launch</Th>
+                <Th>Status</Th>
+                <Th>Created</Th>
+                <Th>Duration</Th>
               </tr>
             </thead>
-            <tbody>
+            <tbody className="divide-y divide-gray-100">
               {items.map((item) => (
-                <tr key={item.session_id}>
-                  <td>
-                    <Link to={`/sessions/${item.session_id}`}>{item.session_id}</Link>
-                  </td>
-                  <td>{item.user.username}</td>
-                  <td>{item.asset.name}</td>
-                  <td>{item.asset.asset_type}</td>
-                  <td>{item.action}</td>
-                  <td>{item.launch_type}</td>
-                  <td>{item.status}</td>
-                  <td>{new Date(item.created_at).toLocaleString()}</td>
-                  <td>{item.duration_seconds === undefined ? '-' : item.duration_seconds}</td>
+                <tr key={item.session_id} className="hover:bg-gray-50">
+                  <Td mono>
+                    <Link to={`/sessions/${item.session_id}`} className="text-indigo-600 hover:text-indigo-800">
+                      {item.session_id.slice(0, 8)}...
+                    </Link>
+                  </Td>
+                  <Td className="font-medium text-gray-900">{item.user.username}</Td>
+                  <Td>{item.asset.name}</Td>
+                  <Td><Badge>{item.asset.asset_type}</Badge></Td>
+                  <Td><Badge color="indigo">{item.action}</Badge></Td>
+                  <Td>{item.launch_type}</Td>
+                  <Td><Badge color={statusColor(item.status)}>{item.status}</Badge></Td>
+                  <Td>{new Date(item.created_at).toLocaleString()}</Td>
+                  <Td>{item.duration_seconds === undefined ? '-' : `${item.duration_seconds}s`}</Td>
                 </tr>
               ))}
-              {items.length === 0 ? (
-                <tr>
-                  <td colSpan={9} className="muted">
-                    No sessions found for the selected filters.
-                  </td>
-                </tr>
-              ) : null}
+              {items.length === 0 && <EmptyRow colSpan={9} message="No sessions found for the selected filters." />}
             </tbody>
-          </table>
-        </div>
-      ) : null}
-    </main>
+          </Table>
+        </Card>
+      )}
+    </>
   )
 }

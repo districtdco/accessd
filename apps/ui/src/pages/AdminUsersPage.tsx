@@ -1,11 +1,10 @@
-import { useEffect, useState } from "react"
-import { Link } from "react-router-dom"
-import { adminListUsers } from "../api"
-import { useAuth } from "../auth"
-import type { AdminUser } from "../types"
+import { useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
+import { adminListUsers } from '../api'
+import type { AdminUser } from '../types'
+import { Badge, Card, EmptyRow, ErrorState, LoadingState, PageHeader, Table, Td, Th } from '../components/ui'
 
 export function AdminUsersPage() {
-  const { user, logout } = useAuth()
   const [items, setItems] = useState<AdminUser[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -18,16 +17,16 @@ export function AdminUsersPage() {
       setError(null)
       try {
         const response = await adminListUsers()
-        if (cancelled === false) {
+        if (!cancelled) {
           setItems(response.items)
         }
       } catch (err) {
-        if (cancelled === false) {
-          const message = err instanceof Error ? err.message : "failed to load users"
+        if (!cancelled) {
+          const message = err instanceof Error ? err.message : 'failed to load users'
           setError(message)
         }
       } finally {
-        if (cancelled === false) {
+        if (!cancelled) {
           setLoading(false)
         }
       }
@@ -40,62 +39,53 @@ export function AdminUsersPage() {
   }, [])
 
   return (
-    <main className="page-shell">
-      <header className="topbar">
-        <div>
-          <h1>Admin · Users</h1>
-          <p className="muted">
-            Signed in as <strong>{user?.username}</strong>
-          </p>
-        </div>
-        <div className="actions-inline">
-          <Link to="/">My Access</Link>
-          <Link to="/admin/dashboard">Dashboard</Link>
-          <Link to="/sessions">My Sessions</Link>
-          <Link to="/admin/assets">Assets</Link>
-          <Link to="/admin/sessions">Sessions</Link>
-          <button onClick={() => void logout()}>Logout</button>
-        </div>
-      </header>
+    <>
+      <PageHeader title="Users" />
 
-      {loading ? <p>Loading users...</p> : null}
-      {error === null ? null : <p className="error">{error}</p>}
+      {error && <div className="mb-4"><ErrorState message={error} /></div>}
+      {loading && <LoadingState message="Loading users..." />}
 
-      {loading === false && error === null ? (
-        <div className="table-wrap">
-          <table>
+      {!loading && !error && (
+        <Card>
+          <Table>
             <thead>
               <tr>
-                <th>Username</th>
-                <th>Email</th>
-                <th>Roles</th>
-                <th>Status</th>
-                <th>Detail</th>
+                <Th>Username</Th>
+                <Th>Email</Th>
+                <Th>Roles</Th>
+                <Th>Status</Th>
+                <Th>Detail</Th>
               </tr>
             </thead>
-            <tbody>
+            <tbody className="divide-y divide-gray-100">
               {items.map((item) => (
-                <tr key={item.id}>
-                  <td>{item.username}</td>
-                  <td>{item.email || "-"}</td>
-                  <td>{item.roles.join(", ") || "-"}</td>
-                  <td>{item.is_active ? "active" : "inactive"}</td>
-                  <td>
-                    <Link to={"/admin/users/" + item.id}>Open</Link>
-                  </td>
+                <tr key={item.id} className="hover:bg-gray-50">
+                  <Td className="font-medium text-gray-900">{item.username}</Td>
+                  <Td>{item.email || '-'}</Td>
+                  <Td>
+                    <div className="flex gap-1">
+                      {item.roles.length > 0
+                        ? item.roles.map((r) => <Badge key={r} color="indigo">{r}</Badge>)
+                        : <span className="text-gray-400">-</span>}
+                    </div>
+                  </Td>
+                  <Td>
+                    <Badge color={item.is_active ? 'green' : 'red'}>
+                      {item.is_active ? 'Active' : 'Inactive'}
+                    </Badge>
+                  </Td>
+                  <Td>
+                    <Link to={`/admin/users/${item.id}`} className="text-indigo-600 hover:text-indigo-800 text-sm font-medium">
+                      Open
+                    </Link>
+                  </Td>
                 </tr>
               ))}
-              {items.length === 0 ? (
-                <tr>
-                  <td colSpan={5} className="muted">
-                    No users found.
-                  </td>
-                </tr>
-              ) : null}
+              {items.length === 0 && <EmptyRow colSpan={5} message="No users found." />}
             </tbody>
-          </table>
-        </div>
-      ) : null}
-    </main>
+          </Table>
+        </Card>
+      )}
+    </>
   )
 }

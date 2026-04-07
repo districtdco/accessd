@@ -8,12 +8,10 @@ import {
   handoffShellToConnector,
   recordSessionEvent,
 } from '../api'
-import { useAuth } from '../auth'
 import type { AccessPoint, DBeaverLaunchConnection, RedisLaunchConnection, SFTPLaunchConnection, ShellLaunchConnection } from '../types'
+import { Badge, Button, Card, EmptyRow, ErrorState, LoadingState, PageHeader, SuccessState, Table, Td, Th } from '../components/ui'
 
 export function AccessPage() {
-  const { user, logout } = useAuth()
-  const canReadAdmin = user?.roles.includes('admin') || user?.roles.includes('auditor')
   const [items, setItems] = useState<AccessPoint[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -143,8 +141,6 @@ export function AccessPage() {
         )
         return
       }
-
-      // launch message is set immediately after connector handoff to include richer instructions.
     } catch (err) {
       let message = err instanceof Error ? err.message : 'failed to launch asset'
       if (message.includes('connector handoff failed')) {
@@ -166,46 +162,27 @@ export function AccessPage() {
     }
   }
 
-  const onLogout = async () => {
-    await logout()
-  }
-
   return (
-    <main className="page-shell">
-      <header className="topbar">
-        <div>
-          <h1>My Access</h1>
-          <p className="muted">
-            Signed in as <strong>{user?.username}</strong>
-          </p>
-        </div>
-        <div className="actions-inline">
-          <a href="/sessions">My Sessions</a>
-          {canReadAdmin ? <a href="/admin/dashboard">Admin Dashboard</a> : null}
-          {canReadAdmin ? <a href="/admin/sessions">Admin Sessions</a> : null}
-          {user?.roles.includes('admin') ? <a href="/admin/users">Admin Users</a> : null}
-          {user?.roles.includes('admin') ? <a href="/admin/assets">Admin Assets</a> : null}
-          <button onClick={() => void onLogout()}>Logout</button>
-        </div>
-      </header>
+    <>
+      <PageHeader title="My Access" />
 
-      {loading && <p>Loading access...</p>}
-      {error && <p className="error">{error}</p>}
-      {launchMessage && <p className="status">{launchMessage}</p>}
+      {launchMessage && <div className="mb-4"><SuccessState message={launchMessage} /></div>}
+      {error && <div className="mb-4"><ErrorState message={error} /></div>}
+      {loading && <LoadingState message="Loading access..." />}
 
       {!loading && !error && (
-        <div className="table-wrap">
-          <table>
+        <Card>
+          <Table>
             <thead>
               <tr>
-                <th>Asset</th>
-                <th>Type</th>
-                <th>Endpoint</th>
-                <th>Allowed Actions</th>
-                <th>Action</th>
+                <Th>Asset</Th>
+                <Th>Type</Th>
+                <Th>Endpoint</Th>
+                <Th>Allowed Actions</Th>
+                <Th>Action</Th>
               </tr>
             </thead>
-            <tbody>
+            <tbody className="divide-y divide-gray-100">
               {items.map((item) => {
                 const canShell = item.asset_type === 'linux_vm' && item.allowed_actions.includes('shell')
                 const canSFTP = item.asset_type === 'linux_vm' && item.allowed_actions.includes('sftp')
@@ -214,53 +191,51 @@ export function AccessPage() {
                 const isLaunching = launchingAssetID === item.asset_id
 
                 return (
-                  <tr key={item.asset_id}>
-                    <td>{item.asset_name}</td>
-                    <td>{item.asset_type}</td>
-                    <td>{item.endpoint}</td>
-                    <td>{item.allowed_actions.join(', ')}</td>
-                    <td>
+                  <tr key={item.asset_id} className="hover:bg-gray-50">
+                    <Td className="font-medium text-gray-900">{item.asset_name}</Td>
+                    <Td><Badge>{item.asset_type}</Badge></Td>
+                    <Td mono>{item.endpoint}</Td>
+                    <Td>
+                      <div className="flex gap-1">
+                        {item.allowed_actions.map((a) => <Badge key={a} color="indigo">{a}</Badge>)}
+                      </div>
+                    </Td>
+                    <Td>
                       {(canShell || canSFTP || canDBeaver || canRedis) ? (
-                        <div className="actions-inline">
-                          {canShell ? (
-                            <button disabled={isLaunching} onClick={() => void launchAsset(item, 'shell')}>
+                        <div className="flex gap-1.5">
+                          {canShell && (
+                            <Button size="sm" disabled={isLaunching} onClick={() => void launchAsset(item, 'shell')}>
                               {isLaunching ? 'Launching...' : 'Shell'}
-                            </button>
-                          ) : null}
-                          {canSFTP ? (
-                            <button disabled={isLaunching} onClick={() => void launchAsset(item, 'sftp')}>
+                            </Button>
+                          )}
+                          {canSFTP && (
+                            <Button size="sm" variant="secondary" disabled={isLaunching} onClick={() => void launchAsset(item, 'sftp')}>
                               {isLaunching ? 'Launching...' : 'SFTP'}
-                            </button>
-                          ) : null}
-                          {canDBeaver ? (
-                            <button disabled={isLaunching} onClick={() => void launchAsset(item, 'dbeaver')}>
+                            </Button>
+                          )}
+                          {canDBeaver && (
+                            <Button size="sm" disabled={isLaunching} onClick={() => void launchAsset(item, 'dbeaver')}>
                               {isLaunching ? 'Launching...' : 'DBeaver'}
-                            </button>
-                          ) : null}
-                          {canRedis ? (
-                            <button disabled={isLaunching} onClick={() => void launchAsset(item, 'redis')}>
+                            </Button>
+                          )}
+                          {canRedis && (
+                            <Button size="sm" variant="secondary" disabled={isLaunching} onClick={() => void launchAsset(item, 'redis')}>
                               {isLaunching ? 'Launching...' : 'Redis CLI'}
-                            </button>
-                          ) : null}
+                            </Button>
+                          )}
                         </div>
                       ) : (
-                        <span className="muted">-</span>
+                        <span className="text-gray-400">-</span>
                       )}
-                    </td>
+                    </Td>
                   </tr>
                 )
               })}
-              {items.length === 0 && (
-                <tr>
-                  <td colSpan={5} className="muted">
-                    No access points assigned.
-                  </td>
-                </tr>
-              )}
+              {items.length === 0 && <EmptyRow colSpan={5} message="No access points assigned." />}
             </tbody>
-          </table>
-        </div>
+          </Table>
+        </Card>
       )}
-    </main>
+    </>
   )
 }

@@ -1,15 +1,17 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { getAdminAuditEvents } from '../api'
-import { useAuth } from '../auth'
 import type { AdminAuditItem } from '../types'
+import { Badge, Button, Card, CardBody, CardHeader, EmptyRow, ErrorState, Input, LoadingState, PageHeader, Select, Table, Td, Th } from '../components/ui'
 
-const LIMIT_OPTIONS = [25, 50, 100, 200]
+const LIMIT_OPTIONS = [
+  { value: '25', label: '25' },
+  { value: '50', label: '50' },
+  { value: '100', label: '100' },
+  { value: '200', label: '200' },
+]
 
 export function AdminAuditEventsPage() {
-  const { user, logout } = useAuth()
-  const isAdmin = user?.roles.includes('admin') === true
-
   const [items, setItems] = useState<AdminAuditItem[]>([])
   const [eventType, setEventType] = useState('')
   const [action, setAction] = useState('')
@@ -18,7 +20,7 @@ export function AdminAuditEventsPage() {
   const [sessionID, setSessionID] = useState('')
   const [from, setFrom] = useState('')
   const [to, setTo] = useState('')
-  const [limit, setLimit] = useState(100)
+  const [limit, setLimit] = useState('100')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
@@ -34,12 +36,11 @@ export function AdminAuditEventsPage() {
         session_id: sessionID,
         from: from ? new Date(from).toISOString() : undefined,
         to: to ? new Date(to).toISOString() : undefined,
-        limit,
+        limit: Number(limit),
       })
       setItems(response.items)
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'failed to load audit events'
-      setError(message)
+      setError(err instanceof Error ? err.message : 'failed to load audit events')
     } finally {
       setLoading(false)
     }
@@ -50,117 +51,90 @@ export function AdminAuditEventsPage() {
   }, [])
 
   return (
-    <main className="page-shell">
-      <header className="topbar">
-        <div>
-          <h1>Admin Audit Events</h1>
-          <p className="muted">
-            Signed in as <strong>{user?.username}</strong>
-          </p>
-        </div>
-        <div className="actions-inline">
-          <Link to="/">My Access</Link>
-          <Link to="/admin/dashboard">Dashboard</Link>
-          <Link to="/admin/sessions">Sessions</Link>
-          {isAdmin ? <Link to="/admin/users">Users</Link> : null}
-          {isAdmin ? <Link to="/admin/assets">Assets</Link> : null}
-          <button onClick={() => void logout()}>Logout</button>
-        </div>
-      </header>
+    <>
+      <PageHeader title="Audit Events" />
 
-      <section className="card section-block">
-        <h2>Filters</h2>
-        <div className="form-grid">
-          <label>
-            Event Type
-            <input value={eventType} onChange={(e) => setEventType(e.target.value)} placeholder="session_start" />
-          </label>
-          <label>
-            Action
-            <input value={action} onChange={(e) => setAction(e.target.value)} placeholder="shell_end" />
-          </label>
-          <label>
-            User ID
-            <input value={userID} onChange={(e) => setUserID(e.target.value)} placeholder="actor user id" />
-          </label>
-          <label>
-            Asset ID
-            <input value={assetID} onChange={(e) => setAssetID(e.target.value)} placeholder="asset id" />
-          </label>
-          <label>
-            Session ID
-            <input value={sessionID} onChange={(e) => setSessionID(e.target.value)} placeholder="session id" />
-          </label>
-          <label>
-            Limit
-            <select value={limit} onChange={(e) => setLimit(Number(e.target.value))}>
-              {LIMIT_OPTIONS.map((value) => (
-                <option key={value} value={value}>
-                  {value}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            From
-            <input type="datetime-local" value={from} onChange={(e) => setFrom(e.target.value)} />
-          </label>
-          <label>
-            To
-            <input type="datetime-local" value={to} onChange={(e) => setTo(e.target.value)} />
-          </label>
-        </div>
-        <div className="actions-inline">
-          <button onClick={() => void load()} disabled={loading}>
-            {loading ? 'Searching...' : 'Search'}
-          </button>
-        </div>
-      </section>
+      <Card className="mb-4">
+        <CardHeader title="Filters" />
+        <CardBody>
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+            <Input label="Event Type" value={eventType} onChange={setEventType} placeholder="session_start" />
+            <Input label="Action" value={action} onChange={setAction} placeholder="shell_end" />
+            <Input label="User ID" value={userID} onChange={setUserID} placeholder="actor user id" />
+            <Input label="Asset ID" value={assetID} onChange={setAssetID} placeholder="asset id" />
+            <Input label="Session ID" value={sessionID} onChange={setSessionID} placeholder="session id" />
+            <Select label="Limit" value={limit} onChange={setLimit} options={LIMIT_OPTIONS} />
+            <label className="block">
+              <span className="mb-1 block text-sm font-medium text-gray-700">From</span>
+              <input
+                type="datetime-local"
+                value={from}
+                onChange={(e) => setFrom(e.target.value)}
+                className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+              />
+            </label>
+            <label className="block">
+              <span className="mb-1 block text-sm font-medium text-gray-700">To</span>
+              <input
+                type="datetime-local"
+                value={to}
+                onChange={(e) => setTo(e.target.value)}
+                className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+              />
+            </label>
+          </div>
+          <div className="mt-4">
+            <Button disabled={loading} onClick={() => void load()}>
+              {loading ? 'Searching...' : 'Search'}
+            </Button>
+          </div>
+        </CardBody>
+      </Card>
 
-      {loading ? <p>Loading audit events...</p> : null}
-      {error ? <p className="error">{error}</p> : null}
+      {error && <div className="mb-4"><ErrorState message={error} /></div>}
+      {loading && <LoadingState message="Loading audit events..." />}
 
-      {loading === false && error === null ? (
-        <div className="table-wrap">
-          <table>
+      {!loading && !error && (
+        <Card>
+          <Table>
             <thead>
               <tr>
-                <th>ID</th>
-                <th>Time</th>
-                <th>Type</th>
-                <th>Action</th>
-                <th>Outcome</th>
-                <th>Actor</th>
-                <th>Asset</th>
-                <th>Session</th>
+                <Th>ID</Th>
+                <Th>Time</Th>
+                <Th>Type</Th>
+                <Th>Action</Th>
+                <Th>Outcome</Th>
+                <Th>Actor</Th>
+                <Th>Asset</Th>
+                <Th>Session</Th>
               </tr>
             </thead>
-            <tbody>
+            <tbody className="divide-y divide-gray-100">
               {items.map((item) => (
-                <tr key={item.id}>
-                  <td>
-                    <Link to={`/admin/audit/events/${item.id}`}>{item.id}</Link>
-                  </td>
-                  <td>{new Date(item.event_time).toLocaleString()}</td>
-                  <td>{item.event_type}</td>
-                  <td>{item.action || '-'}</td>
-                  <td>{item.outcome || '-'}</td>
-                  <td>{item.actor_user?.username || item.actor_user?.id || '-'}</td>
-                  <td>{item.asset?.name || item.asset?.id || '-'}</td>
-                  <td>{item.session_id ? <Link to={`/sessions/${item.session_id}`}>{item.session_id}</Link> : '-'}</td>
+                <tr key={item.id} className="hover:bg-gray-50">
+                  <Td>
+                    <Link to={`/admin/audit/events/${item.id}`} className="text-indigo-600 hover:text-indigo-800">{item.id}</Link>
+                  </Td>
+                  <Td>{new Date(item.event_time).toLocaleString()}</Td>
+                  <Td><Badge>{item.event_type}</Badge></Td>
+                  <Td>{item.action || '-'}</Td>
+                  <Td>{item.outcome || '-'}</Td>
+                  <Td>{item.actor_user?.username || item.actor_user?.id || '-'}</Td>
+                  <Td>{item.asset?.name || item.asset?.id || '-'}</Td>
+                  <Td mono>
+                    {item.session_id ? (
+                      <Link to={`/sessions/${item.session_id}`} className="text-indigo-600 hover:text-indigo-800">
+                        {item.session_id.slice(0, 8)}...
+                      </Link>
+                    ) : '-'}
+                  </Td>
                 </tr>
               ))}
-              {items.length === 0 ? (
-                <tr>
-                  <td colSpan={8} className="muted">
-                    No audit events found for current filters.
-                  </td>
-                </tr>
-              ) : null}
+              {items.length === 0 && <EmptyRow colSpan={8} message="No audit events found for current filters." />}
             </tbody>
-          </table>
-        </div>
-      ) : null}
-    </main>
+          </Table>
+        </Card>
+      )}
+    </>
   )
 }

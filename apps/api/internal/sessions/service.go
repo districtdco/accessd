@@ -35,11 +35,15 @@ const (
 	EventConnectorReq     = "connector_launch_requested"
 	EventConnectorSuccess = "connector_launch_succeeded"
 	EventConnectorFailed  = "connector_launch_failed"
+	EventDBQuery          = "db_query"
+	EventRedisCommand     = "redis_command"
+	EventFileOperation    = "file_operation"
 	EventProxyConnected   = "proxy_connected"
 	EventUpstreamConn     = "upstream_connected"
 	EventShellStarted     = "shell_started"
 	EventDataIn           = "data_in"
 	EventDataOut          = "data_out"
+	EventTerminalResize   = "terminal_resize"
 	EventSessionEnded     = "session_ended"
 	EventSessionFailed    = "session_failed"
 	auditEventSessionOpen = "session_start"
@@ -54,12 +58,12 @@ var (
 )
 
 type Config struct {
-	LaunchTokenSecret  []byte
-	LaunchTokenTTL     time.Duration
-	ConnectorSecret    []byte // HMAC key for signing connector launch payloads
-	ProxyHost          string
-	ProxyPort          int
-	ProxyUsername      string
+	LaunchTokenSecret []byte
+	LaunchTokenTTL    time.Duration
+	ConnectorSecret   []byte // HMAC key for signing connector launch payloads
+	ProxyHost         string
+	ProxyPort         int
+	ProxyUsername     string
 }
 
 type Service struct {
@@ -75,6 +79,7 @@ type CreateLaunchInput struct {
 	AssetID     string
 	Action      string
 	Protocol    string
+	RequestID   string
 	ClientIP    string
 	UserAgent   string
 	RequestedAt time.Time
@@ -114,7 +119,6 @@ type DBeaverLaunchPayload struct {
 	Port     int
 	Database string
 	Username string
-	Password string
 	SSLMode  string
 }
 
@@ -132,6 +136,7 @@ type LaunchContext struct {
 	SessionID string
 	UserID    string
 	AssetID   string
+	RequestID string
 	Action    string
 	Protocol  string
 	AssetType string
@@ -211,11 +216,17 @@ type SessionEvent struct {
 type ReplayChunk struct {
 	EventID   int64
 	EventTime time.Time
+	EventType string
 	Direction string
 	Stream    string
 	Size      int
 	Text      string
 	Encoded   string
+	OffsetSec float64
+	DelaySec  float64
+	Cols      int
+	Rows      int
+	Asciicast []any
 }
 
 type AdminSummary struct {
@@ -310,6 +321,7 @@ func (s *Service) CreateLaunch(ctx context.Context, input CreateLaunchInput) (La
 	protocol := strings.TrimSpace(input.Protocol)
 	clientIP := normalizeIP(input.ClientIP)
 	userAgent := strings.TrimSpace(input.UserAgent)
+	requestID := strings.TrimSpace(input.RequestID)
 	if userID == "" || assetID == "" || action == "" || protocol == "" {
 		return LaunchResult{}, fmt.Errorf("user_id, asset_id, action, and protocol are required")
 	}
@@ -333,6 +345,7 @@ RETURNING id;`
 		"expires_at":  expiresAt.Format(time.RFC3339Nano),
 		"client_ip":   clientIP,
 		"user_agent":  userAgent,
+		"request_id":  requestID,
 		"created_via": "api",
 	}); err != nil {
 		return LaunchResult{}, err
@@ -351,6 +364,7 @@ RETURNING id;`
 			UserID:    userID,
 			AssetID:   assetID,
 			Action:    action,
+			RequestID: requestID,
 			ExpiresAt: expiresAt.Unix(),
 		})
 		if ctErr != nil {
@@ -366,6 +380,7 @@ RETURNING id;`
 			UserID:    userID,
 			AssetID:   assetID,
 			Action:    action,
+			RequestID: requestID,
 			ExpiresAt: expiresAt.Unix(),
 		})
 		if err != nil {
@@ -378,6 +393,45 @@ RETURNING id;`
 			ProxyPort: s.cfg.ProxyPort,
 			Username:  s.cfg.ProxyUsername,
 			Token:     token,
+		}
+	}
+	if protocol == ProtocolSFTP && action == "sftp" {
+		token, err := s.tokens.Sign(LaunchTokenClaims{
+			SessionID: sessionID,
+			UserID:    userID,
+			AssetID:   assetID,
+			Action:    action,
+			RequestID: requestID,
+			ExpiresAt: expiresAt.Unix(),
+		})
+		if err != nil {
+			return LaunchResult{}, fmt.Errorf("sign launch token: %w", err)
+		}
+		result.LaunchType = "sftp"
+		result.AssetType = assets.TypeLinuxVM
+		result.SFTP = &SFTPLaunchPayload{
+			Host:     s.cfg.ProxyHost,
+			Port:     s.cfg.ProxyPort,
+			Username: s.cfg.ProxyUsername,
+			Password: token,
+		}
+	}
+	if protocol == ProtocolRedis && action == "redis" {
+		token, err := s.tokens.Sign(LaunchTokenClaims{
+			SessionID: sessionID,
+			UserID:    userID,
+			AssetID:   assetID,
+			Action:    action,
+			RequestID: requestID,
+			ExpiresAt: expiresAt.Unix(),
+		})
+		if err != nil {
+			return LaunchResult{}, fmt.Errorf("sign launch token: %w", err)
+		}
+		result.LaunchType = "redis"
+		result.AssetType = assets.TypeRedis
+		result.Redis = &RedisLaunchPayload{
+			Password: token,
 		}
 	}
 
@@ -431,18 +485,30 @@ LIMIT 1;`
 	}
 
 	lctx.Action = strings.TrimPrefix(reason, "action:")
+	lctx.RequestID = strings.TrimSpace(claims.RequestID)
 	lctx.ExpiresAt = time.Unix(claims.ExpiresAt, 0).UTC()
 
 	if lctx.UserID != claims.UserID || lctx.AssetID != claims.AssetID || lctx.Action != claims.Action {
 		return LaunchContext{}, ErrUnauthorizedLaunch
 	}
-	if lctx.Protocol != ProtocolSSH || claims.Action != "shell" {
+	isShellLaunch := lctx.Protocol == ProtocolSSH && claims.Action == "shell"
+	isSFTPLaunch := lctx.Protocol == ProtocolSFTP && claims.Action == "sftp"
+	isRedisLaunch := lctx.Protocol == ProtocolRedis && claims.Action == "redis"
+	if !isShellLaunch && !isSFTPLaunch && !isRedisLaunch {
 		return LaunchContext{}, ErrUnauthorizedLaunch
 	}
-	if lctx.AssetType != assets.TypeLinuxVM {
+	if isRedisLaunch {
+		if lctx.AssetType != assets.TypeRedis {
+			return LaunchContext{}, ErrUnauthorizedLaunch
+		}
+	} else if lctx.AssetType != assets.TypeLinuxVM {
 		return LaunchContext{}, ErrUnauthorizedLaunch
 	}
-	if lctx.Status != StatusPending {
+	if isRedisLaunch {
+		if lctx.Status != StatusPending && lctx.Status != StatusActive {
+			return LaunchContext{}, ErrUnauthorizedLaunch
+		}
+	} else if lctx.Status != StatusPending {
 		return LaunchContext{}, ErrUnauthorizedLaunch
 	}
 
@@ -487,23 +553,7 @@ func (s *Service) RecordConnectorLaunchEvent(
 	if err := s.WriteEvent(ctx, lctx.SessionID, eventType, &lctx.UserID, payload); err != nil {
 		return err
 	}
-
-	// DBeaver/Redis/SFTP launch in this slice is a brokered one-shot handoff, so connector outcome
-	// also ends the session lifecycle here.
-	if !(lctx.AssetType == assets.TypeDatabase && lctx.Action == "dbeaver") &&
-		!(lctx.AssetType == assets.TypeRedis && lctx.Action == "redis") &&
-		!(lctx.AssetType == assets.TypeLinuxVM && lctx.Action == "sftp") {
-		return nil
-	}
-
-	switch eventType {
-	case EventConnectorSuccess:
-		return s.MarkEnded(ctx, lctx, "connector_launch_succeeded")
-	case EventConnectorFailed:
-		return s.MarkFailed(ctx, lctx, "connector_launch_failed")
-	default:
-		return nil
-	}
+	return nil
 }
 
 func (s *Service) GetSessionContextForUser(ctx context.Context, sessionID, userID string) (LaunchContext, error) {
@@ -797,7 +847,7 @@ SELECT
 	payload
 FROM session_events
 WHERE session_id = $1
-  AND event_type IN ('data_in', 'data_out')
+  AND event_type IN ('data_in', 'data_out', 'terminal_resize')
   AND ($2::BIGINT IS NULL OR id > $2)
 ORDER BY id ASC
 LIMIT $3;`
@@ -829,7 +879,7 @@ LIMIT $3;`
 	if rowsErr := rows.Err(); rowsErr != nil {
 		return nil, fmt.Errorf("iterate replay chunks: %w", rowsErr)
 	}
-	return chunks, nil
+	return normalizeReplayChunks(chunks), nil
 }
 
 func (s *Service) GetAdminSummary(ctx context.Context, windowDays int) (AdminSummary, error) {
@@ -1344,15 +1394,70 @@ VALUES ($1, $2, $3, $4::jsonb);`
 	return nil
 }
 
-func (s *Service) RecordDataEvent(ctx context.Context, sessionID, eventType, stream string, chunk []byte) error {
+func (s *Service) RecordDataEvent(ctx context.Context, sessionID, eventType, stream string, chunk []byte, offsetSec float64) error {
 	if len(chunk) == 0 {
 		return nil
 	}
+	offset := 0.0
+	if offsetSec > 0 {
+		offset = offsetSec
+	}
+	castType := "o"
+	if strings.TrimSpace(eventType) == EventDataIn {
+		castType = "i"
+	}
 	return s.WriteEvent(ctx, sessionID, eventType, nil, map[string]any{
-		"stream":   stream,
-		"encoding": "base64",
-		"size":     len(chunk),
-		"data":     base64.StdEncoding.EncodeToString(chunk),
+		"stream":           stream,
+		"encoding":         "base64",
+		"size":             len(chunk),
+		"data":             base64.StdEncoding.EncodeToString(chunk),
+		"recording_format": "asciicast-v2-like",
+		"offset_sec":       offset,
+		"event":            []any{offset, castType, string(chunk)},
+	})
+}
+
+func (s *Service) RecordTerminalResizeEvent(ctx context.Context, sessionID string, cols, rows int, offsetSec float64) error {
+	if strings.TrimSpace(sessionID) == "" {
+		return fmt.Errorf("session id is required")
+	}
+	if cols <= 0 || rows <= 0 {
+		return nil
+	}
+	offset := 0.0
+	if offsetSec > 0 {
+		offset = offsetSec
+	}
+	return s.WriteEvent(ctx, sessionID, EventTerminalResize, nil, map[string]any{
+		"recording_format": "asciicast-v2-like",
+		"offset_sec":       offset,
+		"cols":             cols,
+		"rows":             rows,
+		"event":            []any{offset, "r", fmt.Sprintf("%dx%d", cols, rows)},
+	})
+}
+
+func (s *Service) RecordCredentialUsage(
+	ctx context.Context,
+	lctx LaunchContext,
+	credentialType, usageStage, requestID string,
+) error {
+	stage := strings.TrimSpace(usageStage)
+	if stage == "" {
+		stage = "unknown"
+	}
+	ctype := strings.TrimSpace(credentialType)
+	if ctype == "" {
+		ctype = "unknown"
+	}
+	return s.writeAudit(ctx, lctx, "credential_usage", stage, "success", map[string]any{
+		"session_id":      lctx.SessionID,
+		"user_id":         lctx.UserID,
+		"asset_id":        lctx.AssetID,
+		"credential_type": ctype,
+		"usage_stage":     stage,
+		"request_id":      strings.TrimSpace(requestID),
+		"recorded_at":     time.Now().UTC().Format(time.RFC3339Nano),
 	})
 }
 
@@ -1451,14 +1556,22 @@ func sessionEndAuditAction(action string) string {
 }
 
 func replayChunkFromPayload(eventID int64, eventType string, eventTime time.Time, payload map[string]any) (ReplayChunk, bool) {
-	direction := ""
 	switch eventType {
-	case EventDataIn:
-		direction = "in"
-	case EventDataOut:
-		direction = "out"
+	case EventDataIn, EventDataOut:
+		return replayDataChunkFromPayload(eventID, eventType, eventTime, payload)
+	case EventTerminalResize:
+		return replayResizeChunkFromPayload(eventID, eventTime, payload)
 	default:
 		return ReplayChunk{}, false
+	}
+}
+
+func replayDataChunkFromPayload(eventID int64, eventType string, eventTime time.Time, payload map[string]any) (ReplayChunk, bool) {
+	direction := "out"
+	typeName := "output"
+	if eventType == EventDataIn {
+		direction = "in"
+		typeName = "input"
 	}
 
 	data, _ := payload["data"].(string)
@@ -1466,16 +1579,9 @@ func replayChunkFromPayload(eventID int64, eventType string, eventTime time.Time
 		return ReplayChunk{}, false
 	}
 
-	size := 0
-	switch typed := payload["size"].(type) {
-	case float64:
-		size = int(typed)
-	case int:
-		size = typed
-	case int64:
-		size = int(typed)
-	}
+	size := intFromAny(payload["size"])
 	stream, _ := payload["stream"].(string)
+	offset := floatFromAny(payload["offset_sec"])
 
 	decoded, err := base64.StdEncoding.DecodeString(data)
 	if err != nil {
@@ -1484,16 +1590,102 @@ func replayChunkFromPayload(eventID int64, eventType string, eventTime time.Time
 	if !utf8.Valid(decoded) {
 		return ReplayChunk{}, false
 	}
-
+	text := string(decoded)
+	castCode := "o"
+	if direction == "in" {
+		castCode = "i"
+	}
 	return ReplayChunk{
 		EventID:   eventID,
 		EventTime: eventTime,
+		EventType: typeName,
 		Direction: direction,
 		Stream:    stream,
 		Size:      size,
-		Text:      string(decoded),
+		Text:      text,
 		Encoded:   data,
+		OffsetSec: offset,
+		Asciicast: []any{offset, castCode, text},
 	}, true
+}
+
+func replayResizeChunkFromPayload(eventID int64, eventTime time.Time, payload map[string]any) (ReplayChunk, bool) {
+	cols := intFromAny(payload["cols"])
+	rows := intFromAny(payload["rows"])
+	if cols <= 0 || rows <= 0 {
+		return ReplayChunk{}, false
+	}
+	offset := floatFromAny(payload["offset_sec"])
+	return ReplayChunk{
+		EventID:   eventID,
+		EventTime: eventTime,
+		EventType: "resize",
+		OffsetSec: offset,
+		Cols:      cols,
+		Rows:      rows,
+		Asciicast: []any{offset, "r", fmt.Sprintf("%dx%d", cols, rows)},
+	}, true
+}
+
+func normalizeReplayChunks(chunks []ReplayChunk) []ReplayChunk {
+	if len(chunks) == 0 {
+		return chunks
+	}
+	base := chunks[0].EventTime
+	prev := 0.0
+	for i := range chunks {
+		offset := chunks[i].OffsetSec
+		if offset <= 0 {
+			offset = chunks[i].EventTime.Sub(base).Seconds()
+		}
+		if offset < 0 {
+			offset = 0
+		}
+		chunks[i].OffsetSec = offset
+		delay := offset - prev
+		if i == 0 || delay < 0 {
+			delay = 0
+		}
+		chunks[i].DelaySec = delay
+		prev = offset
+
+		// Normalize asciicast-like tuple to use normalized offset.
+		switch chunks[i].EventType {
+		case "input":
+			chunks[i].Asciicast = []any{offset, "i", chunks[i].Text}
+		case "output":
+			chunks[i].Asciicast = []any{offset, "o", chunks[i].Text}
+		case "resize":
+			chunks[i].Asciicast = []any{offset, "r", fmt.Sprintf("%dx%d", chunks[i].Cols, chunks[i].Rows)}
+		}
+	}
+	return chunks
+}
+
+func intFromAny(v any) int {
+	switch typed := v.(type) {
+	case int:
+		return typed
+	case int64:
+		return int(typed)
+	case float64:
+		return int(typed)
+	default:
+		return 0
+	}
+}
+
+func floatFromAny(v any) float64 {
+	switch typed := v.(type) {
+	case float64:
+		return typed
+	case int:
+		return float64(typed)
+	case int64:
+		return float64(typed)
+	default:
+		return 0
+	}
 }
 
 func (s *Service) writeAudit(

@@ -1,13 +1,16 @@
-import { useEffect, useState } from "react"
-import { Link } from "react-router-dom"
-import { adminCreateAsset, adminListAssetGrants, adminListAssets } from "../api"
-import { useAuth } from "../auth"
-import type { AdminAsset, AdminGrant } from "../types"
+import { useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
+import { adminCreateAsset, adminListAssetGrants, adminListAssets } from '../api'
+import type { AdminAsset, AdminGrant } from '../types'
+import { Badge, Button, Card, CardBody, CardHeader, EmptyRow, ErrorState, Input, LoadingState, PageHeader, Select, Table, Td, TextArea, Th } from '../components/ui'
 
-const ASSET_TYPES: Array<"linux_vm" | "database" | "redis"> = ["linux_vm", "database", "redis"]
+const ASSET_TYPE_OPTIONS = [
+  { value: 'linux_vm', label: 'Linux VM' },
+  { value: 'database', label: 'Database' },
+  { value: 'redis', label: 'Redis' },
+]
 
 export function AdminAssetsPage() {
-  const { user, logout } = useAuth()
   const [items, setItems] = useState<AdminAsset[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -15,11 +18,11 @@ export function AdminAssetsPage() {
   const [assetGrants, setAssetGrants] = useState<AdminGrant[]>([])
   const [grantsLoading, setGrantsLoading] = useState(false)
   const [creating, setCreating] = useState(false)
-  const [name, setName] = useState("")
-  const [assetType, setAssetType] = useState<"linux_vm" | "database" | "redis">("linux_vm")
-  const [host, setHost] = useState("")
-  const [port, setPort] = useState("22")
-  const [metadataText, setMetadataText] = useState("{}")
+  const [name, setName] = useState('')
+  const [assetType, setAssetType] = useState('linux_vm')
+  const [host, setHost] = useState('')
+  const [port, setPort] = useState('22')
+  const [metadataText, setMetadataText] = useState('{}')
 
   const load = async () => {
     setLoading(true)
@@ -28,7 +31,7 @@ export function AdminAssetsPage() {
       const response = await adminListAssets()
       setItems(response.items)
     } catch (err) {
-      const message = err instanceof Error ? err.message : "failed to load assets"
+      const message = err instanceof Error ? err.message : 'failed to load assets'
       setError(message)
     } finally {
       setLoading(false)
@@ -37,29 +40,19 @@ export function AdminAssetsPage() {
 
   useEffect(() => {
     let cancelled = false
-
     void (async () => {
       setLoading(true)
       setError(null)
       try {
         const response = await adminListAssets()
-        if (cancelled === false) {
-          setItems(response.items)
-        }
+        if (!cancelled) setItems(response.items)
       } catch (err) {
-        if (cancelled === false) {
-          const message = err instanceof Error ? err.message : "failed to load assets"
-          setError(message)
-        }
+        if (!cancelled) setError(err instanceof Error ? err.message : 'failed to load assets')
       } finally {
-        if (cancelled === false) {
-          setLoading(false)
-        }
+        if (!cancelled) setLoading(false)
       }
     })()
-    return () => {
-      cancelled = true
-    }
+    return () => { cancelled = true }
   }, [])
 
   const inspectAsset = async (assetID: string) => {
@@ -70,8 +63,7 @@ export function AdminAssetsPage() {
       const response = await adminListAssetGrants(assetID)
       setAssetGrants(response.items)
     } catch (err) {
-      const message = err instanceof Error ? err.message : "failed to load asset grants"
-      setError(message)
+      setError(err instanceof Error ? err.message : 'failed to load asset grants')
       setAssetGrants([])
     } finally {
       setGrantsLoading(false)
@@ -82,14 +74,14 @@ export function AdminAssetsPage() {
     setError(null)
     let metadata: Record<string, unknown>
     try {
-      metadata = JSON.parse(metadataText || "{}") as Record<string, unknown>
+      metadata = JSON.parse(metadataText || '{}') as Record<string, unknown>
     } catch {
-      setError("metadata must be valid JSON")
+      setError('metadata must be valid JSON')
       return
     }
     const parsedPort = Number(port)
     if (!Number.isFinite(parsedPort) || parsedPort <= 0) {
-      setError("port must be a valid number")
+      setError('port must be a valid number')
       return
     }
 
@@ -97,160 +89,123 @@ export function AdminAssetsPage() {
     try {
       await adminCreateAsset({
         name,
-        asset_type: assetType,
+        asset_type: assetType as 'linux_vm' | 'database' | 'redis',
         host,
         port: parsedPort,
         metadata,
       })
-      setName("")
-      setHost("")
-      setPort("22")
-      setMetadataText("{}")
+      setName('')
+      setHost('')
+      setPort('22')
+      setMetadataText('{}')
       await load()
     } catch (err) {
-      const message = err instanceof Error ? err.message : "failed to create asset"
-      setError(message)
+      setError(err instanceof Error ? err.message : 'failed to create asset')
     } finally {
       setCreating(false)
     }
   }
 
   return (
-    <main className="page-shell">
-      <header className="topbar">
-        <div>
-          <h1>Admin · Assets</h1>
-          <p className="muted">
-            Signed in as <strong>{user?.username}</strong>
-          </p>
-        </div>
-        <div className="actions-inline">
-          <Link to="/">My Access</Link>
-          <Link to="/admin/dashboard">Dashboard</Link>
-          <Link to="/sessions">My Sessions</Link>
-          <Link to="/admin/users">Users</Link>
-          <Link to="/admin/sessions">Sessions</Link>
-          <button onClick={() => void logout()}>Logout</button>
-        </div>
-      </header>
+    <>
+      <PageHeader title="Assets" />
 
-      {loading ? <p>Loading assets...</p> : null}
-      {error === null ? null : <p className="error">{error}</p>}
+      {error && <div className="mb-4"><ErrorState message={error} /></div>}
 
-      <section className="card section-block">
-        <h2>Create Asset</h2>
-        <div className="form-grid">
-          <label>
-            Name
-            <input value={name} onChange={(e) => setName(e.target.value)} placeholder="asset name" />
-          </label>
-          <label>
-            Asset Type
-            <select value={assetType} onChange={(e) => setAssetType(e.target.value as typeof assetType)}>
-              {ASSET_TYPES.map((item) => (
-                <option key={item} value={item}>{item}</option>
-              ))}
-            </select>
-          </label>
-          <label>
-            Host
-            <input value={host} onChange={(e) => setHost(e.target.value)} placeholder="10.0.0.10" />
-          </label>
-          <label>
-            Port
-            <input value={port} onChange={(e) => setPort(e.target.value)} />
-          </label>
-          <label className="full-width">
-            Metadata (JSON object)
-            <textarea rows={4} value={metadataText} onChange={(e) => setMetadataText(e.target.value)} />
-          </label>
-        </div>
-        <button onClick={() => void createAsset()} disabled={creating}>
-          {creating ? "Creating..." : "Create Asset"}
-        </button>
-      </section>
+      <Card className="mb-4">
+        <CardHeader title="Create Asset" />
+        <CardBody>
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+            <Input label="Name" value={name} onChange={setName} placeholder="asset name" />
+            <Select label="Asset Type" value={assetType} onChange={setAssetType} options={ASSET_TYPE_OPTIONS} />
+            <Input label="Host" value={host} onChange={setHost} placeholder="10.0.0.10" />
+            <Input label="Port" value={port} onChange={setPort} />
+          </div>
+          <div className="mt-4">
+            <TextArea label="Metadata (JSON)" value={metadataText} onChange={setMetadataText} rows={3} />
+          </div>
+          <div className="mt-4">
+            <Button disabled={creating} onClick={() => void createAsset()}>
+              {creating ? 'Creating...' : 'Create Asset'}
+            </Button>
+          </div>
+        </CardBody>
+      </Card>
 
-      {loading === false && error === null ? (
+      {loading && <LoadingState message="Loading assets..." />}
+
+      {!loading && !error && (
         <>
-          <div className="table-wrap">
-            <table>
+          <Card>
+            <Table>
               <thead>
                 <tr>
-                  <th>Name</th>
-                  <th>Type</th>
-                  <th>Endpoint</th>
-                  <th>Grant Count</th>
-                  <th>Credential Count</th>
-                  <th>Detail</th>
-                  <th>Inspect</th>
+                  <Th>Name</Th>
+                  <Th>Type</Th>
+                  <Th>Endpoint</Th>
+                  <Th>Grants</Th>
+                  <Th>Credentials</Th>
+                  <Th>Detail</Th>
+                  <Th>Inspect</Th>
                 </tr>
               </thead>
-              <tbody>
+              <tbody className="divide-y divide-gray-100">
                 {items.map((item) => (
-                  <tr key={item.id}>
-                    <td>{item.name}</td>
-                    <td>{item.asset_type}</td>
-                    <td>{item.endpoint}</td>
-                    <td>{item.grant_count}</td>
-                    <td>{item.credential_count}</td>
-                    <td>
-                      <Link to={`/admin/assets/${item.id}`}>Open</Link>
-                    </td>
-                    <td>
-                      <button onClick={() => void inspectAsset(item.id)}>View grants</button>
-                    </td>
+                  <tr key={item.id} className="hover:bg-gray-50">
+                    <Td className="font-medium text-gray-900">{item.name}</Td>
+                    <Td><Badge>{item.asset_type}</Badge></Td>
+                    <Td mono>{item.endpoint}</Td>
+                    <Td>{item.grant_count}</Td>
+                    <Td>{item.credential_count}</Td>
+                    <Td>
+                      <Link to={`/admin/assets/${item.id}`} className="text-indigo-600 hover:text-indigo-800 text-sm font-medium">
+                        Open
+                      </Link>
+                    </Td>
+                    <Td>
+                      <Button size="sm" variant="ghost" onClick={() => void inspectAsset(item.id)}>
+                        View grants
+                      </Button>
+                    </Td>
                   </tr>
                 ))}
-                {items.length === 0 ? (
-                  <tr>
-                    <td colSpan={7} className="muted">
-                      No assets found.
-                    </td>
-                  </tr>
-                ) : null}
+                {items.length === 0 && <EmptyRow colSpan={7} message="No assets found." />}
               </tbody>
-            </table>
-          </div>
+            </Table>
+          </Card>
 
-          {selectedAssetID === null ? null : (
-            <section className="section-block">
-              <h2>Asset Grants</h2>
-              {grantsLoading ? <p>Loading grants...</p> : null}
-              {grantsLoading === false ? (
-                <div className="table-wrap">
-                  <table>
-                    <thead>
-                      <tr>
-                        <th>Subject</th>
-                        <th>Subject Type</th>
-                        <th>Action</th>
-                        <th>Effect</th>
+          {selectedAssetID !== null && (
+            <Card className="mt-4">
+              <CardHeader title="Asset Grants" />
+              {grantsLoading ? (
+                <LoadingState message="Loading grants..." />
+              ) : (
+                <Table>
+                  <thead>
+                    <tr>
+                      <Th>Subject</Th>
+                      <Th>Subject Type</Th>
+                      <Th>Action</Th>
+                      <Th>Effect</Th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-100">
+                    {assetGrants.map((grant) => (
+                      <tr key={grant.subject_type + ':' + grant.subject_id + ':' + grant.action} className="hover:bg-gray-50">
+                        <Td className="font-medium text-gray-900">{grant.subject_name}</Td>
+                        <Td><Badge>{grant.subject_type}</Badge></Td>
+                        <Td><Badge color="indigo">{grant.action}</Badge></Td>
+                        <Td><Badge color={grant.effect === 'allow' ? 'green' : 'red'}>{grant.effect}</Badge></Td>
                       </tr>
-                    </thead>
-                    <tbody>
-                      {assetGrants.map((grant) => (
-                        <tr key={grant.subject_type + ":" + grant.subject_id + ":" + grant.action}>
-                          <td>{grant.subject_name}</td>
-                          <td>{grant.subject_type}</td>
-                          <td>{grant.action}</td>
-                          <td>{grant.effect}</td>
-                        </tr>
-                      ))}
-                      {assetGrants.length === 0 ? (
-                        <tr>
-                          <td colSpan={4} className="muted">
-                            No grants found for this asset.
-                          </td>
-                        </tr>
-                      ) : null}
-                    </tbody>
-                  </table>
-                </div>
-              ) : null}
-            </section>
+                    ))}
+                    {assetGrants.length === 0 && <EmptyRow colSpan={4} message="No grants found for this asset." />}
+                  </tbody>
+                </Table>
+              )}
+            </Card>
           )}
         </>
-      ) : null}
-    </main>
+      )}
+    </>
   )
 }

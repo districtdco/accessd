@@ -22,6 +22,10 @@ type Config struct {
 	Credentials CredentialsConfig
 	Sessions    SessionsConfig
 	SSHProxy    SSHProxyConfig
+	PGProxy     PGProxyConfig
+	MySQLProxy  MySQLProxyConfig
+	MSSQLProxy  MSSQLProxyConfig
+	RedisProxy  RedisProxyConfig
 	DB          DBConfig
 }
 
@@ -107,6 +111,48 @@ type SSHProxyConfig struct {
 	HostKeyPath            string
 	UpstreamHostKeyMode    string
 	UpstreamKnownHostsPath string
+	IdleTimeout            time.Duration
+	MaxSessionAge          time.Duration
+}
+
+type PGProxyConfig struct {
+	BindHost       string
+	PublicHost     string
+	ConnectTimeout time.Duration
+	QueryLogQueue  int
+	QueryMaxBytes  int
+	IdleTimeout    time.Duration
+	MaxSessionAge  time.Duration
+}
+
+type MySQLProxyConfig struct {
+	BindHost       string
+	PublicHost     string
+	ConnectTimeout time.Duration
+	QueryLogQueue  int
+	QueryMaxBytes  int
+	IdleTimeout    time.Duration
+	MaxSessionAge  time.Duration
+}
+
+type MSSQLProxyConfig struct {
+	BindHost       string
+	PublicHost     string
+	ConnectTimeout time.Duration
+	QueryLogQueue  int
+	QueryMaxBytes  int
+	IdleTimeout    time.Duration
+	MaxSessionAge  time.Duration
+}
+
+type RedisProxyConfig struct {
+	BindHost        string
+	PublicHost      string
+	ConnectTimeout  time.Duration
+	CommandLogQueue int
+	ArgMaxLen       int
+	IdleTimeout     time.Duration
+	MaxSessionAge   time.Duration
 }
 
 func Load() (Config, error) {
@@ -179,6 +225,44 @@ func Load() (Config, error) {
 		HostKeyPath:            getEnv("PAM_SSH_PROXY_HOST_KEY_PATH", ".pam_ssh_proxy_host_key"),
 		UpstreamHostKeyMode:    getEnv("PAM_SSH_PROXY_UPSTREAM_HOSTKEY_MODE", "known-hosts"),
 		UpstreamKnownHostsPath: getEnv("PAM_SSH_PROXY_UPSTREAM_KNOWN_HOSTS_PATH", ".pam_upstream_known_hosts"),
+		IdleTimeout:            getDurationEnv("PAM_SSH_PROXY_IDLE_TIMEOUT", 5*time.Minute),
+		MaxSessionAge:          getDurationEnv("PAM_SSH_PROXY_MAX_SESSION_DURATION", 8*time.Hour),
+	}
+	cfg.PGProxy = PGProxyConfig{
+		BindHost:       getEnv("PAM_PG_PROXY_BIND_HOST", "127.0.0.1"),
+		PublicHost:     getEnv("PAM_PG_PROXY_PUBLIC_HOST", "127.0.0.1"),
+		ConnectTimeout: getDurationEnv("PAM_PG_PROXY_CONNECT_TIMEOUT", 10*time.Second),
+		QueryLogQueue:  getIntEnv("PAM_PG_PROXY_QUERY_LOG_QUEUE", 1024),
+		QueryMaxBytes:  getIntEnv("PAM_PG_PROXY_QUERY_MAX_BYTES", 16384),
+		IdleTimeout:    getDurationEnv("PAM_PG_PROXY_IDLE_TIMEOUT", 5*time.Minute),
+		MaxSessionAge:  getDurationEnv("PAM_PG_PROXY_MAX_SESSION_DURATION", 8*time.Hour),
+	}
+	cfg.MySQLProxy = MySQLProxyConfig{
+		BindHost:       getEnv("PAM_MYSQL_PROXY_BIND_HOST", "127.0.0.1"),
+		PublicHost:     getEnv("PAM_MYSQL_PROXY_PUBLIC_HOST", "127.0.0.1"),
+		ConnectTimeout: getDurationEnv("PAM_MYSQL_PROXY_CONNECT_TIMEOUT", 10*time.Second),
+		QueryLogQueue:  getIntEnv("PAM_MYSQL_PROXY_QUERY_LOG_QUEUE", 1024),
+		QueryMaxBytes:  getIntEnv("PAM_MYSQL_PROXY_QUERY_MAX_BYTES", 16384),
+		IdleTimeout:    getDurationEnv("PAM_MYSQL_PROXY_IDLE_TIMEOUT", 5*time.Minute),
+		MaxSessionAge:  getDurationEnv("PAM_MYSQL_PROXY_MAX_SESSION_DURATION", 8*time.Hour),
+	}
+	cfg.MSSQLProxy = MSSQLProxyConfig{
+		BindHost:       getEnv("PAM_MSSQL_PROXY_BIND_HOST", "127.0.0.1"),
+		PublicHost:     getEnv("PAM_MSSQL_PROXY_PUBLIC_HOST", "127.0.0.1"),
+		ConnectTimeout: getDurationEnv("PAM_MSSQL_PROXY_CONNECT_TIMEOUT", 10*time.Second),
+		QueryLogQueue:  getIntEnv("PAM_MSSQL_PROXY_QUERY_LOG_QUEUE", 1024),
+		QueryMaxBytes:  getIntEnv("PAM_MSSQL_PROXY_QUERY_MAX_BYTES", 16384),
+		IdleTimeout:    getDurationEnv("PAM_MSSQL_PROXY_IDLE_TIMEOUT", 5*time.Minute),
+		MaxSessionAge:  getDurationEnv("PAM_MSSQL_PROXY_MAX_SESSION_DURATION", 8*time.Hour),
+	}
+	cfg.RedisProxy = RedisProxyConfig{
+		BindHost:        getEnv("PAM_REDIS_PROXY_BIND_HOST", "127.0.0.1"),
+		PublicHost:      getEnv("PAM_REDIS_PROXY_PUBLIC_HOST", "127.0.0.1"),
+		ConnectTimeout:  getDurationEnv("PAM_REDIS_PROXY_CONNECT_TIMEOUT", 10*time.Second),
+		CommandLogQueue: getIntEnv("PAM_REDIS_PROXY_COMMAND_LOG_QUEUE", 1024),
+		ArgMaxLen:       getIntEnv("PAM_REDIS_PROXY_ARG_MAX_LEN", 128),
+		IdleTimeout:     getDurationEnv("PAM_REDIS_PROXY_IDLE_TIMEOUT", 5*time.Minute),
+		MaxSessionAge:   getDurationEnv("PAM_REDIS_PROXY_MAX_SESSION_DURATION", 8*time.Hour),
 	}
 
 	cfg.DB.URL = strings.TrimSpace(os.Getenv("PAM_DB_URL"))
@@ -279,6 +363,96 @@ func Load() (Config, error) {
 	}
 	if strings.TrimSpace(cfg.SSHProxy.UpstreamKnownHostsPath) == "" {
 		return Config{}, fmt.Errorf("PAM_SSH_PROXY_UPSTREAM_KNOWN_HOSTS_PATH cannot be empty")
+	}
+	if cfg.SSHProxy.IdleTimeout <= 0 {
+		return Config{}, fmt.Errorf("PAM_SSH_PROXY_IDLE_TIMEOUT must be > 0")
+	}
+	if cfg.SSHProxy.MaxSessionAge <= 0 {
+		return Config{}, fmt.Errorf("PAM_SSH_PROXY_MAX_SESSION_DURATION must be > 0")
+	}
+	if strings.TrimSpace(cfg.PGProxy.BindHost) == "" {
+		return Config{}, fmt.Errorf("PAM_PG_PROXY_BIND_HOST cannot be empty")
+	}
+	if strings.TrimSpace(cfg.PGProxy.PublicHost) == "" {
+		return Config{}, fmt.Errorf("PAM_PG_PROXY_PUBLIC_HOST cannot be empty")
+	}
+	if cfg.PGProxy.ConnectTimeout <= 0 {
+		return Config{}, fmt.Errorf("PAM_PG_PROXY_CONNECT_TIMEOUT must be > 0")
+	}
+	if cfg.PGProxy.QueryLogQueue <= 0 {
+		return Config{}, fmt.Errorf("PAM_PG_PROXY_QUERY_LOG_QUEUE must be > 0")
+	}
+	if cfg.PGProxy.QueryMaxBytes <= 0 {
+		return Config{}, fmt.Errorf("PAM_PG_PROXY_QUERY_MAX_BYTES must be > 0")
+	}
+	if cfg.PGProxy.IdleTimeout <= 0 {
+		return Config{}, fmt.Errorf("PAM_PG_PROXY_IDLE_TIMEOUT must be > 0")
+	}
+	if cfg.PGProxy.MaxSessionAge <= 0 {
+		return Config{}, fmt.Errorf("PAM_PG_PROXY_MAX_SESSION_DURATION must be > 0")
+	}
+	if strings.TrimSpace(cfg.MySQLProxy.BindHost) == "" {
+		return Config{}, fmt.Errorf("PAM_MYSQL_PROXY_BIND_HOST cannot be empty")
+	}
+	if strings.TrimSpace(cfg.MySQLProxy.PublicHost) == "" {
+		return Config{}, fmt.Errorf("PAM_MYSQL_PROXY_PUBLIC_HOST cannot be empty")
+	}
+	if cfg.MySQLProxy.ConnectTimeout <= 0 {
+		return Config{}, fmt.Errorf("PAM_MYSQL_PROXY_CONNECT_TIMEOUT must be > 0")
+	}
+	if cfg.MySQLProxy.QueryLogQueue <= 0 {
+		return Config{}, fmt.Errorf("PAM_MYSQL_PROXY_QUERY_LOG_QUEUE must be > 0")
+	}
+	if cfg.MySQLProxy.QueryMaxBytes <= 0 {
+		return Config{}, fmt.Errorf("PAM_MYSQL_PROXY_QUERY_MAX_BYTES must be > 0")
+	}
+	if cfg.MySQLProxy.IdleTimeout <= 0 {
+		return Config{}, fmt.Errorf("PAM_MYSQL_PROXY_IDLE_TIMEOUT must be > 0")
+	}
+	if cfg.MySQLProxy.MaxSessionAge <= 0 {
+		return Config{}, fmt.Errorf("PAM_MYSQL_PROXY_MAX_SESSION_DURATION must be > 0")
+	}
+	if strings.TrimSpace(cfg.MSSQLProxy.BindHost) == "" {
+		return Config{}, fmt.Errorf("PAM_MSSQL_PROXY_BIND_HOST cannot be empty")
+	}
+	if strings.TrimSpace(cfg.MSSQLProxy.PublicHost) == "" {
+		return Config{}, fmt.Errorf("PAM_MSSQL_PROXY_PUBLIC_HOST cannot be empty")
+	}
+	if cfg.MSSQLProxy.ConnectTimeout <= 0 {
+		return Config{}, fmt.Errorf("PAM_MSSQL_PROXY_CONNECT_TIMEOUT must be > 0")
+	}
+	if cfg.MSSQLProxy.QueryLogQueue <= 0 {
+		return Config{}, fmt.Errorf("PAM_MSSQL_PROXY_QUERY_LOG_QUEUE must be > 0")
+	}
+	if cfg.MSSQLProxy.QueryMaxBytes <= 0 {
+		return Config{}, fmt.Errorf("PAM_MSSQL_PROXY_QUERY_MAX_BYTES must be > 0")
+	}
+	if cfg.MSSQLProxy.IdleTimeout <= 0 {
+		return Config{}, fmt.Errorf("PAM_MSSQL_PROXY_IDLE_TIMEOUT must be > 0")
+	}
+	if cfg.MSSQLProxy.MaxSessionAge <= 0 {
+		return Config{}, fmt.Errorf("PAM_MSSQL_PROXY_MAX_SESSION_DURATION must be > 0")
+	}
+	if strings.TrimSpace(cfg.RedisProxy.BindHost) == "" {
+		return Config{}, fmt.Errorf("PAM_REDIS_PROXY_BIND_HOST cannot be empty")
+	}
+	if strings.TrimSpace(cfg.RedisProxy.PublicHost) == "" {
+		return Config{}, fmt.Errorf("PAM_REDIS_PROXY_PUBLIC_HOST cannot be empty")
+	}
+	if cfg.RedisProxy.ConnectTimeout <= 0 {
+		return Config{}, fmt.Errorf("PAM_REDIS_PROXY_CONNECT_TIMEOUT must be > 0")
+	}
+	if cfg.RedisProxy.CommandLogQueue <= 0 {
+		return Config{}, fmt.Errorf("PAM_REDIS_PROXY_COMMAND_LOG_QUEUE must be > 0")
+	}
+	if cfg.RedisProxy.ArgMaxLen <= 0 {
+		return Config{}, fmt.Errorf("PAM_REDIS_PROXY_ARG_MAX_LEN must be > 0")
+	}
+	if cfg.RedisProxy.IdleTimeout <= 0 {
+		return Config{}, fmt.Errorf("PAM_REDIS_PROXY_IDLE_TIMEOUT must be > 0")
+	}
+	if cfg.RedisProxy.MaxSessionAge <= 0 {
+		return Config{}, fmt.Errorf("PAM_REDIS_PROXY_MAX_SESSION_DURATION must be > 0")
 	}
 	if strings.ToLower(strings.TrimSpace(cfg.App.Env)) != "development" && !cfg.App.AllowUnsafeMode {
 		if !cfg.Auth.SessionSecure {

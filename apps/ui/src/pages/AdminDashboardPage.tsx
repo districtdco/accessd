@@ -1,15 +1,18 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { getAdminAuditRecent, getAdminSessionsActive, getAdminSummary } from '../api'
-import { useAuth } from '../auth'
 import type { AdminAuditItem, AdminSummaryResponse, SessionSummary } from '../types'
+import { Badge, Button, Card, CardHeader, EmptyRow, ErrorState, LoadingState, PageHeader, Select, StatCard, Table, Td, Th } from '../components/ui'
 
-const DEFAULT_WINDOW_DAYS = 7
+const WINDOW_OPTIONS = [
+  { value: '1', label: '1 day' },
+  { value: '7', label: '7 days' },
+  { value: '14', label: '14 days' },
+  { value: '30', label: '30 days' },
+]
 
 export function AdminDashboardPage() {
-  const { user, logout } = useAuth()
-  const isAdmin = user?.roles.includes('admin') === true
-  const [windowDays, setWindowDays] = useState(DEFAULT_WINDOW_DAYS)
+  const [windowDays, setWindowDays] = useState(7)
   const [summary, setSummary] = useState<AdminSummaryResponse | null>(null)
   const [auditItems, setAuditItems] = useState<AdminAuditItem[]>([])
   const [activeSessions, setActiveSessions] = useState<SessionSummary[]>([])
@@ -41,195 +44,133 @@ export function AdminDashboardPage() {
   }, [windowDays])
 
   return (
-    <main className="page-shell">
-      <header className="topbar">
-        <div>
-          <h1>Admin Dashboard</h1>
-          <p className="muted">
-            Signed in as <strong>{user?.username}</strong>
-          </p>
-        </div>
-        <div className="actions-inline">
-          <Link to="/">My Access</Link>
-          <Link to="/sessions">My Sessions</Link>
-          <Link to="/admin/audit/events">Audit Events</Link>
-          {isAdmin ? <Link to="/admin/users">Users</Link> : null}
-          {isAdmin ? <Link to="/admin/assets">Assets</Link> : null}
-          <Link to="/admin/sessions">All Sessions</Link>
-          <button onClick={() => void logout()}>Logout</button>
-        </div>
-      </header>
-
-      <section className="card section-block">
-        <div className="actions-inline">
-          <label>
-            Summary Window{' '}
-            <select value={windowDays} onChange={(e) => setWindowDays(Number(e.target.value))}>
-              <option value={1}>1 day</option>
-              <option value={7}>7 days</option>
-              <option value={14}>14 days</option>
-              <option value={30}>30 days</option>
-            </select>
-          </label>
-          <button onClick={() => void load(windowDays)} disabled={loading}>
+    <>
+      <PageHeader title="Dashboard">
+        <div className="flex items-end gap-2">
+          <div className="w-32">
+            <Select
+              value={String(windowDays)}
+              onChange={(v) => setWindowDays(Number(v))}
+              options={WINDOW_OPTIONS}
+            />
+          </div>
+          <Button variant="secondary" disabled={loading} onClick={() => void load(windowDays)}>
             {loading ? 'Refreshing...' : 'Refresh'}
-          </button>
+          </Button>
         </div>
-      </section>
+      </PageHeader>
 
-      {loading ? <p>Loading dashboard...</p> : null}
-      {error ? <p className="error">{error}</p> : null}
+      {error && <div className="mb-4"><ErrorState message={error} /></div>}
+      {loading && <LoadingState message="Loading dashboard..." />}
 
-      {loading === false && error === null && summary ? (
-        <>
-          <section className="summary-grid">
-            <article className="card summary-card">
-              <h2>Recent Sessions</h2>
-              <p className="summary-value">{summary.metrics.recent_sessions}</p>
-              <p className="muted">Last {summary.window_days} days</p>
-            </article>
-            <article className="card summary-card">
-              <h2>Active Sessions</h2>
-              <p className="summary-value">{summary.metrics.active_sessions}</p>
-              <p className="muted">Current status=active</p>
-            </article>
-            <article className="card summary-card">
-              <h2>Failed Sessions</h2>
-              <p className="summary-value">{summary.metrics.failed_sessions}</p>
-              <p className="muted">Last {summary.window_days} days</p>
-            </article>
-            <article className="card summary-card">
-              <h2>Shell Launches</h2>
-              <p className="summary-value">{summary.metrics.shell_launches}</p>
-              <p className="muted">Last {summary.window_days} days</p>
-            </article>
-            <article className="card summary-card">
-              <h2>DBeaver Launches</h2>
-              <p className="summary-value">{summary.metrics.dbeaver_launches}</p>
-              <p className="muted">Last {summary.window_days} days</p>
-            </article>
-          </section>
+      {!loading && !error && summary && (
+        <div className="space-y-4">
+          <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
+            <StatCard label="Recent Sessions" value={summary.metrics.recent_sessions} subtitle={`Last ${summary.window_days} days`} />
+            <StatCard label="Active Sessions" value={summary.metrics.active_sessions} subtitle="Current" />
+            <StatCard label="Failed Sessions" value={summary.metrics.failed_sessions} subtitle={`Last ${summary.window_days} days`} />
+            <StatCard label="Shell Launches" value={summary.metrics.shell_launches} subtitle={`Last ${summary.window_days} days`} />
+            <StatCard label="DBeaver Launches" value={summary.metrics.dbeaver_launches} subtitle={`Last ${summary.window_days} days`} />
+          </div>
 
-          <section className="card section-block">
-            <h2>Sessions by Action</h2>
-            <div className="table-wrap">
-              <table>
+          <div className="grid gap-4 lg:grid-cols-2">
+            <Card>
+              <CardHeader title="Sessions by Action" />
+              <Table>
                 <thead>
                   <tr>
-                    <th>Action</th>
-                    <th>Count</th>
+                    <Th>Action</Th>
+                    <Th>Count</Th>
                   </tr>
                 </thead>
-                <tbody>
+                <tbody className="divide-y divide-gray-100">
                   {summary.by_action.map((item) => (
-                    <tr key={item.action}>
-                      <td>{item.action}</td>
-                      <td>{item.count}</td>
+                    <tr key={item.action} className="hover:bg-gray-50">
+                      <Td><Badge color="indigo">{item.action}</Badge></Td>
+                      <Td className="font-semibold">{item.count}</Td>
                     </tr>
                   ))}
-                  {summary.by_action.length === 0 ? (
-                    <tr>
-                      <td colSpan={2} className="muted">
-                        No recent actions in this window.
-                      </td>
-                    </tr>
-                  ) : null}
+                  {summary.by_action.length === 0 && <EmptyRow colSpan={2} message="No recent actions in this window." />}
                 </tbody>
-              </table>
-            </div>
-          </section>
+              </Table>
+            </Card>
 
-          <section className="card section-block">
-            <div className="topbar">
-              <h2>Active Sessions</h2>
-              <Link to="/admin/sessions">Open full session history</Link>
-            </div>
-            <div className="table-wrap">
-              <table>
+            <Card>
+              <CardHeader title="Active Sessions">
+                <Link to="/admin/sessions" className="text-sm text-indigo-600 hover:text-indigo-800">View all</Link>
+              </CardHeader>
+              <Table>
                 <thead>
                   <tr>
-                    <th>Session</th>
-                    <th>User</th>
-                    <th>Asset</th>
-                    <th>Action</th>
-                    <th>Started</th>
-                    <th>Duration (s)</th>
+                    <Th>Session</Th>
+                    <Th>User</Th>
+                    <Th>Asset</Th>
+                    <Th>Action</Th>
                   </tr>
                 </thead>
-                <tbody>
+                <tbody className="divide-y divide-gray-100">
                   {activeSessions.map((item) => (
-                    <tr key={item.session_id}>
-                      <td>
-                        <Link to={`/sessions/${item.session_id}`}>{item.session_id}</Link>
-                      </td>
-                      <td>{item.user.username}</td>
-                      <td>{item.asset.name}</td>
-                      <td>{item.action}</td>
-                      <td>{item.started_at ? new Date(item.started_at).toLocaleString() : '-'}</td>
-                      <td>{item.duration_seconds ?? '-'}</td>
+                    <tr key={item.session_id} className="hover:bg-gray-50">
+                      <Td mono>
+                        <Link to={`/sessions/${item.session_id}`} className="text-indigo-600 hover:text-indigo-800">
+                          {item.session_id.slice(0, 8)}...
+                        </Link>
+                      </Td>
+                      <Td>{item.user.username}</Td>
+                      <Td>{item.asset.name}</Td>
+                      <Td><Badge color="indigo">{item.action}</Badge></Td>
                     </tr>
                   ))}
-                  {activeSessions.length === 0 ? (
-                    <tr>
-                      <td colSpan={6} className="muted">
-                        No active sessions right now.
-                      </td>
-                    </tr>
-                  ) : null}
+                  {activeSessions.length === 0 && <EmptyRow colSpan={4} message="No active sessions right now." />}
                 </tbody>
-              </table>
-            </div>
-          </section>
+              </Table>
+            </Card>
+          </div>
 
-          <section className="card section-block">
-            <div className="topbar">
-              <h2>Recent Audit Activity</h2>
-              <Link to="/admin/audit/events">Open audit search</Link>
-            </div>
-            <div className="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>ID</th>
-                    <th>Time</th>
-                    <th>Event</th>
-                    <th>Action</th>
-                    <th>Outcome</th>
-                    <th>User</th>
-                    <th>Asset</th>
-                    <th>Session</th>
+          <Card>
+            <CardHeader title="Recent Audit Activity">
+              <Link to="/admin/audit/events" className="text-sm text-indigo-600 hover:text-indigo-800">Search audit</Link>
+            </CardHeader>
+            <Table>
+              <thead>
+                <tr>
+                  <Th>ID</Th>
+                  <Th>Time</Th>
+                  <Th>Event</Th>
+                  <Th>Action</Th>
+                  <Th>Outcome</Th>
+                  <Th>User</Th>
+                  <Th>Asset</Th>
+                  <Th>Session</Th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {auditItems.map((item) => (
+                  <tr key={item.id} className="hover:bg-gray-50">
+                    <Td>
+                      <Link to={`/admin/audit/events/${item.id}`} className="text-indigo-600 hover:text-indigo-800">{item.id}</Link>
+                    </Td>
+                    <Td>{new Date(item.event_time).toLocaleString()}</Td>
+                    <Td><Badge>{item.event_type}</Badge></Td>
+                    <Td>{item.action || '-'}</Td>
+                    <Td>{item.outcome || '-'}</Td>
+                    <Td>{item.actor_user?.username || item.actor_user?.id || '-'}</Td>
+                    <Td>{item.asset?.name || item.asset?.id || '-'}</Td>
+                    <Td mono>
+                      {item.session_id ? (
+                        <Link to={`/sessions/${item.session_id}`} className="text-indigo-600 hover:text-indigo-800">
+                          {item.session_id.slice(0, 8)}...
+                        </Link>
+                      ) : '-'}
+                    </Td>
                   </tr>
-                </thead>
-                <tbody>
-                  {auditItems.map((item) => (
-                    <tr key={item.id}>
-                      <td>
-                        <Link to={`/admin/audit/events/${item.id}`}>{item.id}</Link>
-                      </td>
-                      <td>{new Date(item.event_time).toLocaleString()}</td>
-                      <td>{item.event_type}</td>
-                      <td>{item.action || '-'}</td>
-                      <td>{item.outcome || '-'}</td>
-                      <td>{item.actor_user?.username || item.actor_user?.id || '-'}</td>
-                      <td>{item.asset?.name || item.asset?.id || '-'}</td>
-                      <td>
-                        {item.session_id ? <Link to={`/sessions/${item.session_id}`}>{item.session_id}</Link> : '-'}
-                      </td>
-                    </tr>
-                  ))}
-                  {auditItems.length === 0 ? (
-                    <tr>
-                      <td colSpan={8} className="muted">
-                        No recent audit events found.
-                      </td>
-                    </tr>
-                  ) : null}
-                </tbody>
-              </table>
-            </div>
-          </section>
-        </>
-      ) : null}
-    </main>
+                ))}
+                {auditItems.length === 0 && <EmptyRow colSpan={8} message="No recent audit events found." />}
+              </tbody>
+            </Table>
+          </Card>
+        </div>
+      )}
+    </>
   )
 }

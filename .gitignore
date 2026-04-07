@@ -7,6 +7,7 @@
 *.test
 *.out
 vendor/
+.gocache
 
 # Go build output
 apps/api/bin/

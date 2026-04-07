@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Link, useParams } from 'react-router-dom'
+import { useParams } from 'react-router-dom'
 import { getSessionDetail, getSessionEvents, getSessionReplay } from '../api'
-import { useAuth } from '../auth'
 import type { SessionDetail, SessionEvent, SessionReplayChunk, SessionReplayResponse } from '../types'
+import { Badge, Button, Card, CardBody, CardHeader, EmptyRow, ErrorState, InfoRow, LoadingState, PageHeader, statusColor, Table, Td, Th } from '../components/ui'
 
 type SessionTab = 'timeline' | 'transcript' | 'replay'
 
@@ -19,8 +19,6 @@ const REPLAY_SPEEDS = [0.5, 1, 2, 4]
 
 export function SessionDetailPage() {
   const { sessionID = '' } = useParams<{ sessionID: string }>()
-  const { user } = useAuth()
-
   const [detail, setDetail] = useState<SessionDetail | null>(null)
   const [events, setEvents] = useState<SessionEvent[]>([])
   const [replay, setReplay] = useState<SessionReplayResponse | null>(null)
@@ -121,10 +119,13 @@ export function SessionDetailPage() {
     return transcriptChunks.map((chunk) => ({
       event_id: chunk.id,
       event_time: chunk.event_time,
+      event_type: chunk.source === 'in' ? 'input' : 'output',
       direction: chunk.source,
       stream: chunk.stream,
       size: chunk.size,
       text: chunk.text,
+      offset_sec: 0,
+      delay_sec: 0,
     })) as SessionReplayChunk[]
   }, [replay, transcriptChunks])
 
@@ -136,23 +137,21 @@ export function SessionDetailPage() {
       setPlaying(false)
       return
     }
-
-    const interval = Math.max(60, Math.floor(350 / speed))
-    const timer = window.setInterval(() => {
+    const delaySec = replayChunks[cursor]?.delay_sec ?? 0
+    const timeoutMs = Math.max(20, Math.min(2000, Math.floor((delaySec * 1000) / Math.max(speed, 0.1))))
+    const timer = window.setTimeout(() => {
       setCursor((prev) => {
         if (prev + 1 >= replayChunks.length) {
-          window.clearInterval(timer)
           setPlaying(false)
           return replayChunks.length
         }
         return prev + 1
       })
-    }, interval)
-
+    }, timeoutMs)
     return () => {
-      window.clearInterval(timer)
+      window.clearTimeout(timer)
     }
-  }, [playing, speed, cursor, replayChunks.length])
+  }, [playing, speed, cursor, replayChunks])
 
   useEffect(() => {
     setPlaying(false)
@@ -162,9 +161,11 @@ export function SessionDetailPage() {
   const replayText = useMemo(() => {
     return replayChunks
       .slice(0, cursor)
-      .map((chunk) => chunk.text)
+      .map((chunk) => chunk.text ?? '')
       .join('')
   }, [cursor, replayChunks])
+
+  const resizeCount = useMemo(() => replayChunks.filter((chunk) => chunk.event_type === 'resize').length, [replayChunks])
 
   const connectorEvents = useMemo(() => {
     return events.filter((event) => event.event_type.startsWith('connector_launch_'))
@@ -177,302 +178,228 @@ export function SessionDetailPage() {
   }, [events])
 
   return (
-    <main className="page-shell">
-      <header className="topbar">
-        <div>
-          <h1>Session Detail</h1>
-          <p className="muted">
-            Signed in as <strong>{user?.username}</strong>
-          </p>
-        </div>
-        <div className="actions-inline">
-          <Link to="/">My Access</Link>
-          <Link to="/sessions">My Sessions</Link>
-          {detail?.session_id ? (
-            <a href={`/api/sessions/${detail.session_id}/export/summary`}>Export Summary JSON</a>
-          ) : null}
-          {detail?.action === 'shell' ? (
-            <a href={`/api/sessions/${detail.session_id}/export/transcript`}>Export Transcript TXT</a>
-          ) : null}
-          {user?.roles.includes('admin') || user?.roles.includes('auditor') ? (
-            <Link to="/admin/sessions">Admin Sessions</Link>
-          ) : null}
-        </div>
-      </header>
+    <>
+      <PageHeader title="Session Detail">
+        {detail?.session_id && (
+          <>
+            <a
+              href={`/api/sessions/${detail.session_id}/export/summary`}
+              className="rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50"
+            >
+              Export JSON
+            </a>
+            {detail.action === 'shell' && (
+              <a
+                href={`/api/sessions/${detail.session_id}/export/transcript`}
+                className="rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50"
+              >
+                Export Transcript
+              </a>
+            )}
+          </>
+        )}
+      </PageHeader>
 
-      {loading ? <p>Loading session detail...</p> : null}
-      {error === null ? null : <p className="error">{error}</p>}
+      {loading && <LoadingState message="Loading session detail..." />}
+      {error && <ErrorState message={error} />}
 
-      {loading === false && error === null && detail !== null ? (
-        <>
-          <section className="card section-block">
-            <h2>Summary</h2>
-            <p>
-              <strong>Session:</strong> {detail.session_id}
-            </p>
-            <p>
-              <strong>User:</strong> {detail.user.username}
-            </p>
-            <p>
-              <strong>Asset:</strong> {detail.asset.name} ({detail.asset.asset_type})
-            </p>
-            <p>
-              <strong>Action:</strong> {detail.action} ({detail.launch_type})
-            </p>
-            <p>
-              <strong>Status:</strong> {detail.status}
-            </p>
-            <p>
-              <strong>Created:</strong> {new Date(detail.created_at).toLocaleString()}
-            </p>
-            <p>
-              <strong>Started:</strong>{' '}
-              {detail.started_at ? new Date(detail.started_at).toLocaleString() : '-'}
-            </p>
-            <p>
-              <strong>Ended:</strong> {detail.ended_at ? new Date(detail.ended_at).toLocaleString() : '-'}
-            </p>
-            <p>
-              <strong>Duration (s):</strong>{' '}
-              {detail.duration_seconds === undefined ? '-' : detail.duration_seconds}
-            </p>
-            <p>
-              <strong>Lifecycle:</strong>{' '}
-              started={String(detail.lifecycle.started)} ended={String(detail.lifecycle.ended)}
-              {' '}failed={String(detail.lifecycle.failed === true)}
-              {' '}events={detail.lifecycle.event_count ?? 0}
-            </p>
-            {detail.lifecycle.first_event_at ? (
-              <p>
-                <strong>First Event:</strong> {new Date(detail.lifecycle.first_event_at).toLocaleString()}
-              </p>
-            ) : null}
-            {detail.lifecycle.last_event_at ? (
-              <p>
-                <strong>Last Event:</strong> {new Date(detail.lifecycle.last_event_at).toLocaleString()}
-              </p>
-            ) : null}
-          </section>
+      {!loading && !error && detail && (
+        <div className="space-y-4">
+          <Card>
+            <CardHeader title="Summary" />
+            <CardBody>
+              <div className="grid gap-x-8 gap-y-1 sm:grid-cols-2">
+                <InfoRow label="Session" value={<span className="font-mono text-xs">{detail.session_id}</span>} />
+                <InfoRow label="User" value={detail.user.username} />
+                <InfoRow label="Asset" value={`${detail.asset.name} (${detail.asset.asset_type})`} />
+                <InfoRow label="Action" value={<Badge color="indigo">{detail.action} ({detail.launch_type})</Badge>} />
+                <InfoRow label="Status" value={<Badge color={statusColor(detail.status)}>{detail.status}</Badge>} />
+                <InfoRow label="Created" value={new Date(detail.created_at).toLocaleString()} />
+                <InfoRow label="Started" value={detail.started_at ? new Date(detail.started_at).toLocaleString() : '-'} />
+                <InfoRow label="Ended" value={detail.ended_at ? new Date(detail.ended_at).toLocaleString() : '-'} />
+                <InfoRow label="Duration" value={detail.duration_seconds === undefined ? '-' : `${detail.duration_seconds}s`} />
+                <InfoRow label="Events" value={String(detail.lifecycle.event_count ?? 0)} />
+              </div>
+            </CardBody>
+          </Card>
 
           {shellSession ? (
-            <section className="card section-block">
-              <h2>Shell Review</h2>
-              <p className="muted">
-                Replay is approximate and event-based. This is not terminal-perfect emulation yet.
-              </p>
+            <Card>
+              <CardHeader title="Shell Review">
+                <p className="text-xs text-gray-400">Timed stream replay with terminal resize events (asciicast-style shaping)</p>
+              </CardHeader>
+              <CardBody>
+                <div className="mb-4 flex gap-1">
+                  {(['transcript', 'replay', 'timeline'] as const).map((t) => (
+                    <button
+                      key={t}
+                      onClick={() => setTab(t)}
+                      className={`rounded-lg px-3 py-1.5 text-sm font-medium transition-colors ${
+                        tab === t
+                          ? 'bg-indigo-600 text-white'
+                          : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                      }`}
+                    >
+                      {t.charAt(0).toUpperCase() + t.slice(1)}
+                    </button>
+                  ))}
+                </div>
 
-              <div className="actions-inline tab-row">
-                <button
-                  className={tab === 'transcript' ? 'button-secondary' : 'button-ghost'}
-                  onClick={() => setTab('transcript')}
-                >
-                  Transcript
-                </button>
-                <button
-                  className={tab === 'replay' ? 'button-secondary' : 'button-ghost'}
-                  onClick={() => setTab('replay')}
-                >
-                  Replay
-                </button>
-                <button
-                  className={tab === 'timeline' ? 'button-secondary' : 'button-ghost'}
-                  onClick={() => setTab('timeline')}
-                >
-                  Timeline
-                </button>
-              </div>
+                {tab === 'transcript' && (
+                  <>
+                    <div className="mb-3 flex flex-wrap items-end gap-3">
+                      <label className="block">
+                        <span className="mb-1 block text-xs font-medium text-gray-500">Search</span>
+                        <input
+                          value={search}
+                          onChange={(e) => setSearch(e.target.value)}
+                          placeholder="filter text..."
+                          className="rounded-lg border border-gray-300 px-3 py-1.5 text-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                        />
+                      </label>
+                      <label className="block">
+                        <span className="mb-1 block text-xs font-medium text-gray-500">Source</span>
+                        <select
+                          value={sourceFilter}
+                          onChange={(e) => setSourceFilter(e.target.value as 'all' | 'in' | 'out')}
+                          className="rounded-lg border border-gray-300 px-3 py-1.5 text-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                        >
+                          <option value="all">All</option>
+                          <option value="in">In</option>
+                          <option value="out">Out</option>
+                        </select>
+                      </label>
+                    </div>
 
-              {tab === 'transcript' ? (
-                <>
-                  <div className="actions-inline">
-                    <label>
-                      Search{' '}
-                      <input
-                        value={search}
-                        onChange={(e) => setSearch(e.target.value)}
-                        placeholder="filter transcript text"
-                      />
-                    </label>
-                    <label>
-                      Source{' '}
-                      <select
-                        value={sourceFilter}
-                        onChange={(e) => setSourceFilter(e.target.value as 'all' | 'in' | 'out')}
-                      >
-                        <option value="all">all</option>
-                        <option value="in">in</option>
-                        <option value="out">out</option>
-                      </select>
-                    </label>
-                  </div>
-
-                  <div className="table-wrap">
-                    <table>
+                    <Table>
                       <thead>
                         <tr>
-                          <th>Time</th>
-                          <th>Source</th>
-                          <th>Text</th>
+                          <Th>Time</Th>
+                          <Th>Source</Th>
+                          <Th>Text</Th>
                         </tr>
                       </thead>
-                      <tbody>
+                      <tbody className="divide-y divide-gray-100">
                         {filteredChunks.map((chunk) => (
-                          <tr key={chunk.id}>
-                            <td>{new Date(chunk.event_time).toLocaleString()}</td>
-                            <td>{chunk.source}</td>
-                            <td className="mono-cell">{trimText(chunk.text)}</td>
+                          <tr key={chunk.id} className="hover:bg-gray-50">
+                            <Td>{new Date(chunk.event_time).toLocaleString()}</Td>
+                            <Td><Badge color={chunk.source === 'in' ? 'blue' : 'green'}>{chunk.source}</Badge></Td>
+                            <Td mono className="max-w-md truncate">{trimText(chunk.text)}</Td>
                           </tr>
                         ))}
-                        {filteredChunks.length === 0 ? (
-                          <tr>
-                            <td colSpan={3} className="muted">
-                              No shell transcript chunks found.
-                            </td>
-                          </tr>
-                        ) : null}
+                        {filteredChunks.length === 0 && <EmptyRow colSpan={3} message="No shell transcript chunks found." />}
                       </tbody>
-                    </table>
-                  </div>
-                </>
-              ) : null}
+                    </Table>
+                  </>
+                )}
 
-              {tab === 'replay' ? (
-                <>
-                  <div className="actions-inline">
-                    <button onClick={() => setPlaying((prev) => !prev)}>
-                      {playing ? 'Pause' : 'Play'}
-                    </button>
-                    <button
-                      onClick={() => {
-                        setPlaying(false)
-                        setCursor(0)
-                      }}
-                    >
-                      Reset
-                    </button>
-                    <label>
-                      Speed{' '}
-                      <select value={speed} onChange={(e) => setSpeed(Number(e.target.value))}>
-                        {REPLAY_SPEEDS.map((value) => (
-                          <option key={value} value={value}>
-                            {value}x
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                    <label>
-                      Position{' '}
+                {tab === 'replay' && (
+                  <>
+                    <div className="mb-3 flex flex-wrap items-center gap-3">
+                      <Button size="sm" onClick={() => setPlaying((prev) => !prev)}>
+                        {playing ? 'Pause' : 'Play'}
+                      </Button>
+                      <Button size="sm" variant="secondary" onClick={() => { setPlaying(false); setCursor(0) }}>
+                        Reset
+                      </Button>
+                      <label className="flex items-center gap-2 text-sm text-gray-600">
+                        Speed
+                        <select
+                          value={speed}
+                          onChange={(e) => setSpeed(Number(e.target.value))}
+                          className="rounded border border-gray-300 px-2 py-1 text-sm"
+                        >
+                          {REPLAY_SPEEDS.map((v) => <option key={v} value={v}>{v}x</option>)}
+                        </select>
+                      </label>
                       <input
                         type="range"
                         min={0}
                         max={replayChunks.length}
                         value={cursor}
                         onChange={(e) => setCursor(Number(e.target.value))}
+                        className="w-40"
                       />
-                    </label>
-                    <span className="muted">
-                      {cursor}/{replayChunks.length}
-                    </span>
-                  </div>
+                      <span className="text-xs text-gray-400">{cursor}/{replayChunks.length}</span>
+                      <span className="text-xs text-gray-400">resize events: {resizeCount}</span>
+                    </div>
 
-                  <div className="transcript-panel">
-                    <h3>Replay Output</h3>
-                    <pre>{replayText || '(no replay output yet)'}</pre>
-                  </div>
-                </>
-              ) : null}
-            </section>
+                    <div className="rounded-lg border border-gray-200 bg-gray-900 p-4">
+                      <pre className="max-h-64 overflow-auto font-mono text-sm text-green-400 whitespace-pre-wrap">
+                        {replayText || '(no replay output yet)'}
+                      </pre>
+                    </div>
+                  </>
+                )}
+              </CardBody>
+            </Card>
           ) : (
-            <section className="card section-block">
-              <h2>{detail.action.toUpperCase()} Review</h2>
-              <p className="muted">
-                {detail.action.toUpperCase()} sessions are metadata-focused in this slice: launch lifecycle and final outcome.
-              </p>
-              <p>
-                <strong>Connector Requested:</strong>{' '}
-                {detail.lifecycle.connector_requested ? 'yes' : 'no'}
-              </p>
-              <p>
-                <strong>Connector Succeeded:</strong>{' '}
-                {detail.lifecycle.connector_succeeded ? 'yes' : 'no'}
-              </p>
-              <p>
-                <strong>Connector Failed:</strong>{' '}
-                {detail.lifecycle.connector_failed ? 'yes' : 'no'}
-              </p>
-              <p>
-                <strong>Final Outcome:</strong> {finalLifecycleEvent?.event_type ?? detail.status}
-              </p>
+            <Card>
+              <CardHeader title={`${detail.action.toUpperCase()} Review`}>
+                <p className="text-xs text-gray-400">Launch lifecycle and final outcome</p>
+              </CardHeader>
+              <CardBody>
+                <div className="mb-4 grid gap-x-8 gap-y-1 sm:grid-cols-2">
+                  <InfoRow label="Connector Requested" value={detail.lifecycle.connector_requested ? 'Yes' : 'No'} />
+                  <InfoRow label="Connector Succeeded" value={detail.lifecycle.connector_succeeded ? 'Yes' : 'No'} />
+                  <InfoRow label="Connector Failed" value={detail.lifecycle.connector_failed ? 'Yes' : 'No'} />
+                  <InfoRow label="Final Outcome" value={finalLifecycleEvent?.event_type ?? detail.status} />
+                </div>
 
-              <div className="table-wrap">
-                <table>
+                <Table>
                   <thead>
                     <tr>
-                      <th>Time</th>
-                      <th>Event</th>
-                      <th>Metadata</th>
+                      <Th>Time</Th>
+                      <Th>Event</Th>
+                      <Th>Metadata</Th>
                     </tr>
                   </thead>
-                  <tbody>
+                  <tbody className="divide-y divide-gray-100">
                     {connectorEvents.map((event) => (
-                      <tr key={event.id}>
-                        <td>{new Date(event.event_time).toLocaleString()}</td>
-                        <td>{event.event_type}</td>
-                        <td className="mono-cell">{summarizePayload(event)}</td>
+                      <tr key={event.id} className="hover:bg-gray-50">
+                        <Td>{new Date(event.event_time).toLocaleString()}</Td>
+                        <Td><Badge>{event.event_type}</Badge></Td>
+                        <Td mono className="max-w-md truncate">{summarizePayload(event)}</Td>
                       </tr>
                     ))}
-                    {connectorEvents.length === 0 ? (
-                      <tr>
-                        <td colSpan={3} className="muted">
-                          No connector launch metadata events recorded.
-                        </td>
-                      </tr>
-                    ) : null}
+                    {connectorEvents.length === 0 && <EmptyRow colSpan={3} message="No connector launch metadata events recorded." />}
                   </tbody>
-                </table>
-              </div>
-            </section>
+                </Table>
+              </CardBody>
+            </Card>
           )}
 
-          {(tab === 'timeline' || shellSession === false) ? (
-            <section className="card section-block">
-              <h2>Event Timeline</h2>
-              <div className="table-wrap">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>ID</th>
-                      <th>Time</th>
-                      <th>Event</th>
-                      <th>Actor</th>
-                      <th>Payload Summary</th>
+          {(tab === 'timeline' || !shellSession) && (
+            <Card>
+              <CardHeader title="Event Timeline" />
+              <Table>
+                <thead>
+                  <tr>
+                    <Th>ID</Th>
+                    <Th>Time</Th>
+                    <Th>Event</Th>
+                    <Th>Actor</Th>
+                    <Th>Payload</Th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                  {events.map((event) => (
+                    <tr key={event.id} className="hover:bg-gray-50">
+                      <Td>{event.id}</Td>
+                      <Td>{new Date(event.event_time).toLocaleString()}</Td>
+                      <Td><Badge>{event.event_type}</Badge></Td>
+                      <Td>{event.actor_user?.username || '-'}</Td>
+                      <Td mono className="max-w-md truncate">{summarizePayload(event)}</Td>
                     </tr>
-                  </thead>
-                  <tbody>
-                    {events.map((event) => (
-                      <tr key={event.id}>
-                        <td>{event.id}</td>
-                        <td>{new Date(event.event_time).toLocaleString()}</td>
-                        <td>{event.event_type}</td>
-                        <td>{event.actor_user?.username || '-'}</td>
-                        <td className="mono-cell">{summarizePayload(event)}</td>
-                      </tr>
-                    ))}
-                    {events.length === 0 ? (
-                      <tr>
-                        <td colSpan={5} className="muted">
-                          No events recorded.
-                        </td>
-                      </tr>
-                    ) : null}
-                  </tbody>
-                </table>
-              </div>
-            </section>
-          ) : null}
-        </>
-      ) : null}
-    </main>
+                  ))}
+                  {events.length === 0 && <EmptyRow colSpan={5} message="No events recorded." />}
+                </tbody>
+              </Table>
+            </Card>
+          )}
+        </div>
+      )}
+    </>
   )
 }
 

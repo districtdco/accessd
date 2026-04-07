@@ -2591,7 +2591,7 @@ components:
 
     DBeaverLaunchConnection:
       type: object
-      required: [engine, host, port, username, password, expires_at]
+      required: [engine, host, port, username, expires_at]
       properties:
         engine:
           type: string
@@ -2608,7 +2608,7 @@ components:
           type: string
         password:
           type: string
-          description: Resolved DB credential secret for first connector-launched session material.
+          description: Optional client-side password field (unused when connecting through PAM PostgreSQL proxy).
         ssl_mode:
           type: string
         expires_at:
