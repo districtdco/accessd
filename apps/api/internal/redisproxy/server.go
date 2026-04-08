@@ -35,6 +35,7 @@ type SessionRegistration struct {
 	SessionID string
 	UserID    string
 	AssetID   string
+	AssetName string
 
 	UpstreamHost string
 	UpstreamPort int
@@ -121,6 +122,7 @@ func (s *Service) RegisterSession(reg SessionRegistration) (string, int, error) 
 	reg.SessionID = strings.TrimSpace(reg.SessionID)
 	reg.UserID = strings.TrimSpace(reg.UserID)
 	reg.AssetID = strings.TrimSpace(reg.AssetID)
+	reg.AssetName = strings.TrimSpace(reg.AssetName)
 	reg.UpstreamHost = strings.TrimSpace(reg.UpstreamHost)
 	reg.ClientAuthToken = strings.TrimSpace(reg.ClientAuthToken)
 	reg.RequestID = strings.TrimSpace(reg.RequestID)
@@ -165,31 +167,38 @@ func (s *Service) serveSession(reg SessionRegistration, ln net.Listener) {
 	defer s.unregister(reg.SessionID)
 	defer ln.Close()
 
-	conn, err := ln.Accept()
-	if err != nil {
-		if !errors.Is(err, net.ErrClosed) {
-			s.logger.Warn("redis proxy accept failed", "session_id", reg.SessionID, "request_id", reg.RequestID, "error", err)
-		}
-		return
-	}
-	conn = connutil.WrapIdleTimeout(conn, s.cfg.IdleTimeout)
-	s.trackConn(conn)
-	defer conn.Close()
-	defer s.untrackConn(conn)
-
+	var connWG sync.WaitGroup
+	defer connWG.Wait()
 	if s.cfg.MaxSessionAge > 0 {
 		timer := time.AfterFunc(s.cfg.MaxSessionAge, func() {
-			s.logger.Warn("redis proxy max session duration reached; closing connection", "session_id", reg.SessionID, "request_id", reg.RequestID)
-			_ = conn.Close()
+			s.logger.Warn("redis proxy max session duration reached; closing listener", "session_id", reg.SessionID, "request_id", reg.RequestID)
+			_ = ln.Close()
 		})
 		defer timer.Stop()
 	}
-	s.logger.Info("redis proxy client connected", "session_id", reg.SessionID, "request_id", reg.RequestID, "remote_addr", conn.RemoteAddr().String())
 
-	if err := s.handleSessionConn(reg, conn); err != nil {
-		s.logger.Warn("redis proxy session failed", "session_id", reg.SessionID, "request_id", reg.RequestID, "error", err)
-	} else {
-		s.logger.Info("redis proxy session ended", "session_id", reg.SessionID, "request_id", reg.RequestID)
+	for {
+		conn, err := ln.Accept()
+		if err != nil {
+			if !errors.Is(err, net.ErrClosed) {
+				s.logger.Warn("redis proxy accept failed", "session_id", reg.SessionID, "request_id", reg.RequestID, "error", err)
+			}
+			return
+		}
+		conn = connutil.WrapIdleTimeout(conn, s.cfg.IdleTimeout)
+		s.trackConn(conn)
+		connWG.Add(1)
+		go func(c net.Conn) {
+			defer connWG.Done()
+			defer c.Close()
+			defer s.untrackConn(c)
+			s.logger.Info("redis proxy client connected", "session_id", reg.SessionID, "request_id", reg.RequestID, "remote_addr", c.RemoteAddr().String())
+			if err := s.handleSessionConn(reg, c); err != nil {
+				s.logger.Warn("redis proxy session failed", "session_id", reg.SessionID, "request_id", reg.RequestID, "error", err)
+			} else {
+				s.logger.Info("redis proxy session ended", "session_id", reg.SessionID, "request_id", reg.RequestID)
+			}
+		}(conn)
 	}
 }
 
@@ -198,6 +207,7 @@ func (s *Service) handleSessionConn(reg SessionRegistration, client net.Conn) er
 		SessionID: reg.SessionID,
 		UserID:    reg.UserID,
 		AssetID:   reg.AssetID,
+		AssetName: reg.AssetName,
 		RequestID: reg.RequestID,
 		Action:    "redis",
 		Protocol:  sessions.ProtocolRedis,
@@ -227,6 +237,7 @@ func (s *Service) runProxyFlow(reg SessionRegistration, client net.Conn) error {
 		SessionID: reg.SessionID,
 		UserID:    reg.UserID,
 		AssetID:   reg.AssetID,
+		AssetName: reg.AssetName,
 		RequestID: reg.RequestID,
 		Action:    "redis",
 		Protocol:  sessions.ProtocolRedis,
@@ -247,6 +258,7 @@ func (s *Service) runProxyFlow(reg SessionRegistration, client net.Conn) error {
 	if err != nil {
 		return fmt.Errorf("resolve redis credential: %w", err)
 	}
+	lctx.UpstreamUsername = strings.TrimSpace(cred.Username)
 	if err := s.sessionsSvc.RecordCredentialUsage(context.Background(), lctx, credentials.TypePassword, "proxy_upstream_auth", reg.RequestID); err != nil {
 		s.logger.Warn("failed to write credential usage audit", "session_id", reg.SessionID, "request_id", reg.RequestID, "error", err)
 	}
@@ -257,15 +269,17 @@ func (s *Service) runProxyFlow(reg SessionRegistration, client net.Conn) error {
 	}
 
 	if err := s.sessionsSvc.MarkUpstreamConnected(context.Background(), sessions.LaunchContext{
-		SessionID: reg.SessionID,
-		UserID:    reg.UserID,
-		AssetID:   reg.AssetID,
-		RequestID: reg.RequestID,
-		Action:    "redis",
-		Protocol:  sessions.ProtocolRedis,
-		AssetType: assets.TypeRedis,
-		Host:      reg.UpstreamHost,
-		Port:      reg.UpstreamPort,
+		SessionID:        reg.SessionID,
+		UserID:           reg.UserID,
+		AssetID:          reg.AssetID,
+		AssetName:        reg.AssetName,
+		RequestID:        reg.RequestID,
+		Action:           "redis",
+		Protocol:         sessions.ProtocolRedis,
+		AssetType:        assets.TypeRedis,
+		Host:             reg.UpstreamHost,
+		Port:             reg.UpstreamPort,
+		UpstreamUsername: strings.TrimSpace(cred.Username),
 	}); err != nil {
 		s.logger.Warn("failed to record redis upstream connected", "session_id", reg.SessionID, "error", err)
 	}
@@ -301,7 +315,7 @@ func (s *Service) runProxyFlow(reg SessionRegistration, client net.Conn) error {
 		if !clientAuthenticated {
 			if cmd != "AUTH" {
 				s.logger.Warn("redis client attempted command before auth", "session_id", reg.SessionID, "command", cmd)
-				if _, wErr := client.Write([]byte("-NOAUTH Authentication required by PAM proxy\\r\\n")); wErr != nil {
+				if _, wErr := client.Write([]byte("-NOAUTH Authentication required by PAM proxy\r\n")); wErr != nil {
 					return wErr
 				}
 				continue
@@ -309,27 +323,27 @@ func (s *Service) runProxyFlow(reg SessionRegistration, client net.Conn) error {
 			token := extractClientAuthToken(args)
 			if token == "" {
 				s.logger.Warn("redis proxy auth payload missing token", "session_id", reg.SessionID)
-				if _, wErr := client.Write([]byte("-ERR invalid AUTH payload\\r\\n")); wErr != nil {
+				if _, wErr := client.Write([]byte("-ERR invalid AUTH payload\r\n")); wErr != nil {
 					return wErr
 				}
 				continue
 			}
 			if !s.validateClientToken(reg, token) {
 				s.logger.Warn("redis proxy auth failed", "session_id", reg.SessionID)
-				if _, wErr := client.Write([]byte("-ERR invalid PAM launch token\\r\\n")); wErr != nil {
+				if _, wErr := client.Write([]byte("-ERR invalid PAM launch token\r\n")); wErr != nil {
 					return wErr
 				}
 				continue
 			}
 			clientAuthenticated = true
-			if _, wErr := client.Write([]byte("+OK\\r\\n")); wErr != nil {
+			if _, wErr := client.Write([]byte("+OK\r\n")); wErr != nil {
 				return wErr
 			}
 			continue
 		}
 
 		if cmd == "AUTH" {
-			if _, wErr := client.Write([]byte("+OK\\r\\n")); wErr != nil {
+			if _, wErr := client.Write([]byte("+OK\r\n")); wErr != nil {
 				return wErr
 			}
 			continue

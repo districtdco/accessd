@@ -215,16 +215,22 @@ type sessionTranscriptChunk struct {
 type launchResponse struct {
 	SessionID      string             `json:"session_id"`
 	LaunchType     string             `json:"launch_type"`
+	AssetName      string             `json:"asset_name,omitempty"`
+	AssetHost      string             `json:"asset_host,omitempty"`
 	ConnectorToken string             `json:"connector_token,omitempty"`
 	Launch         launchPayloadUnion `json:"launch"`
 }
 
 type launchPayloadUnion struct {
-	ProxyHost string `json:"proxy_host,omitempty"`
-	ProxyPort int    `json:"proxy_port,omitempty"`
-	Username  string `json:"username,omitempty"`
-	Token     string `json:"token,omitempty"`
-	Path      string `json:"path,omitempty"`
+	ProxyHost        string `json:"proxy_host,omitempty"`
+	ProxyPort        int    `json:"proxy_port,omitempty"`
+	Username         string `json:"username,omitempty"`
+	ProxyUsername    string `json:"proxy_username,omitempty"`
+	UpstreamUsername string `json:"upstream_username,omitempty"`
+	TargetAssetName  string `json:"target_asset_name,omitempty"`
+	TargetHost       string `json:"target_host,omitempty"`
+	Token            string `json:"token,omitempty"`
+	Path             string `json:"path,omitempty"`
 
 	Engine   string `json:"engine,omitempty"`
 	Host     string `json:"host,omitempty"`
@@ -385,6 +391,7 @@ func (h *SessionsHandler) Launch(w http.ResponseWriter, r *http.Request) {
 				SessionID:    launch.SessionID,
 				UserID:       currentUser.ID,
 				AssetID:      asset.ID,
+				AssetName:    strings.TrimSpace(asset.Name),
 				Engine:       meta.Engine,
 				Database:     meta.Database,
 				SSLMode:      meta.SSLMode,
@@ -402,6 +409,7 @@ func (h *SessionsHandler) Launch(w http.ResponseWriter, r *http.Request) {
 				SessionID:    launch.SessionID,
 				UserID:       currentUser.ID,
 				AssetID:      asset.ID,
+				AssetName:    strings.TrimSpace(asset.Name),
 				Engine:       meta.Engine,
 				Database:     meta.Database,
 				SSLMode:      meta.SSLMode,
@@ -419,6 +427,7 @@ func (h *SessionsHandler) Launch(w http.ResponseWriter, r *http.Request) {
 				SessionID:    launch.SessionID,
 				UserID:       currentUser.ID,
 				AssetID:      asset.ID,
+				AssetName:    strings.TrimSpace(asset.Name),
 				Engine:       meta.Engine,
 				Database:     meta.Database,
 				SSLMode:      meta.SSLMode,
@@ -432,15 +441,64 @@ func (h *SessionsHandler) Launch(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to allocate database proxy endpoint"})
 			return
 		}
+		// Never send upstream DB credentials to local client apps.
+		// DB proxies authenticate upstream using managed credentials server-side.
+		// We provide a proxy-facing identity/password for client UX only.
+		clientPassword := strings.TrimSpace(launch.ConnectorToken)
+		if clientPassword == "" {
+			clientPassword = strings.TrimSpace(launch.SessionID)
+		}
 		launch = h.sessionsService.AttachDBeaverPayload(launch, sessions.DBeaverLaunchPayload{
-			Engine:   meta.Engine,
-			Host:     proxyHost,
-			Port:     proxyPort,
-			Database: meta.Database,
-			Username: strings.TrimSpace(cred.Username),
-			Password: cred.Secret,
-			SSLMode:  meta.SSLMode,
+			Engine:           meta.Engine,
+			Host:             proxyHost,
+			Port:             proxyPort,
+			Database:         meta.Database,
+			Username:         "pam",
+			UpstreamUsername: strings.TrimSpace(cred.Username),
+			TargetAssetName:  strings.TrimSpace(asset.Name),
+			TargetHost:       strings.TrimSpace(asset.Host),
+			Password:         clientPassword,
+			SSLMode:          meta.SSLMode,
 		})
+	}
+	if asset.Type == assets.TypeLinuxVM && (req.Action == access.ActionShell || req.Action == access.ActionSFTP) {
+		cred, err := h.credentialsService.ResolveForAsset(r.Context(), asset.ID, credentials.TypePassword)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to resolve linux credential"})
+			return
+		}
+		upstreamUsername := strings.TrimSpace(cred.Username)
+		if req.Action == access.ActionShell {
+			if launch.Shell == nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to allocate shell proxy endpoint"})
+				return
+			}
+			launch = h.sessionsService.AttachShellPayload(launch, sessions.ShellLaunchPayload{
+				ProxyHost:        launch.Shell.ProxyHost,
+				ProxyPort:        launch.Shell.ProxyPort,
+				ProxyUsername:    launch.Shell.ProxyUsername,
+				UpstreamUsername: upstreamUsername,
+				TargetAssetName:  strings.TrimSpace(asset.Name),
+				TargetHost:       strings.TrimSpace(asset.Host),
+				Token:            launch.Shell.Token,
+			})
+		}
+		if req.Action == access.ActionSFTP {
+			if launch.SFTP == nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to allocate sftp proxy endpoint"})
+				return
+			}
+			launch = h.sessionsService.AttachSFTPPayload(launch, sessions.SFTPLaunchPayload{
+				Host:             launch.SFTP.Host,
+				Port:             launch.SFTP.Port,
+				ProxyUsername:    launch.SFTP.ProxyUsername,
+				UpstreamUsername: upstreamUsername,
+				TargetAssetName:  strings.TrimSpace(asset.Name),
+				TargetHost:       strings.TrimSpace(asset.Host),
+				Password:         launch.SFTP.Password,
+				Path:             launch.SFTP.Path,
+			})
+		}
 	}
 	if asset.Type == assets.TypeLinuxVM && req.Action == access.ActionSFTP {
 		meta, err := parseSFTPMetadata(asset.MetadataJSON)
@@ -453,11 +511,14 @@ func (h *SessionsHandler) Launch(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		launch = h.sessionsService.AttachSFTPPayload(launch, sessions.SFTPLaunchPayload{
-			Host:     launch.SFTP.Host,
-			Port:     launch.SFTP.Port,
-			Username: launch.SFTP.Username,
-			Password: launch.SFTP.Password,
-			Path:     meta.Path,
+			Host:             launch.SFTP.Host,
+			Port:             launch.SFTP.Port,
+			ProxyUsername:    launch.SFTP.ProxyUsername,
+			UpstreamUsername: launch.SFTP.UpstreamUsername,
+			TargetAssetName:  launch.SFTP.TargetAssetName,
+			TargetHost:       launch.SFTP.TargetHost,
+			Password:         launch.SFTP.Password,
+			Path:             meta.Path,
 		})
 	}
 	if asset.Type == assets.TypeRedis && req.Action == access.ActionRedis {
@@ -497,6 +558,7 @@ func (h *SessionsHandler) Launch(w http.ResponseWriter, r *http.Request) {
 			SessionID:             launch.SessionID,
 			UserID:                currentUser.ID,
 			AssetID:               asset.ID,
+			AssetName:             strings.TrimSpace(asset.Name),
 			UpstreamHost:          asset.Host,
 			UpstreamPort:          asset.Port,
 			UseTLS:                meta.TLS,
@@ -1206,38 +1268,55 @@ func buildLaunchResponse(result sessions.LaunchResult) (launchResponse, error) {
 			return launchResponse{}, errMissingLaunchPayload("shell")
 		}
 		resp.Launch = launchPayloadUnion{
-			ProxyHost: result.Shell.ProxyHost,
-			ProxyPort: result.Shell.ProxyPort,
-			Username:  result.Shell.Username,
-			Token:     result.Shell.Token,
-			ExpiresAt: result.ExpiresAt.Format("2006-01-02T15:04:05.999999999Z07:00"),
+			ProxyHost:        result.Shell.ProxyHost,
+			ProxyPort:        result.Shell.ProxyPort,
+			Username:         result.Shell.UpstreamUsername,
+			ProxyUsername:    result.Shell.ProxyUsername,
+			UpstreamUsername: result.Shell.UpstreamUsername,
+			TargetAssetName:  result.Shell.TargetAssetName,
+			TargetHost:       result.Shell.TargetHost,
+			Token:            result.Shell.Token,
+			ExpiresAt:        result.ExpiresAt.Format("2006-01-02T15:04:05.999999999Z07:00"),
 		}
+		resp.AssetName = result.Shell.TargetAssetName
+		resp.AssetHost = result.Shell.TargetHost
 	case "dbeaver":
 		if result.DBeaver == nil {
 			return launchResponse{}, errMissingLaunchPayload("dbeaver")
 		}
 		resp.Launch = launchPayloadUnion{
-			Engine:    result.DBeaver.Engine,
-			Host:      result.DBeaver.Host,
-			Port:      result.DBeaver.Port,
-			Database:  result.DBeaver.Database,
-			Username:  result.DBeaver.Username,
-			Password:  result.DBeaver.Password,
-			SSLMode:   result.DBeaver.SSLMode,
-			ExpiresAt: result.ExpiresAt.Format("2006-01-02T15:04:05.999999999Z07:00"),
+			Engine:           result.DBeaver.Engine,
+			Host:             result.DBeaver.Host,
+			Port:             result.DBeaver.Port,
+			Database:         result.DBeaver.Database,
+			Username:         result.DBeaver.Username,
+			UpstreamUsername: result.DBeaver.UpstreamUsername,
+			TargetAssetName:  result.DBeaver.TargetAssetName,
+			TargetHost:       result.DBeaver.TargetHost,
+			Password:         result.DBeaver.Password,
+			SSLMode:          result.DBeaver.SSLMode,
+			ExpiresAt:        result.ExpiresAt.Format("2006-01-02T15:04:05.999999999Z07:00"),
 		}
+		resp.AssetName = result.DBeaver.TargetAssetName
+		resp.AssetHost = result.DBeaver.TargetHost
 	case "sftp":
 		if result.SFTP == nil {
 			return launchResponse{}, errMissingLaunchPayload("sftp")
 		}
 		resp.Launch = launchPayloadUnion{
-			Host:      result.SFTP.Host,
-			Port:      result.SFTP.Port,
-			Username:  result.SFTP.Username,
-			Password:  result.SFTP.Password,
-			Path:      result.SFTP.Path,
-			ExpiresAt: result.ExpiresAt.Format("2006-01-02T15:04:05.999999999Z07:00"),
+			Host:             result.SFTP.Host,
+			Port:             result.SFTP.Port,
+			Username:         result.SFTP.UpstreamUsername,
+			ProxyUsername:    result.SFTP.ProxyUsername,
+			UpstreamUsername: result.SFTP.UpstreamUsername,
+			TargetAssetName:  result.SFTP.TargetAssetName,
+			TargetHost:       result.SFTP.TargetHost,
+			Password:         result.SFTP.Password,
+			Path:             result.SFTP.Path,
+			ExpiresAt:        result.ExpiresAt.Format("2006-01-02T15:04:05.999999999Z07:00"),
 		}
+		resp.AssetName = result.SFTP.TargetAssetName
+		resp.AssetHost = result.SFTP.TargetHost
 	case "redis":
 		if result.Redis == nil {
 			return launchResponse{}, errMissingLaunchPayload("redis")

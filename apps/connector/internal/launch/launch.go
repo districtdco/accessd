@@ -3,9 +3,13 @@ package launch
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"encoding/xml"
 	"errors"
 	"fmt"
+	"log/slog"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -26,11 +30,15 @@ type Request struct {
 }
 
 type Shell struct {
-	ProxyHost string `json:"proxy_host"`
-	ProxyPort int    `json:"proxy_port"`
-	Username  string `json:"username"`
-	Token     string `json:"token"`
-	ExpiresAt string `json:"expires_at"`
+	ProxyHost        string `json:"proxy_host"`
+	ProxyPort        int    `json:"proxy_port"`
+	Username         string `json:"username"` // upstream username (display identity)
+	ProxyUsername    string `json:"proxy_username,omitempty"`
+	UpstreamUsername string `json:"upstream_username,omitempty"`
+	TargetAssetName  string `json:"target_asset_name,omitempty"`
+	TargetHost       string `json:"target_host,omitempty"`
+	Token            string `json:"token"`
+	ExpiresAt        string `json:"expires_at"`
 }
 
 type DBeaverRequest struct {
@@ -58,14 +66,17 @@ type SFTPRequest struct {
 }
 
 type DBeaverPayload struct {
-	Engine    string `json:"engine"`
-	Host      string `json:"host"`
-	Port      int    `json:"port"`
-	Database  string `json:"database,omitempty"`
-	Username  string `json:"username"`
-	Password  string `json:"password,omitempty"`
-	SSLMode   string `json:"ssl_mode,omitempty"`
-	ExpiresAt string `json:"expires_at"`
+	Engine           string `json:"engine"`
+	Host             string `json:"host"`
+	Port             int    `json:"port"`
+	Database         string `json:"database,omitempty"`
+	Username         string `json:"username"` // upstream username
+	UpstreamUsername string `json:"upstream_username,omitempty"`
+	TargetAssetName  string `json:"target_asset_name,omitempty"`
+	TargetHost       string `json:"target_host,omitempty"`
+	Password         string `json:"password,omitempty"`
+	SSLMode          string `json:"ssl_mode,omitempty"`
+	ExpiresAt        string `json:"expires_at"`
 }
 
 type RedisPayload struct {
@@ -80,14 +91,30 @@ type RedisPayload struct {
 }
 
 type SFTPPayload struct {
-	Host      string `json:"host"`
-	Port      int    `json:"port"`
-	Username  string `json:"username"`
-	Password  string `json:"password"`
-	Path      string `json:"path,omitempty"`
-	ExpiresAt string `json:"expires_at"`
+	Host             string `json:"host"`
+	Port             int    `json:"port"`
+	Username         string `json:"username"` // upstream username (display identity)
+	ProxyUsername    string `json:"proxy_username,omitempty"`
+	UpstreamUsername string `json:"upstream_username,omitempty"`
+	TargetAssetName  string `json:"target_asset_name,omitempty"`
+	TargetHost       string `json:"target_host,omitempty"`
+	Password         string `json:"password"`
+	Path             string `json:"path,omitempty"`
+	ExpiresAt        string `json:"expires_at"`
 }
 
+// LauncherConfig holds configuration for the launcher.
+type LauncherConfig struct {
+	PuTTYPath      string
+	WinSCPPath     string
+	FileZillaPath  string
+	DBeaverPath    string
+	RedisCLIPath   string
+	DBeaverTempTTL time.Duration
+	Logger         *slog.Logger
+}
+
+// Launcher provides cross-platform application launch functionality.
 type Launcher struct {
 	PuTTYPath      string
 	WinSCPPath     string
@@ -101,6 +128,39 @@ type Launcher struct {
 	// superseding the per-app path fields above. The per-app fields remain
 	// as a backward-compatible fallback.
 	Resolver *discovery.Resolver
+
+	logger *slog.Logger
+}
+
+// NewLauncher creates a new Launcher with the given configuration.
+func NewLauncher(cfg LauncherConfig) *Launcher {
+	logger := cfg.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return &Launcher{
+		PuTTYPath:      cfg.PuTTYPath,
+		WinSCPPath:     cfg.WinSCPPath,
+		FileZillaPath:  cfg.FileZillaPath,
+		DBeaverPath:    cfg.DBeaverPath,
+		RedisCLIPath:   cfg.RedisCLIPath,
+		DBeaverTempTTL: cfg.DBeaverTempTTL,
+		Resolver:       nil, // Set via SetResolver
+		logger:         logger,
+	}
+}
+
+// SetResolver sets the discovery resolver for the launcher.
+func (l *Launcher) SetResolver(r *discovery.Resolver) {
+	l.Resolver = r
+}
+
+// log returns the launcher's logger, falling back to slog.Default().
+func (l *Launcher) log() *slog.Logger {
+	if l.logger != nil {
+		return l.logger
+	}
+	return slog.Default()
 }
 
 type LaunchError struct {
@@ -129,17 +189,20 @@ func (e *LaunchError) Unwrap() error {
 }
 
 type DBeaverLaunchDiagnostics struct {
-	TempMaterialCreated     bool  `json:"temp_material_created"`
-	ManifestWritten         bool  `json:"manifest_written"`
-	CleanupScheduled        bool  `json:"cleanup_scheduled"`
-	CleanupAfterSeconds     int64 `json:"cleanup_after_seconds"`
-	StaleCleanupRemovedDirs int   `json:"stale_cleanup_removed_dirs,omitempty"`
+	TempMaterialCreated     bool   `json:"temp_material_created"`
+	ManifestWritten         bool   `json:"manifest_written"`
+	CleanupScheduled        bool   `json:"cleanup_scheduled"`
+	CleanupAfterSeconds     int64  `json:"cleanup_after_seconds"`
+	StaleCleanupRemovedDirs int    `json:"stale_cleanup_removed_dirs,omitempty"`
+	ResolvedPath            string `json:"resolved_path,omitempty"`
+	LaunchMode              string `json:"launch_mode,omitempty"` // "direct_binary", "open_a", "applescript"
 }
 
 type RedisLaunchDiagnostics struct {
 	CommandPreview string `json:"command_preview"`
 	UsesTLS        bool   `json:"uses_tls"`
 	Database       int    `json:"database"`
+	ResolvedPath   string `json:"resolved_path,omitempty"`
 }
 
 type SFTPLaunchDiagnostics struct {
@@ -147,6 +210,14 @@ type SFTPLaunchDiagnostics struct {
 	Target         string `json:"target"`
 	InitialPath    string `json:"initial_path,omitempty"`
 	CommandPreview string `json:"command_preview,omitempty"`
+	ResolvedPath   string `json:"resolved_path,omitempty"`
+	LaunchMode     string `json:"launch_mode,omitempty"` // "direct_binary", "open_a"
+	Protocol       string `json:"protocol,omitempty"`    // "sftp"
+}
+
+type ShellLaunchDiagnostics struct {
+	ResolvedPath string `json:"resolved_path,omitempty"`
+	Terminal     string `json:"terminal,omitempty"`
 }
 
 const dbeaverTempPrefix = "pam-dbeaver-launch-"
@@ -161,8 +232,8 @@ func (r Request) Validate() error {
 	if r.Launch.ProxyPort <= 0 || r.Launch.ProxyPort > 65535 {
 		return fmt.Errorf("launch.proxy_port is invalid")
 	}
-	if strings.TrimSpace(r.Launch.Username) == "" {
-		return fmt.Errorf("launch.username is required")
+	if strings.TrimSpace(r.Launch.ProxyUsername) == "" && strings.TrimSpace(r.Launch.Username) == "" {
+		return fmt.Errorf("launch.proxy_username or launch.username is required")
 	}
 	if strings.TrimSpace(r.Launch.Token) == "" {
 		return fmt.Errorf("launch.token is required")
@@ -193,8 +264,8 @@ func (r DBeaverRequest) Validate() error {
 	if r.Launch.Port <= 0 || r.Launch.Port > 65535 {
 		return fmt.Errorf("launch.port is invalid")
 	}
-	if strings.TrimSpace(r.Launch.Username) == "" {
-		return fmt.Errorf("launch.username is required")
+	if strings.TrimSpace(r.Launch.Username) == "" && strings.TrimSpace(r.Launch.UpstreamUsername) == "" {
+		return fmt.Errorf("launch.username or launch.upstream_username is required")
 	}
 	if strings.TrimSpace(r.Launch.ExpiresAt) == "" {
 		return fmt.Errorf("launch.expires_at is required")
@@ -248,8 +319,8 @@ func (r SFTPRequest) Validate() error {
 	if r.Launch.Port <= 0 || r.Launch.Port > 65535 {
 		return fmt.Errorf("launch.port is invalid")
 	}
-	if strings.TrimSpace(r.Launch.Username) == "" {
-		return fmt.Errorf("launch.username is required")
+	if strings.TrimSpace(r.Launch.ProxyUsername) == "" && strings.TrimSpace(r.Launch.Username) == "" {
+		return fmt.Errorf("launch.proxy_username or launch.username is required")
 	}
 	if strings.TrimSpace(r.Launch.Password) == "" {
 		return fmt.Errorf("launch.password is required")
@@ -267,7 +338,21 @@ func (r SFTPRequest) Validate() error {
 	return nil
 }
 
-func (l Launcher) LaunchShell(ctx context.Context, req Request) error {
+func (l *Launcher) LaunchShell(ctx context.Context, req Request) (ShellLaunchDiagnostics, error) {
+	proxyUsername := proxyUsernameForShell(req.Launch)
+	displayUsername := upstreamUsernameForShell(req.Launch)
+	displayTarget := targetIdentity(req.AssetName, req.Launch.TargetAssetName, req.Launch.TargetHost)
+	l.log().Info("shell launch: starting",
+		"session_id", req.SessionID,
+		"proxy_host", req.Launch.ProxyHost,
+		"proxy_port", req.Launch.ProxyPort,
+		"proxy_username", proxyUsername,
+		"upstream_username", displayUsername,
+		"display_target", displayTarget,
+		"token_type", "launch",
+		"token_len", len(req.Launch.Token),
+		"os", runtime.GOOS)
+
 	// Resolve terminal preference if Resolver is available.
 	var termPref string
 	if l.Resolver != nil {
@@ -276,26 +361,36 @@ func (l Launcher) LaunchShell(ctx context.Context, req Request) error {
 
 	switch runtime.GOOS {
 	case "darwin":
-		return launchMacOS(ctx, req, termPref)
+		return launchMacOS(ctx, req, termPref, l.logger)
 	case "linux":
-		return launchLinux(ctx, req, termPref)
+		return launchLinux(ctx, req, termPref, l.logger)
 	case "windows":
 		puttyPath := strings.TrimSpace(l.PuTTYPath)
 		if l.Resolver != nil {
 			res, err := l.Resolver.ResolveApp(discovery.AppPuTTY)
 			if err != nil {
-				return mapDiscoveryError(err, "putty_not_installed", "failed to open PuTTY for shell launch")
+				return ShellLaunchDiagnostics{}, mapDiscoveryError(err, "putty_not_installed", "failed to open PuTTY for shell launch")
 			}
 			puttyPath = res.Path
 		}
-		return launchWindows(ctx, req, puttyPath)
+		return launchWindows(ctx, req, puttyPath, l.logger)
 	default:
-		return fmt.Errorf("unsupported OS: %s", runtime.GOOS)
+		return ShellLaunchDiagnostics{}, fmt.Errorf("unsupported OS: %s", runtime.GOOS)
 	}
 }
 
-func (l Launcher) LaunchDBeaver(ctx context.Context, req DBeaverRequest) (DBeaverLaunchDiagnostics, error) {
+func (l *Launcher) LaunchDBeaver(ctx context.Context, req DBeaverRequest) (DBeaverLaunchDiagnostics, error) {
+	l.log().Info("dbeaver launch: starting",
+		"session_id", req.SessionID,
+		"engine", req.Launch.Engine,
+		"host", req.Launch.Host,
+		"port", req.Launch.Port,
+		"database", req.Launch.Database,
+		"os", runtime.GOOS)
 	spec := dbeaverConnectionSpec(req)
+	l.log().Info("dbeaver launch: connection spec prepared",
+		"session_id", req.SessionID,
+		"spec", sanitizeCommandArg(spec))
 	if strings.TrimSpace(spec) == "" {
 		return DBeaverLaunchDiagnostics{}, &LaunchError{
 			Code:    "invalid_dbeaver_spec",
@@ -335,6 +430,9 @@ func (l Launcher) LaunchDBeaver(ctx context.Context, req DBeaverRequest) (DBeave
 	diagnostics.CleanupAfterSeconds = int64(cleanupTTL.Seconds())
 
 	dbeaverPath := strings.TrimSpace(l.DBeaverPath)
+	var resolvedPath string
+	var launchMode string
+
 	if l.Resolver != nil {
 		res, err := l.Resolver.ResolveApp(discovery.AppDBeaver)
 		if err != nil {
@@ -342,16 +440,25 @@ func (l Launcher) LaunchDBeaver(ctx context.Context, req DBeaverRequest) (DBeave
 			return DBeaverLaunchDiagnostics{}, mapDiscoveryError(err, "dbeaver_not_installed", "failed to launch DBeaver")
 		}
 		dbeaverPath = res.Path
+		resolvedPath = res.Path
+	} else {
+		var err error
+		dbeaverPath, err = resolveDBeaverPath(dbeaverPath)
+		if err != nil {
+			_ = os.RemoveAll(tempDir)
+			return DBeaverLaunchDiagnostics{}, err
+		}
+		resolvedPath = dbeaverPath
 	}
 
 	var launchErr error
 	switch runtime.GOOS {
 	case "darwin":
-		launchErr = launchDBeaverMacOS(ctx, spec, dbeaverPath)
+		launchErr, launchMode = launchDBeaverMacOS(ctx, spec, dbeaverPath, l.logger)
 	case "linux":
-		launchErr = launchDBeaverLinux(ctx, spec, dbeaverPath)
+		launchErr = launchDBeaverLinux(ctx, spec, dbeaverPath, l.logger)
 	case "windows":
-		launchErr = launchDBeaverWindows(ctx, spec, dbeaverPath)
+		launchErr = launchDBeaverWindows(ctx, spec, dbeaverPath, l.logger)
 	default:
 		launchErr = &LaunchError{
 			Code:    "unsupported_os",
@@ -365,10 +472,29 @@ func (l Launcher) LaunchDBeaver(ctx context.Context, req DBeaverRequest) (DBeave
 	}
 
 	if runtime.GOOS == "darwin" {
-		activateMacOSApp("DBeaver")
+		go func() {
+			start := time.Now()
+			// Retry activation because app startup/focus handoff timing varies on macOS.
+			activationSteps := []time.Duration{1 * time.Second, 2 * time.Second, 2 * time.Second}
+			for idx, wait := range activationSteps {
+				time.Sleep(wait)
+				if err := activateMacOSApp("DBeaver"); err != nil {
+					l.log().Warn("dbeaver launch: activation attempt failed",
+						"attempt", idx+1,
+						"elapsed_ms", time.Since(start).Milliseconds(),
+						"error", err)
+					continue
+				}
+				l.log().Info("dbeaver launch: activation attempted",
+					"attempt", idx+1,
+					"elapsed_ms", time.Since(start).Milliseconds())
+			}
+		}()
 	}
 
 	diagnostics.CleanupScheduled = true
+	diagnostics.ResolvedPath = resolvedPath
+	diagnostics.LaunchMode = launchMode
 	go func(path string, ttl time.Duration) {
 		time.Sleep(ttl)
 		_ = os.RemoveAll(path)
@@ -376,12 +502,13 @@ func (l Launcher) LaunchDBeaver(ctx context.Context, req DBeaverRequest) (DBeave
 	return diagnostics, nil
 }
 
-func (l Launcher) LaunchRedisCLI(ctx context.Context, req RedisRequest) (RedisLaunchDiagnostics, error) {
+func (l *Launcher) LaunchRedisCLI(ctx context.Context, req RedisRequest) (RedisLaunchDiagnostics, error) {
 	var termPref string
 	if l.Resolver != nil {
 		termPref = l.Resolver.ResolveTerminal().Terminal
 	}
 	var redisCLIPath string
+	var resolvedPath string
 	if l.Resolver != nil {
 		res, err := l.Resolver.ResolveApp(discovery.AppRedisCLI)
 		if err != nil {
@@ -392,12 +519,14 @@ func (l Launcher) LaunchRedisCLI(ctx context.Context, req RedisRequest) (RedisLa
 			}
 		}
 		redisCLIPath = res.Path
+		resolvedPath = res.Path
 	} else {
 		var err error
 		redisCLIPath, err = resolveRedisCLIPath(strings.TrimSpace(l.RedisCLIPath))
 		if err != nil {
 			return RedisLaunchDiagnostics{}, err
 		}
+		resolvedPath = redisCLIPath
 	}
 	command := redisCLICommand(req, redisCLIPath)
 	if runtime.GOOS == "windows" {
@@ -412,7 +541,7 @@ func (l Launcher) LaunchRedisCLI(ctx context.Context, req RedisRequest) (RedisLa
 		}
 	}
 
-	if err := launchTerminalCommandWithPreference(ctx, command, termPref); err != nil {
+	if err := launchTerminalCommandWithPreference(ctx, command, termPref, l.logger); err != nil {
 		return RedisLaunchDiagnostics{}, err
 	}
 
@@ -420,140 +549,105 @@ func (l Launcher) LaunchRedisCLI(ctx context.Context, req RedisRequest) (RedisLa
 		CommandPreview: preview,
 		UsesTLS:        req.Launch.TLS,
 		Database:       req.Launch.Database,
+		ResolvedPath:   resolvedPath,
 	}, nil
 }
 
-func launchTerminalCommandWithPreference(ctx context.Context, command, termPref string) error {
+func launchTerminalCommandWithPreference(ctx context.Context, command, termPref string, logger *slog.Logger) error {
 	switch runtime.GOOS {
 	case "darwin":
 		switch strings.ToLower(strings.TrimSpace(termPref)) {
 		case "iterm":
-			return launchTerminalCommandITerm(ctx, command)
+			return launchTerminalCommandITerm(ctx, command, logger)
 		default:
-			return launchTerminalCommandMacOS(ctx, command)
+			return launchTerminalCommandMacOS(ctx, command, logger)
 		}
 	case "linux":
 		pref := strings.ToLower(strings.TrimSpace(termPref))
 		if pref != "" && pref != "auto" {
-			return launchLinuxTerminalByName(ctx, command, pref)
+			return launchLinuxTerminalByName(ctx, command, pref, logger)
 		}
-		return launchTerminalCommandLinux(ctx, command)
+		return launchTerminalCommandLinux(ctx, command, logger)
 	default:
-		return launchTerminalCommand(ctx, command)
+		return launchTerminalCommand(ctx, command, logger)
 	}
 }
 
-func (l Launcher) LaunchSFTPClient(ctx context.Context, req SFTPRequest) (SFTPLaunchDiagnostics, error) {
+func (l *Launcher) LaunchSFTPClient(ctx context.Context, req SFTPRequest) (SFTPLaunchDiagnostics, error) {
+	// FileZilla is the ONLY supported SFTP client on ALL platforms.
+	// WinSCP is not used.
+	var filezillaPath string
+	var resolvedPath string
+	if l.Resolver != nil {
+		res, err := l.Resolver.ResolveApp(discovery.AppFileZilla)
+		if err != nil {
+			return SFTPLaunchDiagnostics{}, mapDiscoveryError(err, "filezilla_not_installed", "failed to launch FileZilla")
+		}
+		filezillaPath = res.Path
+		resolvedPath = res.Path
+	} else {
+		var err error
+		filezillaPath, err = resolveFileZillaPath(strings.TrimSpace(l.FileZillaPath))
+		if err != nil {
+			return SFTPLaunchDiagnostics{}, err
+		}
+		resolvedPath = filezillaPath
+	}
+
+	l.log().Info("sftp launch: resolved FileZilla path",
+		"path", resolvedPath, "os", runtime.GOOS, "protocol", "sftp")
+
+	hostKey, hostKeyErr := fetchSSHHostKey(ctx, req.Launch.Host, req.Launch.Port)
+	if hostKeyErr != nil {
+		return SFTPLaunchDiagnostics{}, &LaunchError{
+			Code:    "sftp_hostkey_resolve_failed",
+			Message: "failed to resolve SSH host key for FileZilla launch",
+			Hint:    "verify PAM SSH proxy is reachable and ready",
+			Cause:   hostKeyErr,
+		}
+	}
+	if err := ensureFileZillaKnownHost(req.Launch.Host, req.Launch.Port, hostKey); err != nil {
+		return SFTPLaunchDiagnostics{}, &LaunchError{
+			Code:    "sftp_known_hosts_update_failed",
+			Message: "failed to prime FileZilla known hosts for automated SFTP launch",
+			Hint:    "verify local filesystem permissions for FileZilla profile directories",
+			Cause:   err,
+		}
+	}
+
+	// Build sftp:// target URL — always explicit protocol, always URL-encoded password.
+	target := filezillaTarget(req)
+	siteName := sftpSiteDisplayName(req)
+	fileZillaArgs := filezillaArgs(target, siteName)
+
+	l.log().Info("sftp launch: executing FileZilla",
+		"target_redacted", "sftp://<user>:***@"+req.Launch.Host+":"+strconv.Itoa(req.Launch.Port),
+		"protocol", "sftp", "launch_mode", "direct_binary",
+		"display_site", siteName)
+
+	var launchErr error
+	var launchMode string
 	switch runtime.GOOS {
+	case "darwin":
+		launchErr, launchMode = launchFileZillaMacOS(ctx, filezillaPath, target, siteName, l.log())
 	case "windows":
-		var winscpPath string
-		if l.Resolver != nil {
-			res, err := l.Resolver.ResolveApp(discovery.AppWinSCP)
-			if err != nil {
-				return SFTPLaunchDiagnostics{}, &LaunchError{
-					Code:    "winscp_not_found",
-					Message: err.Error(),
-					Hint:    discoverHint(err),
-				}
-			}
-			winscpPath = res.Path
-		} else {
-			var err error
-			winscpPath, err = resolveWinSCPPath(strings.TrimSpace(l.WinSCPPath))
-			if err != nil {
-				return SFTPLaunchDiagnostics{}, err
-			}
-		}
-		hostKey, hostKeyErr := fetchSSHHostKey(ctx, req.Launch.Host, req.Launch.Port)
-		if hostKeyErr != nil {
-			return SFTPLaunchDiagnostics{}, &LaunchError{
-				Code:    "sftp_hostkey_resolve_failed",
-				Message: "failed to resolve SSH host key for WinSCP launch",
-				Hint:    "verify PAM SSH proxy is reachable and ready",
-				Cause:   hostKeyErr,
-			}
-		}
-		target := winscpTarget(req)
-		args := []string{"/ini=nul", "/nointeractiveinput", target}
-		if hostKeyParam := winSCPHostKeyParam(hostKey); strings.TrimSpace(hostKeyParam) != "" {
-			args = append(args, "/hostkey="+hostKeyParam)
-		}
-		cmd := exec.CommandContext(ctx, winscpPath, args...)
-		if err := cmd.Start(); err != nil {
-			return SFTPLaunchDiagnostics{}, &LaunchError{
-				Code:    "sftp_launch_failed",
-				Message: "failed to launch WinSCP",
-				Hint:    "verify PAM_CONNECTOR_WINSCP_PATH or install winscp in PATH",
-				Details: fmt.Sprintf("command: %s", sanitizeCommandArgs(append([]string{winscpPath}, args...))),
-				Cause:   err,
-			}
-		}
-		return SFTPLaunchDiagnostics{
-			Client:         "winscp",
-			Target:         req.Launch.Host + ":" + strconv.Itoa(req.Launch.Port),
-			InitialPath:    strings.TrimSpace(req.Launch.Path),
-			CommandPreview: "winscp sftp://<username>:***@host:port/path",
-		}, nil
-	case "darwin", "linux":
-		var filezillaPath string
-		if l.Resolver != nil {
-			res, err := l.Resolver.ResolveApp(discovery.AppFileZilla)
-			if err != nil {
-				return SFTPLaunchDiagnostics{}, mapDiscoveryError(err, "filezilla_not_installed", "failed to launch FileZilla")
-			}
-			filezillaPath = res.Path
-		} else {
-			var err error
-			filezillaPath, err = resolveFileZillaPath(strings.TrimSpace(l.FileZillaPath))
-			if err != nil {
-				return SFTPLaunchDiagnostics{}, err
-			}
-		}
-		hostKey, hostKeyErr := fetchSSHHostKey(ctx, req.Launch.Host, req.Launch.Port)
-		if hostKeyErr != nil {
-			return SFTPLaunchDiagnostics{}, &LaunchError{
-				Code:    "sftp_hostkey_resolve_failed",
-				Message: "failed to resolve SSH host key for FileZilla launch",
-				Hint:    "verify PAM SSH proxy is reachable and ready",
-				Cause:   hostKeyErr,
-			}
-		}
-		if err := ensureFileZillaKnownHost(req.Launch.Host, req.Launch.Port, hostKey); err != nil {
-			return SFTPLaunchDiagnostics{}, &LaunchError{
-				Code:    "sftp_known_hosts_update_failed",
-				Message: "failed to prime FileZilla known hosts for automated SFTP launch",
-				Hint:    "verify local filesystem permissions for FileZilla profile directories",
-				Cause:   err,
-			}
-		}
-		target := filezillaTarget(req)
-		var launchErr error
-		if runtime.GOOS == "darwin" {
-			launchErr = launchFileZillaMacOS(ctx, filezillaPath, target)
-		} else {
-			cmd := exec.CommandContext(ctx, filezillaPath, target)
-			if err := cmd.Start(); err != nil {
-				launchErr = &LaunchError{
-					Code:    "sftp_launch_failed",
-					Message: "failed to launch FileZilla",
-					Hint:    "verify PAM_CONNECTOR_FILEZILLA_PATH or install filezilla in PATH",
-					Details: fmt.Sprintf("command: %s", sanitizeCommandArgs([]string{filezillaPath, target})),
-					Cause:   err,
-				}
-			}
-		}
-		if launchErr != nil {
-			return SFTPLaunchDiagnostics{}, launchErr
-		}
-		if runtime.GOOS == "darwin" {
-			activateMacOSApp("FileZilla")
-		}
-		return SFTPLaunchDiagnostics{
-			Client:         "filezilla",
-			Target:         req.Launch.Host + ":" + strconv.Itoa(req.Launch.Port),
-			InitialPath:    strings.TrimSpace(req.Launch.Path),
-			CommandPreview: "filezilla sftp://<username>:***@host:port/path",
-		}, nil
+		launchErr = launchFirstAvailable(ctx, [][]string{append([]string{filezillaPath}, fileZillaArgs...)}, launchAttemptOptions{
+			Code:          "sftp_launch_failed",
+			MissingCode:   "filezilla_not_installed",
+			BaseErr:       "failed to launch FileZilla",
+			Hint:          "verify PAM_CONNECTOR_FILEZILLA_PATH or install FileZilla",
+			ConfiguredEnv: "PAM_CONNECTOR_FILEZILLA_PATH",
+		})
+		launchMode = "direct_binary"
+	case "linux":
+		launchErr = launchFirstAvailable(ctx, [][]string{append([]string{filezillaPath}, fileZillaArgs...)}, launchAttemptOptions{
+			Code:          "sftp_launch_failed",
+			MissingCode:   "filezilla_not_installed",
+			BaseErr:       "failed to launch FileZilla",
+			Hint:          "verify PAM_CONNECTOR_FILEZILLA_PATH or install filezilla in PATH",
+			ConfiguredEnv: "PAM_CONNECTOR_FILEZILLA_PATH",
+		})
+		launchMode = "direct_binary"
 	default:
 		return SFTPLaunchDiagnostics{}, &LaunchError{
 			Code:    "unsupported_os",
@@ -561,11 +655,41 @@ func (l Launcher) LaunchSFTPClient(ctx context.Context, req SFTPRequest) (SFTPLa
 			Hint:    "use darwin/linux/windows for connector SFTP launch",
 		}
 	}
+	if launchErr != nil {
+		return SFTPLaunchDiagnostics{}, launchErr
+	}
+	if runtime.GOOS == "darwin" {
+		go func() {
+			start := time.Now()
+			for idx, wait := range []time.Duration{0, 2 * time.Second} {
+				time.Sleep(wait)
+				if err := activateMacOSApp("FileZilla"); err != nil {
+					l.log().Warn("sftp launch: activation attempt failed",
+						"attempt", idx+1,
+						"elapsed_ms", time.Since(start).Milliseconds(),
+						"error", err)
+					continue
+				}
+				l.log().Info("sftp launch: activation attempted",
+					"attempt", idx+1,
+					"elapsed_ms", time.Since(start).Milliseconds())
+			}
+		}()
+	}
+	return SFTPLaunchDiagnostics{
+		Client:         "filezilla",
+		Target:         req.Launch.Host + ":" + strconv.Itoa(req.Launch.Port),
+		InitialPath:    strings.TrimSpace(req.Launch.Path),
+		CommandPreview: "filezilla sftp://<username>:***@host:port/path",
+		ResolvedPath:   resolvedPath,
+		LaunchMode:     launchMode,
+		Protocol:       "sftp",
+	}, nil
 }
 
-func launchMacOS(ctx context.Context, req Request, termPref string) error {
+func launchMacOS(ctx context.Context, req Request, termPref string, logger *slog.Logger) (ShellLaunchDiagnostics, error) {
 	if _, err := exec.LookPath("ssh"); err != nil {
-		return &LaunchError{
+		return ShellLaunchDiagnostics{}, &LaunchError{
 			Code:    "ssh_not_installed",
 			Message: "failed to launch shell because ssh is not installed",
 			Hint:    "install OpenSSH client on this machine",
@@ -574,19 +698,22 @@ func launchMacOS(ctx context.Context, req Request, termPref string) error {
 	}
 	cmd, err := shellCommand(req)
 	if err != nil {
-		return err
+		return ShellLaunchDiagnostics{}, err
 	}
+	var terminal string
 	switch strings.ToLower(strings.TrimSpace(termPref)) {
 	case "iterm":
-		return launchTerminalCommandITerm(ctx, cmd)
+		terminal = "iterm2"
+		return ShellLaunchDiagnostics{ResolvedPath: "ssh", Terminal: terminal}, launchTerminalCommandITerm(ctx, cmd, logger)
 	default:
-		return launchTerminalCommandMacOS(ctx, cmd)
+		terminal = "terminal"
+		return ShellLaunchDiagnostics{ResolvedPath: "ssh", Terminal: terminal}, launchTerminalCommandMacOS(ctx, cmd, logger)
 	}
 }
 
-func launchLinux(ctx context.Context, req Request, termPref string) error {
+func launchLinux(ctx context.Context, req Request, termPref string, logger *slog.Logger) (ShellLaunchDiagnostics, error) {
 	if _, err := exec.LookPath("ssh"); err != nil {
-		return &LaunchError{
+		return ShellLaunchDiagnostics{}, &LaunchError{
 			Code:    "ssh_not_installed",
 			Message: "failed to launch shell because ssh is not installed",
 			Hint:    "install OpenSSH client on this machine",
@@ -595,23 +722,26 @@ func launchLinux(ctx context.Context, req Request, termPref string) error {
 	}
 	cmd, err := shellCommand(req)
 	if err != nil {
-		return err
+		return ShellLaunchDiagnostics{}, err
 	}
+	var terminal string
 	pref := strings.ToLower(strings.TrimSpace(termPref))
 	if pref != "" && pref != "auto" {
-		return launchLinuxTerminalByName(ctx, cmd, pref)
+		terminal = pref
+		return ShellLaunchDiagnostics{ResolvedPath: "ssh", Terminal: terminal}, launchLinuxTerminalByName(ctx, cmd, pref, logger)
 	}
-	return launchTerminalCommandLinux(ctx, cmd)
+	terminal = "auto"
+	return ShellLaunchDiagnostics{ResolvedPath: "ssh", Terminal: terminal}, launchTerminalCommandLinux(ctx, cmd, logger)
 }
 
-func launchTerminalCommand(ctx context.Context, command string) error {
+func launchTerminalCommand(ctx context.Context, command string, logger *slog.Logger) error {
 	switch runtime.GOOS {
 	case "darwin":
-		return launchTerminalCommandMacOS(ctx, command)
+		return launchTerminalCommandMacOS(ctx, command, logger)
 	case "linux":
-		return launchTerminalCommandLinux(ctx, command)
+		return launchTerminalCommandLinux(ctx, command, logger)
 	case "windows":
-		return launchTerminalCommandWindows(ctx, command)
+		return launchTerminalCommandWindows(ctx, command, logger)
 	default:
 		return &LaunchError{
 			Code:    "unsupported_os",
@@ -621,7 +751,7 @@ func launchTerminalCommand(ctx context.Context, command string) error {
 	}
 }
 
-func launchTerminalCommandMacOS(ctx context.Context, command string) error {
+func launchTerminalCommandMacOS(ctx context.Context, command string, logger *slog.Logger) error {
 	script := fmt.Sprintf(`tell application "Terminal"
 	activate
 	do script "%s"
@@ -629,6 +759,7 @@ end tell`, escapeAppleScript(command))
 	cmd := exec.CommandContext(ctx, "osascript", "-e", script)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
+		logger.Error("Terminal launch failed", "command", "osascript", "output", string(out), "error", err)
 		return &LaunchError{
 			Code:    "terminal_launch_failed",
 			Message: "failed to open Terminal.app for launch command",
@@ -637,10 +768,11 @@ end tell`, escapeAppleScript(command))
 			Cause:   err,
 		}
 	}
+	logger.Debug("Terminal launched successfully", "command", "osascript")
 	return nil
 }
 
-func launchTerminalCommandITerm(ctx context.Context, command string) error {
+func launchTerminalCommandITerm(ctx context.Context, command string, logger *slog.Logger) error {
 	script := fmt.Sprintf(`tell application "iTerm"
 	activate
 	create window with default profile command "%s"
@@ -648,6 +780,7 @@ end tell`, escapeAppleScript(command))
 	cmd := exec.CommandContext(ctx, "osascript", "-e", script)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
+		logger.Error("iTerm2 launch failed", "command", "osascript", "output", string(out), "error", err)
 		return &LaunchError{
 			Code:    "terminal_launch_failed",
 			Message: "failed to open iTerm2 for launch command",
@@ -656,10 +789,11 @@ end tell`, escapeAppleScript(command))
 			Cause:   err,
 		}
 	}
+	logger.Debug("iTerm2 launched successfully", "command", "osascript")
 	return nil
 }
 
-func launchLinuxTerminalByName(ctx context.Context, command, terminal string) error {
+func launchLinuxTerminalByName(ctx context.Context, command, terminal string, logger *slog.Logger) error {
 	var args []string
 	switch terminal {
 	case "gnome-terminal":
@@ -690,10 +824,11 @@ func launchLinuxTerminalByName(ctx context.Context, command, terminal string) er
 			Cause:   err,
 		}
 	}
+	logger.Debug("Linux terminal launched", "terminal", terminal, "command", args[0])
 	return nil
 }
 
-func launchTerminalCommandLinux(ctx context.Context, command string) error {
+func launchTerminalCommandLinux(ctx context.Context, command string, logger *slog.Logger) error {
 	attempts := [][]string{
 		{"x-terminal-emulator", "-e", "bash", "-lc", command},
 		{"gnome-terminal", "--", "bash", "-lc", command},
@@ -715,6 +850,7 @@ func launchTerminalCommandLinux(ctx context.Context, command string) error {
 		found = true
 		cmd := exec.CommandContext(ctx, args[0], args[1:]...)
 		if err := cmd.Start(); err == nil {
+			logger.Debug("Linux terminal launched", "terminal", args[0])
 			return nil
 		} else {
 			errs = append(errs, fmt.Sprintf("%s: %v", args[0], err))
@@ -736,10 +872,11 @@ func launchTerminalCommandLinux(ctx context.Context, command string) error {
 	}
 }
 
-func launchTerminalCommandWindows(ctx context.Context, command string) error {
+func launchTerminalCommandWindows(ctx context.Context, command string, logger *slog.Logger) error {
 	cmd := exec.CommandContext(ctx, "cmd", "/C", "start", "", "cmd", "/K", command)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
+		logger.Error("Windows terminal launch failed", "command", "cmd", "output", string(out), "error", err)
 		return &LaunchError{
 			Code:    "terminal_launch_failed",
 			Message: "failed to open terminal",
@@ -748,15 +885,16 @@ func launchTerminalCommandWindows(ctx context.Context, command string) error {
 			Cause:   err,
 		}
 	}
+	logger.Debug("Windows terminal launched", "command", "cmd")
 	return nil
 }
 
-func launchWindows(ctx context.Context, req Request, puttyPath string) error {
+func launchWindows(ctx context.Context, req Request, puttyPath string, logger *slog.Logger) (ShellLaunchDiagnostics, error) {
 	resolvedPuTTY, err := resolvePuTTYPath(strings.TrimSpace(puttyPath))
 	if err != nil {
-		return err
+		return ShellLaunchDiagnostics{}, err
 	}
-	target := req.Launch.Username + "@" + req.Launch.ProxyHost
+	target := proxyUsernameForShell(req.Launch) + "@" + req.Launch.ProxyHost
 	cmd := exec.CommandContext(
 		ctx,
 		resolvedPuTTY,
@@ -768,7 +906,7 @@ func launchWindows(ctx context.Context, req Request, puttyPath string) error {
 		req.Launch.Token,
 	)
 	if err := cmd.Start(); err != nil {
-		return &LaunchError{
+		return ShellLaunchDiagnostics{}, &LaunchError{
 			Code:    "terminal_launch_failed",
 			Message: "failed to open PuTTY for shell launch",
 			Hint:    "verify PAM_CONNECTOR_PUTTY_PATH or install putty in PATH",
@@ -776,7 +914,8 @@ func launchWindows(ctx context.Context, req Request, puttyPath string) error {
 			Cause:   err,
 		}
 	}
-	return nil
+	logger.Debug("PuTTY launched", "path", resolvedPuTTY, "target", target)
+	return ShellLaunchDiagnostics{ResolvedPath: resolvedPuTTY}, nil
 }
 
 func shellCommand(req Request) (string, error) {
@@ -793,14 +932,23 @@ func shellCommand(req Request) (string, error) {
 			Cause:   err,
 		}
 	}
+	proxyUsername := proxyUsernameForShell(req.Launch)
+	upstreamUsername := upstreamUsernameForShell(req.Launch)
+	displayAsset := strings.TrimSpace(req.Launch.TargetAssetName)
+	if displayAsset == "" {
+		displayAsset = strings.TrimSpace(req.AssetName)
+	}
+	displayHost := strings.TrimSpace(req.Launch.TargetHost)
 	command := fmt.Sprintf(
-		"%s bridge-shell --host %s --port %d --username %s --session-id %s --asset-name %s --token-file %s",
+		"%s bridge-shell --host %s --port %d --username %s --session-id %s --asset-name %s --target-host %s --upstream-username %s --token-file %s",
 		shellEscape(executable),
 		shellEscape(req.Launch.ProxyHost),
 		req.Launch.ProxyPort,
-		shellEscape(req.Launch.Username),
+		shellEscape(proxyUsername),
 		shellEscape(strings.TrimSpace(req.SessionID)),
-		shellEscape(strings.TrimSpace(req.AssetName)),
+		shellEscape(displayAsset),
+		shellEscape(displayHost),
+		shellEscape(upstreamUsername),
 		shellEscape(tokenPath),
 	)
 	return command, nil
@@ -887,7 +1035,7 @@ func redisCLICommandPreview(req RedisRequest) string {
 }
 
 func filezillaTarget(req SFTPRequest) string {
-	user := urlEscape(strings.TrimSpace(req.Launch.Username))
+	user := urlEscape(proxyUsernameForSFTP(req.Launch))
 	pass := urlEscape(strings.TrimSpace(req.Launch.Password))
 	host := strings.TrimSpace(req.Launch.Host)
 	path := strings.TrimSpace(req.Launch.Path)
@@ -897,8 +1045,267 @@ func filezillaTarget(req SFTPRequest) string {
 	return fmt.Sprintf("sftp://%s:%s@%s:%d%s", user, pass, host, req.Launch.Port, path)
 }
 
+func filezillaArgs(target, displaySiteName string) []string {
+	name := strings.TrimSpace(displaySiteName)
+	if name == "" {
+		return []string{target}
+	}
+	siteRef, err := upsertFileZillaSite(name, target)
+	if err != nil {
+		return []string{target}
+	}
+	return []string{"-c", siteRef}
+}
+
+type fileZillaSiteFile struct {
+	XMLName  xml.Name         `xml:"FileZilla3"`
+	Version  string           `xml:"version,attr,omitempty"`
+	Platform string           `xml:"platform,attr,omitempty"`
+	Servers  fileZillaServers `xml:"Servers"`
+}
+
+type fileZillaServers struct {
+	Server []fileZillaServer `xml:"Server"`
+}
+
+type fileZillaServer struct {
+	Host                string            `xml:"Host"`
+	Port                int               `xml:"Port"`
+	Protocol            int               `xml:"Protocol"`
+	Type                int               `xml:"Type"`
+	User                string            `xml:"User"`
+	Pass                *fileZillaPass    `xml:"Pass,omitempty"`
+	Logontype           int               `xml:"Logontype"`
+	// Force a single connection so FileZilla does not open extra
+	// transfer connections that can outlive short-lived launch tokens.
+	MaximumMultipleConnections int               `xml:"MaximumMultipleConnections,omitempty"`
+	EncodingType        string            `xml:"EncodingType,omitempty"`
+	BypassProxy         int               `xml:"BypassProxy"`
+	Name                string            `xml:"Name"`
+	SyncBrowsing        int               `xml:"SyncBrowsing,omitempty"`
+	DirectoryComparison int               `xml:"DirectoryComparison,omitempty"`
+	RemoteDir           string            `xml:"RemoteDir,omitempty"`
+	Extra               []fileZillaAnyXML `xml:",any"`
+}
+
+type fileZillaPass struct {
+	Encoding string `xml:"encoding,attr,omitempty"`
+	Value    string `xml:",chardata"`
+}
+
+type fileZillaAnyXML struct {
+	XMLName xml.Name
+	Value   string `xml:",innerxml"`
+}
+
+func upsertFileZillaSite(displayName, target string) (string, error) {
+	u, err := url.Parse(strings.TrimSpace(target))
+	if err != nil {
+		return "", err
+	}
+	if strings.ToLower(strings.TrimSpace(u.Scheme)) != "sftp" {
+		return "", fmt.Errorf("filezilla site target must use sftp")
+	}
+	host := strings.TrimSpace(u.Hostname())
+	if host == "" {
+		return "", fmt.Errorf("filezilla site target host is required")
+	}
+	port := 22
+	if p := strings.TrimSpace(u.Port()); p != "" {
+		val, parseErr := strconv.Atoi(p)
+		if parseErr != nil || val <= 0 {
+			return "", fmt.Errorf("filezilla site target port is invalid")
+		}
+		port = val
+	}
+	username := ""
+	password := ""
+	if u.User != nil {
+		username = u.User.Username()
+		password, _ = u.User.Password()
+	}
+	if strings.TrimSpace(username) == "" || strings.TrimSpace(password) == "" {
+		return "", fmt.Errorf("filezilla site target credentials are required")
+	}
+	remoteDir := strings.TrimSpace(u.EscapedPath())
+
+	path, err := resolveFileZillaSiteManagerPath()
+	if err != nil {
+		return "", err
+	}
+	doc, err := readFileZillaSiteFile(path)
+	if err != nil {
+		return "", err
+	}
+	name := sanitizeFileZillaSiteName(displayName)
+	entry := fileZillaServer{
+		Host:                host,
+		Port:                port,
+		Protocol:            1,
+		Type:                0,
+		User:                username,
+		Pass:                &fileZillaPass{Encoding: "base64", Value: base64.StdEncoding.EncodeToString([]byte(password))},
+		Logontype:           1,
+		MaximumMultipleConnections: 1,
+		EncodingType:        "Auto",
+		BypassProxy:         0,
+		Name:                name,
+		SyncBrowsing:        0,
+		DirectoryComparison: 0,
+		RemoteDir:           remoteDir,
+	}
+	replaced := false
+	for idx := range doc.Servers.Server {
+		if strings.EqualFold(strings.TrimSpace(doc.Servers.Server[idx].Name), name) {
+			doc.Servers.Server[idx] = entry
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		doc.Servers.Server = append(doc.Servers.Server, entry)
+	}
+	if err := writeFileZillaSiteFile(path, doc); err != nil {
+		return "", err
+	}
+	return "0/" + name, nil
+}
+
+func resolveFileZillaSiteManagerPath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	paths := []string{
+		filepath.Join(home, ".config", "filezilla", "sitemanager.xml"),
+		filepath.Join(home, "Library", "Application Support", "FileZilla", "sitemanager.xml"),
+		filepath.Join(home, ".filezilla", "sitemanager.xml"),
+	}
+	for _, p := range paths {
+		if _, statErr := os.Stat(p); statErr == nil {
+			return p, nil
+		}
+	}
+	return paths[0], nil
+}
+
+func readFileZillaSiteFile(path string) (fileZillaSiteFile, error) {
+	doc := fileZillaSiteFile{Version: "3", Servers: fileZillaServers{Server: []fileZillaServer{}}}
+	blob, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return doc, nil
+		}
+		return fileZillaSiteFile{}, err
+	}
+	if len(strings.TrimSpace(string(blob))) == 0 {
+		return doc, nil
+	}
+	if unmarshalErr := xml.Unmarshal(blob, &doc); unmarshalErr != nil {
+		return fileZillaSiteFile{}, unmarshalErr
+	}
+	if doc.Servers.Server == nil {
+		doc.Servers.Server = []fileZillaServer{}
+	}
+	return doc, nil
+}
+
+func writeFileZillaSiteFile(path string, doc fileZillaSiteFile) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	blob, err := xml.MarshalIndent(doc, "", "\t")
+	if err != nil {
+		return err
+	}
+	content := append([]byte(xml.Header), blob...)
+	content = append(content, '\n')
+	return os.WriteFile(path, content, 0o600)
+}
+
+func sanitizeFileZillaSiteName(name string) string {
+	clean := strings.TrimSpace(name)
+	if clean == "" {
+		return "PAM Session"
+	}
+	replacer := strings.NewReplacer("/", "-", "\\", "-", "\n", " ", "\r", " ", "\t", " ")
+	clean = replacer.Replace(clean)
+	return strings.TrimSpace(clean)
+}
+
+func sftpSiteDisplayName(req SFTPRequest) string {
+	asset := strings.TrimSpace(req.Launch.TargetAssetName)
+	if asset == "" {
+		asset = strings.TrimSpace(req.AssetName)
+	}
+	user := strings.TrimSpace(req.Launch.UpstreamUsername)
+	if user == "" {
+		user = strings.TrimSpace(req.Launch.Username)
+	}
+	host := strings.TrimSpace(req.Launch.TargetHost)
+	if asset == "" && user == "" {
+		return ""
+	}
+	name := asset
+	if name == "" {
+		name = host
+	}
+	if user != "" {
+		name += " - " + user
+	}
+	if host != "" && !strings.EqualFold(host, asset) {
+		name += " (" + host + ")"
+	}
+	return strings.TrimSpace(name)
+}
+
 func winscpTarget(req SFTPRequest) string {
 	return filezillaTarget(req)
+}
+
+func proxyUsernameForShell(payload Shell) string {
+	if v := strings.TrimSpace(payload.ProxyUsername); v != "" {
+		return v
+	}
+	if v := strings.TrimSpace(payload.Username); v != "" {
+		return v
+	}
+	return "pam"
+}
+
+func upstreamUsernameForShell(payload Shell) string {
+	if v := strings.TrimSpace(payload.UpstreamUsername); v != "" {
+		return v
+	}
+	if v := strings.TrimSpace(payload.Username); v != "" {
+		return v
+	}
+	return proxyUsernameForShell(payload)
+}
+
+func proxyUsernameForSFTP(payload SFTPPayload) string {
+	if v := strings.TrimSpace(payload.ProxyUsername); v != "" {
+		return v
+	}
+	if v := strings.TrimSpace(payload.Username); v != "" {
+		return v
+	}
+	return "pam"
+}
+
+func targetIdentity(assetName, payloadAssetName, targetHost string) string {
+	asset := strings.TrimSpace(payloadAssetName)
+	if asset == "" {
+		asset = strings.TrimSpace(assetName)
+	}
+	host := strings.TrimSpace(targetHost)
+	if asset == "" {
+		return host
+	}
+	if host == "" || strings.EqualFold(asset, host) {
+		return asset
+	}
+	return asset + " (" + host + ")"
 }
 
 // discoverHint extracts the Hint field from a DiscoveryError, if present.
@@ -989,10 +1396,17 @@ func resolveWinSCPPath(configured string) (string, error) {
 
 func resolveFileZillaPath(configured string) (string, error) {
 	fallbacks := []string{"filezilla"}
-	if runtime.GOOS == "darwin" {
+	switch runtime.GOOS {
+	case "darwin":
 		fallbacks = append(fallbacks,
 			"/Applications/FileZilla.app/Contents/MacOS/filezilla",
 			"/Applications/FileZilla.app/Contents/MacOS/FileZilla",
+		)
+	case "windows":
+		fallbacks = append(fallbacks,
+			"filezilla.exe",
+			`C:\Program Files\FileZilla FTP Client\filezilla.exe`,
+			`C:\Program Files (x86)\FileZilla FTP Client\filezilla.exe`,
 		)
 	}
 	path, fromOverride, err := resolveBinaryPath(configured, fallbacks)
@@ -1044,6 +1458,58 @@ func resolveRedisCLIPath(configured string) (string, error) {
 	}
 }
 
+func resolveDBeaverPath(configured string) (string, error) {
+	// macOS: prefer direct binary paths — never return .app bundles.
+	if runtime.GOOS == "darwin" {
+		directPaths := []string{
+			"/Applications/DBeaver.app/Contents/MacOS/dbeaver",
+			"/Applications/DBeaver.app/Contents/MacOS/DBeaver",
+			"/Applications/DBeaverCE.app/Contents/MacOS/dbeaver",
+			"/Applications/DBeaverCE.app/Contents/MacOS/DBeaver",
+		}
+		for _, path := range directPaths {
+			if _, err := os.Stat(path); err == nil {
+				return path, nil
+			}
+		}
+	}
+
+	// Windows: Program Files locations
+	if runtime.GOOS == "windows" {
+		windowsPaths := []string{
+			`C:\Program Files\DBeaver\dbeaver.exe`,
+			`C:\Program Files\DBeaver\DBeaver.exe`,
+			`C:\Program Files (x86)\DBeaver\dbeaver.exe`,
+			`C:\Program Files (x86)\DBeaver CE\dbeaver.exe`,
+		}
+		for _, path := range windowsPaths {
+			if _, err := os.Stat(path); err == nil {
+				return path, nil
+			}
+		}
+	}
+
+	// Fallback to PATH lookup
+	path, fromOverride, err := resolveBinaryPath(configured, []string{"dbeaver", "dbeaver.exe"})
+	if err == nil {
+		return path, nil
+	}
+	if fromOverride {
+		return "", &LaunchError{
+			Code:    "invalid_configured_path",
+			Message: "configured DBeaver path is invalid",
+			Hint:    "verify PAM_CONNECTOR_DBEAVER_PATH points to a valid DBeaver executable",
+			Cause:   err,
+		}
+	}
+	return "", &LaunchError{
+		Code:    "dbeaver_not_installed",
+		Message: "failed to launch DBeaver",
+		Hint:    "install DBeaver or set PAM_CONNECTOR_DBEAVER_PATH",
+		Cause:   err,
+	}
+}
+
 func resolveBinaryPath(configured string, fallbacks []string) (string, bool, error) {
 	trimmed := strings.TrimSpace(configured)
 	if trimmed != "" {
@@ -1080,19 +1546,20 @@ func lookupBinary(candidate string) (string, error) {
 	return exec.LookPath(trimmed)
 }
 
-func launchDBeaverMacOS(ctx context.Context, spec, configuredPath string) error {
+func launchDBeaverMacOS(ctx context.Context, spec, configuredPath string, logger *slog.Logger) (error, string) {
+	// Use direct binary execution ONLY — never `open -a` which drops CLI args.
 	attempts := [][]string{}
 	trimmed := strings.TrimSpace(configuredPath)
+
 	if trimmed != "" {
 		if strings.HasSuffix(strings.ToLower(trimmed), ".app") {
 			paths, err := macOSBundleExecutables(trimmed, []string{"dbeaver", "DBeaver"})
 			if err != nil {
-				return err
+				return err, "direct_binary"
 			}
 			for _, bin := range paths {
 				attempts = append(attempts, []string{bin, "-con", spec})
 			}
-			attempts = append(attempts, []string{"open", "-a", trimmed, "--args", "-con", spec})
 		} else {
 			attempts = append(attempts, []string{trimmed, "-con", spec})
 		}
@@ -1102,54 +1569,70 @@ func launchDBeaverMacOS(ctx context.Context, spec, configuredPath string) error 
 			[]string{"/Applications/DBeaver.app/Contents/MacOS/DBeaver", "-con", spec},
 			[]string{"/Applications/DBeaverCE.app/Contents/MacOS/dbeaver", "-con", spec},
 			[]string{"/Applications/DBeaverCE.app/Contents/MacOS/DBeaver", "-con", spec},
-			[]string{"open", "-a", "DBeaver", "--args", "-con", spec},
-			[]string{"open", "-a", "/Applications/DBeaver.app", "--args", "-con", spec},
-			[]string{"open", "-a", "/Applications/DBeaverCE.app", "--args", "-con", spec},
 			[]string{"dbeaver", "-con", spec},
 		)
 	}
+
+	if logger != nil {
+		for _, a := range attempts {
+			logger.Info("dbeaver launch: trying direct binary", "binary", a[0], "args", sanitizeCommandArgs(a[1:]))
+		}
+	}
+
 	if err := launchFirstAvailable(ctx, attempts, launchAttemptOptions{
 		Code:          "dbeaver_launch_failed",
 		MissingCode:   "dbeaver_not_installed",
 		BaseErr:       "failed to launch DBeaver on macOS",
-		Hint:          "ensure DBeaver is installed or set PAM_CONNECTOR_DBEAVER_PATH to a valid app/binary path",
+		Hint:          "ensure DBeaver is installed or set PAM_CONNECTOR_DBEAVER_PATH to a valid binary path",
 		ConfiguredEnv: "PAM_CONNECTOR_DBEAVER_PATH",
 	}); err != nil {
-		return err
+		return err, "direct_binary"
 	}
-	activateMacOSApp("DBeaver")
-	return nil
+	return nil, "direct_binary"
 }
 
-func launchFileZillaMacOS(ctx context.Context, configuredPath, target string) error {
+func launchFileZillaMacOS(ctx context.Context, configuredPath, target, displaySiteName string, logger *slog.Logger) (error, string) {
+	// Use direct binary execution ONLY — never `open -a` which may drop arguments.
 	attempts := [][]string{}
 	trimmed := strings.TrimSpace(configuredPath)
+
 	if trimmed == "" {
 		trimmed = "/Applications/FileZilla.app"
 	}
+
 	if strings.HasSuffix(strings.ToLower(trimmed), ".app") {
 		paths, err := macOSBundleExecutables(trimmed, []string{"filezilla", "FileZilla"})
 		if err != nil {
-			return err
+			return err, "direct_binary"
 		}
+		args := filezillaArgs(target, displaySiteName)
 		for _, bin := range paths {
-			attempts = append(attempts, []string{bin, target})
+			attempts = append(attempts, append([]string{bin}, args...))
 		}
-		attempts = append(attempts, []string{"open", "-a", trimmed, "--args", target})
 	} else {
-		attempts = append(attempts, []string{trimmed, target})
+		args := filezillaArgs(target, displaySiteName)
+		attempts = append(attempts, append([]string{trimmed}, args...))
 	}
+
+	if logger != nil {
+		for _, a := range attempts {
+			logger.Info("filezilla launch: trying direct binary",
+				"binary", a[0],
+				"args", sanitizeCommandArgs(a[1:]),
+				"protocol", "sftp")
+		}
+	}
+
 	if err := launchFirstAvailable(ctx, attempts, launchAttemptOptions{
 		Code:          "sftp_launch_failed",
 		MissingCode:   "filezilla_not_installed",
 		BaseErr:       "failed to launch FileZilla",
-		Hint:          "ensure FileZilla is installed or set PAM_CONNECTOR_FILEZILLA_PATH to a valid app/binary path",
+		Hint:          "ensure FileZilla is installed or set PAM_CONNECTOR_FILEZILLA_PATH to a valid binary path",
 		ConfiguredEnv: "PAM_CONNECTOR_FILEZILLA_PATH",
 	}); err != nil {
-		return err
+		return err, "direct_binary"
 	}
-	activateMacOSApp("FileZilla")
-	return nil
+	return nil, "direct_binary"
 }
 
 func macOSBundleExecutables(bundlePath string, preferred []string) ([]string, error) {
@@ -1225,7 +1708,7 @@ func macOSBundleExecutables(bundlePath string, preferred []string) ([]string, er
 	return out, nil
 }
 
-func launchDBeaverLinux(ctx context.Context, spec, configuredPath string) error {
+func launchDBeaverLinux(ctx context.Context, spec, configuredPath string, logger *slog.Logger) error {
 	attempts := [][]string{}
 	trimmed := strings.TrimSpace(configuredPath)
 	if trimmed != "" {
@@ -1245,7 +1728,7 @@ func launchDBeaverLinux(ctx context.Context, spec, configuredPath string) error 
 	})
 }
 
-func launchDBeaverWindows(ctx context.Context, spec, configuredPath string) error {
+func launchDBeaverWindows(ctx context.Context, spec, configuredPath string, logger *slog.Logger) error {
 	attempts := [][]string{}
 	trimmed := strings.TrimSpace(configuredPath)
 	if trimmed != "" {
@@ -1291,7 +1774,14 @@ func launchFirstAvailable(ctx context.Context, attempts [][]string, options laun
 		}
 		allMissing = false
 
-		cmd := exec.CommandContext(ctx, args[0], args[1:]...)
+		// Do not tie GUI child process lifetime to HTTP request cancellation.
+		// Connector handlers return quickly, and canceling request context would
+		// terminate launched apps immediately after launch.
+		procCtx := context.WithoutCancel(ctx)
+		if procCtx == nil {
+			procCtx = context.Background()
+		}
+		cmd := exec.CommandContext(procCtx, args[0], args[1:]...)
 		if startErr := cmd.Start(); startErr != nil {
 			if errors.Is(startErr, exec.ErrNotFound) {
 				allMissing = true
@@ -1359,8 +1849,24 @@ func dbeaverConnectionSpec(req DBeaverRequest) string {
 	if sslMode := strings.TrimSpace(req.Launch.SSLMode); sslMode != "" {
 		parts = append(parts, "sslMode="+specValue(sslMode))
 	}
-	if name := strings.TrimSpace(req.AssetName); name != "" {
-		parts = append(parts, "name="+specValue("PAM - "+name))
+	displayName := strings.TrimSpace(req.Launch.TargetAssetName)
+	if displayName == "" {
+		displayName = strings.TrimSpace(req.AssetName)
+	}
+	displayUser := strings.TrimSpace(req.Launch.UpstreamUsername)
+	if displayUser == "" {
+		displayUser = strings.TrimSpace(req.Launch.Username)
+	}
+	displayHost := strings.TrimSpace(req.Launch.TargetHost)
+	if displayName != "" {
+		label := displayName
+		if displayUser != "" {
+			label += " - " + displayUser
+		}
+		if displayHost != "" {
+			label += " (" + displayHost + ")"
+		}
+		parts = append(parts, "name="+specValue(label))
 	}
 	return strings.Join(parts, "|")
 }
@@ -1576,10 +2082,10 @@ func escapeAppleScript(v string) string {
 }
 
 // activateMacOSApp brings a macOS application to the foreground.
-func activateMacOSApp(name string) {
+func activateMacOSApp(name string) error {
 	script := fmt.Sprintf(`tell application "%s" to activate`, escapeAppleScript(name))
 	cmd := exec.Command("osascript", "-e", script)
-	_ = cmd.Run()
+	return cmd.Run()
 }
 
 func urlEscape(v string) string {

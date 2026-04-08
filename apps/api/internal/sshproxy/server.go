@@ -172,6 +172,7 @@ func (s *Server) newSSHServerConfig() (*ssh.ServerConfig, error) {
 					"session_id": result.launch.SessionID,
 					"user_id":    result.launch.UserID,
 					"asset_id":   result.launch.AssetID,
+					"asset_name": result.launch.AssetName,
 					"request_id": result.launch.RequestID,
 					"host":       result.launch.Host,
 					"port":       strconv.Itoa(result.launch.Port),
@@ -202,6 +203,7 @@ func (s *Server) newSSHServerConfig() (*ssh.ServerConfig, error) {
 					"session_id": result.launch.SessionID,
 					"user_id":    result.launch.UserID,
 					"asset_id":   result.launch.AssetID,
+					"asset_name": result.launch.AssetName,
 					"request_id": result.launch.RequestID,
 					"host":       result.launch.Host,
 					"port":       strconv.Itoa(result.launch.Port),
@@ -333,13 +335,16 @@ func (s *Server) handleConn(rawConn net.Conn, cfg *ssh.ServerConfig) {
 			"session_id", launch.SessionID, "request_id", launch.RequestID,
 			"upstream_host", launch.Host, "upstream_port", launch.Port, "action", launch.Action)
 
-		upstreamClient, upstreamSession, err := s.connectUpstream(ctx, launch)
+		upstreamClient, upstreamSession, upstreamUsername, err := s.connectUpstream(ctx, launch)
 		if err != nil {
 			rejectMsg := "upstream connection failed: " + err.Error()
 			_ = newChannel.Reject(ssh.ConnectionFailed, rejectMsg)
 			finalizeFailed("upstream_connect_failed")
 			s.logger.Error("upstream ssh connection failed", "session_id", launch.SessionID, "request_id", launch.RequestID, "error", err)
 			return
+		}
+		if strings.TrimSpace(upstreamUsername) != "" {
+			launch.UpstreamUsername = strings.TrimSpace(upstreamUsername)
 		}
 
 		if err := s.sessionsSvc.MarkUpstreamConnected(ctx, launch); err != nil {
@@ -381,16 +386,17 @@ func (s *Server) handleConn(rawConn net.Conn, cfg *ssh.ServerConfig) {
 	finalizeFailed("no_session_channel")
 }
 
-func (s *Server) connectUpstream(ctx context.Context, launch sessions.LaunchContext) (*ssh.Client, *ssh.Session, error) {
+func (s *Server) connectUpstream(ctx context.Context, launch sessions.LaunchContext) (*ssh.Client, *ssh.Session, string, error) {
 	cred, err := s.credSvc.ResolveForAsset(ctx, launch.AssetID, credentials.TypePassword)
 	if err != nil {
-		return nil, nil, fmt.Errorf("resolve password credential: %w", err)
+		return nil, nil, "", fmt.Errorf("resolve password credential: %w", err)
 	}
+	launch.UpstreamUsername = strings.TrimSpace(cred.Username)
 	if err := s.sessionsSvc.RecordCredentialUsage(ctx, launch, credentials.TypePassword, "proxy_upstream_auth", launch.RequestID); err != nil {
 		s.logger.Warn("failed to write credential usage audit", "session_id", launch.SessionID, "request_id", launch.RequestID, "error", err)
 	}
 	if strings.TrimSpace(cred.Username) == "" {
-		return nil, nil, fmt.Errorf("credential username is required for ssh")
+		return nil, nil, "", fmt.Errorf("credential username is required for ssh")
 	}
 
 	clientCfg := &ssh.ClientConfig{
@@ -411,7 +417,7 @@ func (s *Server) connectUpstream(ctx context.Context, launch sessions.LaunchCont
 		s.logger.Error("upstream ssh dial failed",
 			"session_id", launch.SessionID, "request_id", launch.RequestID,
 			"endpoint", endpoint, "error", err)
-		return nil, nil, fmt.Errorf("dial upstream ssh %s: %w", endpoint, err)
+		return nil, nil, "", fmt.Errorf("dial upstream ssh %s: %w", endpoint, err)
 	}
 	session, err := client.NewSession()
 	if err != nil {
@@ -419,12 +425,12 @@ func (s *Server) connectUpstream(ctx context.Context, launch sessions.LaunchCont
 		s.logger.Error("upstream ssh session open failed",
 			"session_id", launch.SessionID, "request_id", launch.RequestID,
 			"endpoint", endpoint, "error", err)
-		return nil, nil, fmt.Errorf("open upstream session: %w", err)
+		return nil, nil, "", fmt.Errorf("open upstream session: %w", err)
 	}
 	s.logger.Info("upstream ssh connected",
 		"session_id", launch.SessionID, "request_id", launch.RequestID,
 		"endpoint", endpoint)
-	return client, session, nil
+	return client, session, strings.TrimSpace(cred.Username), nil
 }
 
 func (s *Server) bridgeSession(
@@ -1301,6 +1307,7 @@ func launchFromPermissions(perms *ssh.Permissions) (sessions.LaunchContext, erro
 		SessionID: get("session_id"),
 		UserID:    get("user_id"),
 		AssetID:   get("asset_id"),
+		AssetName: get("asset_name"),
 		RequestID: get("request_id"),
 		Host:      get("host"),
 		Port:      port,

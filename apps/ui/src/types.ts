@@ -29,6 +29,10 @@ export type ShellLaunchConnection = {
   proxy_host: string
   proxy_port: number
   username: string
+  proxy_username?: string
+  upstream_username?: string
+  target_asset_name?: string
+  target_host?: string
   token: string
   expires_at: string
 }
@@ -39,6 +43,9 @@ export type DBeaverLaunchConnection = {
   port: number
   database?: string
   username: string
+  upstream_username?: string
+  target_asset_name?: string
+  target_host?: string
   password?: string
   ssl_mode?: string
   expires_at: string
@@ -48,6 +55,10 @@ export type SFTPLaunchConnection = {
   host: string
   port: number
   username: string
+  proxy_username?: string
+  upstream_username?: string
+  target_asset_name?: string
+  target_host?: string
   password: string
   path?: string
   expires_at: string
@@ -67,6 +78,8 @@ export type RedisLaunchConnection = {
 export type LaunchSessionResponse = {
   session_id: string
   launch_type: 'shell' | 'sftp' | 'dbeaver' | 'redis'
+  asset_name?: string
+  asset_host?: string
   connector_token?: string
   launch: ShellLaunchConnection | SFTPLaunchConnection | DBeaverLaunchConnection | RedisLaunchConnection
 }

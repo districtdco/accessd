@@ -13,6 +13,22 @@ import {
 import type { AccessPoint, DBeaverLaunchConnection, RedisLaunchConnection, SFTPLaunchConnection, ShellLaunchConnection } from '../types'
 import { Badge, Button, Card, EmptyRow, ErrorState, LoadingState, PageHeader, SuccessState, Table, Td, Th } from '../components/ui'
 
+function displayIdentity(
+  assetName: string,
+  launch?: Partial<ShellLaunchConnection & SFTPLaunchConnection & DBeaverLaunchConnection>,
+): string {
+  if (!launch) return assetName
+  const upstream = (launch.upstream_username || launch.username || '').trim()
+  const target = (launch.target_asset_name || assetName || '').trim()
+  const host = (launch.target_host || '').trim()
+  if (!upstream && !target) return assetName
+  const base = upstream && target ? `${upstream}@${target}` : (upstream || target)
+  if (host && target && host !== target) {
+    return `${base} (${host})`
+  }
+  return base
+}
+
 export function AccessPage() {
   const [items, setItems] = useState<AccessPoint[]>([])
   const [loading, setLoading] = useState(true)
@@ -79,18 +95,20 @@ export function AccessPage() {
       }
 
       if (session.launch_type === 'shell') {
+        const shellLaunch = session.launch as ShellLaunchConnection
         const result = await handoffShellToConnector({
           ...connectorBase,
-          launch: session.launch as ShellLaunchConnection,
+          launch: shellLaunch,
         })
         if (result.hint) {
           successMetadata.instructions = result.hint
         }
-        setLaunchMessage(`Shell launch started for ${item.asset_name}. You are being authenticated automatically.`)
+        setLaunchMessage(`Shell launch started for ${displayIdentity(item.asset_name, shellLaunch)}. You are being authenticated automatically.`)
       } else if (session.launch_type === 'sftp') {
+        const sftpLaunch = session.launch as SFTPLaunchConnection
         const result = await handoffSFTPToConnector({
           ...connectorBase,
-          launch: session.launch as SFTPLaunchConnection,
+          launch: sftpLaunch,
         })
         if (result.hint) {
           successMetadata.instructions = result.hint
@@ -98,11 +116,12 @@ export function AccessPage() {
         if (result.diagnostics) {
           successMetadata.diagnostics = result.diagnostics
         }
-        setLaunchMessage(`SFTP launch requested for ${item.asset_name}.`)
+        setLaunchMessage(`SFTP launch requested for ${displayIdentity(item.asset_name, sftpLaunch)}.`)
       } else if (session.launch_type === 'dbeaver') {
+        const dbLaunch = session.launch as DBeaverLaunchConnection
         const result = await handoffDBeaverToConnector({
           ...connectorBase,
-          launch: session.launch as DBeaverLaunchConnection,
+          launch: dbLaunch,
         })
         if (result.hint) {
           successMetadata.instructions = result.hint
@@ -113,9 +132,9 @@ export function AccessPage() {
         const cleanupSeconds = Number((result.diagnostics?.cleanup_after_seconds as number | undefined) ?? 0)
         if (cleanupSeconds > 0) {
           const mins = Math.ceil(cleanupSeconds / 60)
-          setLaunchMessage(`DBeaver launch requested for ${item.asset_name}. Local temp material will auto-clean in about ${mins} minute(s).`)
+          setLaunchMessage(`DBeaver launch requested for ${displayIdentity(item.asset_name, dbLaunch)}. Local temp material will auto-clean in about ${mins} minute(s).`)
         } else {
-          setLaunchMessage(`DBeaver launch requested for ${item.asset_name}.`)
+          setLaunchMessage(`DBeaver launch requested for ${displayIdentity(item.asset_name, dbLaunch)}.`)
         }
       } else {
         const result = await handoffRedisToConnector({

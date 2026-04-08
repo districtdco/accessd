@@ -107,28 +107,37 @@ type LaunchResult struct {
 }
 
 type ShellLaunchPayload struct {
-	ProxyHost string
-	ProxyPort int
-	Username  string
-	Token     string
+	ProxyHost        string
+	ProxyPort        int
+	ProxyUsername    string
+	UpstreamUsername string
+	TargetAssetName  string
+	TargetHost       string
+	Token            string
 }
 
 type SFTPLaunchPayload struct {
-	Host     string
-	Port     int
-	Username string
-	Password string
-	Path     string
+	Host             string
+	Port             int
+	ProxyUsername    string
+	UpstreamUsername string
+	TargetAssetName  string
+	TargetHost       string
+	Password         string
+	Path             string
 }
 
 type DBeaverLaunchPayload struct {
-	Engine   string
-	Host     string
-	Port     int
-	Database string
-	Username string
-	Password string
-	SSLMode  string
+	Engine           string
+	Host             string
+	Port             int
+	Database         string
+	Username         string
+	UpstreamUsername string
+	TargetAssetName  string
+	TargetHost       string
+	Password         string
+	SSLMode          string
 }
 
 type RedisLaunchPayload struct {
@@ -142,17 +151,19 @@ type RedisLaunchPayload struct {
 }
 
 type LaunchContext struct {
-	SessionID string
-	UserID    string
-	AssetID   string
-	RequestID string
-	Action    string
-	Protocol  string
-	AssetType string
-	Host      string
-	Port      int
-	Status    string
-	ExpiresAt time.Time
+	SessionID        string
+	UserID           string
+	AssetID          string
+	AssetName        string
+	RequestID        string
+	Action           string
+	Protocol         string
+	AssetType        string
+	Host             string
+	Port             int
+	UpstreamUsername string
+	Status           string
+	ExpiresAt        time.Time
 }
 
 type SessionListFilter struct {
@@ -400,10 +411,12 @@ RETURNING id;`
 		result.LaunchType = "shell"
 		result.AssetType = assets.TypeLinuxVM
 		result.Shell = &ShellLaunchPayload{
-			ProxyHost: s.cfg.ProxyHost,
-			ProxyPort: s.cfg.ProxyPort,
-			Username:  s.cfg.ProxyUsername,
-			Token:     token,
+			ProxyHost:        s.cfg.ProxyHost,
+			ProxyPort:        s.cfg.ProxyPort,
+			ProxyUsername:    s.cfg.ProxyUsername,
+			UpstreamUsername: s.cfg.ProxyUsername,
+			TargetHost:       s.cfg.ProxyHost,
+			Token:            token,
 		}
 	}
 	if protocol == ProtocolSFTP && action == "sftp" {
@@ -421,10 +434,12 @@ RETURNING id;`
 		result.LaunchType = "sftp"
 		result.AssetType = assets.TypeLinuxVM
 		result.SFTP = &SFTPLaunchPayload{
-			Host:     s.cfg.ProxyHost,
-			Port:     s.cfg.ProxyPort,
-			Username: s.cfg.ProxyUsername,
-			Password: token,
+			Host:             s.cfg.ProxyHost,
+			Port:             s.cfg.ProxyPort,
+			ProxyUsername:    s.cfg.ProxyUsername,
+			UpstreamUsername: s.cfg.ProxyUsername,
+			TargetHost:       s.cfg.ProxyHost,
+			Password:         token,
 		}
 	}
 	if protocol == ProtocolRedis && action == "redis" {
@@ -467,6 +482,7 @@ SELECT
     s.id,
     s.user_id,
     s.asset_id,
+    a.name,
     s.protocol,
     s.status,
     COALESCE(s.reason, ''),
@@ -486,6 +502,7 @@ LIMIT 1;`
 		&lctx.SessionID,
 		&lctx.UserID,
 		&lctx.AssetID,
+		&lctx.AssetName,
 		&lctx.Protocol,
 		&lctx.Status,
 		&reason,
@@ -537,6 +554,13 @@ func (s *Service) AttachDBeaverPayload(result LaunchResult, payload DBeaverLaunc
 	return result
 }
 
+func (s *Service) AttachShellPayload(result LaunchResult, payload ShellLaunchPayload) LaunchResult {
+	result.LaunchType = "shell"
+	result.AssetType = assets.TypeLinuxVM
+	result.Shell = &payload
+	return result
+}
+
 func (s *Service) AttachSFTPPayload(result LaunchResult, payload SFTPLaunchPayload) LaunchResult {
 	result.LaunchType = "sftp"
 	result.AssetType = assets.TypeLinuxVM
@@ -568,15 +592,6 @@ func (s *Service) RecordConnectorLaunchEvent(
 	if err := s.WriteEvent(ctx, lctx.SessionID, eventType, &lctx.UserID, payload); err != nil {
 		return err
 	}
-	if eventType == EventConnectorFailed {
-		if lctx.Status == StatusPending || lctx.Status == StatusActive {
-			reason := "connector_launch_failed"
-			if code, ok := payload["code"].(string); ok && strings.TrimSpace(code) != "" {
-				reason = reason + ":" + strings.TrimSpace(code)
-			}
-			return s.MarkFailed(ctx, lctx, reason)
-		}
-	}
 	return nil
 }
 
@@ -600,6 +615,7 @@ SELECT
 	s.id,
 	s.user_id,
 	s.asset_id,
+	a.name,
 	s.protocol,
 	COALESCE(s.reason, ''),
 	a.asset_type,
@@ -634,6 +650,7 @@ LIMIT $4;`
 			&lctx.SessionID,
 			&lctx.UserID,
 			&lctx.AssetID,
+			&lctx.AssetName,
 			&lctx.Protocol,
 			&reason,
 			&lctx.AssetType,
@@ -727,6 +744,7 @@ SELECT
     s.id,
     s.user_id,
     s.asset_id,
+    a.name,
     s.protocol,
     s.status,
     COALESCE(s.reason, ''),
@@ -748,6 +766,7 @@ LIMIT 1;`
 		&lctx.SessionID,
 		&lctx.UserID,
 		&lctx.AssetID,
+		&lctx.AssetName,
 		&lctx.Protocol,
 		&lctx.Status,
 		&reason,
@@ -1611,7 +1630,9 @@ func (s *Service) RecordCredentialUsage(
 	if ctype == "" {
 		ctype = "unknown"
 	}
-	return s.writeAudit(ctx, lctx, "credential_usage", stage, "success", map[string]any{
+	// Use protocol-aware action for credential usage
+	action := CredentialUsageAction(ctype, stage, lctx.Protocol, lctx.Action)
+	return s.writeAudit(ctx, lctx, "credential_usage", action, "success", map[string]any{
 		"session_id":      lctx.SessionID,
 		"user_id":         lctx.UserID,
 		"asset_id":        lctx.AssetID,
@@ -1634,22 +1655,30 @@ WHERE id = $1
 	}
 
 	ip := normalizeIP(remoteAddr)
-	if err := s.WriteEvent(ctx, lctx.SessionID, EventProxyConnected, &lctx.UserID, map[string]any{
+	payload := map[string]any{
 		"remote_addr": remoteAddr,
 		"remote_ip":   ip,
 		"request_id":  strings.TrimSpace(lctx.RequestID),
-	}); err != nil {
+	}
+	for k, v := range auditIdentityMetadata(lctx) {
+		payload[k] = v
+	}
+	if err := s.WriteEvent(ctx, lctx.SessionID, EventProxyConnected, &lctx.UserID, payload); err != nil {
 		return err
 	}
 	return nil
 }
 
 func (s *Service) MarkUpstreamConnected(ctx context.Context, lctx LaunchContext) error {
-	return s.WriteEvent(ctx, lctx.SessionID, EventUpstreamConn, &lctx.UserID, map[string]any{
+	payload := map[string]any{
 		"upstream_host": lctx.Host,
 		"upstream_port": lctx.Port,
 		"request_id":    strings.TrimSpace(lctx.RequestID),
-	})
+	}
+	for k, v := range auditIdentityMetadata(lctx) {
+		payload[k] = v
+	}
+	return s.WriteEvent(ctx, lctx.SessionID, EventUpstreamConn, &lctx.UserID, payload)
 }
 
 func (s *Service) MarkShellStarted(ctx context.Context, lctx LaunchContext) error {
@@ -1661,14 +1690,20 @@ WHERE id = $1;`
 	if _, err := s.pool.Exec(ctx, query, lctx.SessionID, StatusActive); err != nil {
 		return fmt.Errorf("mark session active: %w", err)
 	}
-	if err := s.WriteEvent(ctx, lctx.SessionID, EventShellStarted, &lctx.UserID, map[string]any{
+	payload := map[string]any{
 		"protocol":   lctx.Protocol,
 		"action":     lctx.Action,
 		"request_id": strings.TrimSpace(lctx.RequestID),
-	}); err != nil {
+	}
+	for k, v := range auditIdentityMetadata(lctx) {
+		payload[k] = v
+	}
+	if err := s.WriteEvent(ctx, lctx.SessionID, EventShellStarted, &lctx.UserID, payload); err != nil {
 		return err
 	}
-	return s.writeAudit(ctx, lctx, auditEventSessionOpen, "shell_start", "success", nil)
+	// Use protocol-aware action for session start
+	action := ProtocolAwareAction(lctx.Action, lctx.Protocol, lctx.Action)
+	return s.writeAudit(ctx, lctx, auditEventSessionOpen, action, "success", nil)
 }
 
 func (s *Service) MarkEnded(ctx context.Context, lctx LaunchContext, reason string) error {
@@ -1681,10 +1716,14 @@ WHERE id = $1;`
 	if _, err := s.pool.Exec(ctx, query, lctx.SessionID, StatusCompleted); err != nil {
 		return fmt.Errorf("mark session completed: %w", err)
 	}
-	if err := s.WriteEvent(ctx, lctx.SessionID, EventSessionEnded, &lctx.UserID, map[string]any{
+	payload := map[string]any{
 		"reason":     strings.TrimSpace(reason),
 		"request_id": strings.TrimSpace(lctx.RequestID),
-	}); err != nil {
+	}
+	for k, v := range auditIdentityMetadata(lctx) {
+		payload[k] = v
+	}
+	if err := s.WriteEvent(ctx, lctx.SessionID, EventSessionEnded, &lctx.UserID, payload); err != nil {
 		return err
 	}
 	return s.writeAudit(ctx, lctx, auditEventSessionDone, sessionEndAuditAction(lctx.Action), "success", map[string]any{
@@ -1701,10 +1740,14 @@ WHERE id = $1;`
 	if _, err := s.pool.Exec(ctx, query, lctx.SessionID, StatusFailed); err != nil {
 		return fmt.Errorf("mark session failed: %w", err)
 	}
-	if err := s.WriteEvent(ctx, lctx.SessionID, EventSessionFailed, &lctx.UserID, map[string]any{
+	payload := map[string]any{
 		"reason":     strings.TrimSpace(reason),
 		"request_id": strings.TrimSpace(lctx.RequestID),
-	}); err != nil {
+	}
+	for k, v := range auditIdentityMetadata(lctx) {
+		payload[k] = v
+	}
+	if err := s.WriteEvent(ctx, lctx.SessionID, EventSessionFailed, &lctx.UserID, payload); err != nil {
 		return err
 	}
 	return s.writeAudit(ctx, lctx, auditEventSessionDone, sessionEndAuditAction(lctx.Action), "failed", map[string]any{
@@ -1874,6 +1917,23 @@ VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb);`
 	if _, ok := meta["request_id"]; !ok {
 		meta["request_id"] = strings.TrimSpace(lctx.RequestID)
 	}
+	// Enrich with protocol-aware context so the UI can display
+	// "Shell upstream auth" / "SFTP upstream auth" etc. instead of
+	// generic "proxy_upstream_auth".
+	if _, ok := meta["protocol_action"]; !ok {
+		meta["protocol_action"] = UpstreamAuthAction(lctx.Protocol, lctx.Action)
+	}
+	if _, ok := meta["session_type"]; !ok && lctx.Protocol != "" {
+		meta["session_type"] = lctx.Protocol
+	}
+	if _, ok := meta["launch_type"]; !ok && lctx.Action != "" {
+		meta["launch_type"] = lctx.Action
+	}
+	for k, v := range auditIdentityMetadata(lctx) {
+		if _, ok := meta[k]; !ok {
+			meta[k] = v
+		}
+	}
 	blob, err := json.Marshal(meta)
 	if err != nil {
 		return fmt.Errorf("marshal audit payload: %w", err)
@@ -1882,6 +1942,23 @@ VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb);`
 		return fmt.Errorf("insert audit event: %w", err)
 	}
 	return nil
+}
+
+func auditIdentityMetadata(lctx LaunchContext) map[string]any {
+	meta := map[string]any{}
+	if v := strings.TrimSpace(lctx.AssetName); v != "" {
+		meta["target_asset_name"] = v
+	}
+	if v := strings.TrimSpace(lctx.Host); v != "" {
+		meta["target_host"] = v
+	}
+	if v := strings.TrimSpace(lctx.UpstreamUsername); v != "" {
+		meta["upstream_username"] = v
+	}
+	if v := strings.TrimSpace(lctx.Protocol); v != "" {
+		meta["protocol"] = v
+	}
+	return meta
 }
 
 func payloadOrEmpty(payload map[string]any) map[string]any {

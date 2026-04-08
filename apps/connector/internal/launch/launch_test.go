@@ -108,3 +108,34 @@ func TestSanitizeCommandArgs_PuttyPasswordRedacted(t *testing.T) {
 		t.Fatalf("expected putty password to be redacted, got %q", got)
 	}
 }
+
+func TestUpsertFileZillaSite_EnforcesSingleConnection(t *testing.T) {
+	tempHome := t.TempDir()
+	prevHome := os.Getenv("HOME")
+	if err := os.Setenv("HOME", tempHome); err != nil {
+		t.Fatalf("set HOME: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Setenv("HOME", prevHome)
+	})
+
+	siteRef, err := upsertFileZillaSite("pam local", "sftp://pam:launch-token@127.0.0.1:2222/home/pam")
+	if err != nil {
+		t.Fatalf("upsertFileZillaSite: %v", err)
+	}
+	if siteRef != "0/pam local" {
+		t.Fatalf("siteRef = %q, want %q", siteRef, "0/pam local")
+	}
+
+	sitePath := filepath.Join(tempHome, ".config", "filezilla", "sitemanager.xml")
+	doc, err := readFileZillaSiteFile(sitePath)
+	if err != nil {
+		t.Fatalf("readFileZillaSiteFile: %v", err)
+	}
+	if len(doc.Servers.Server) != 1 {
+		t.Fatalf("expected 1 server entry, got %d", len(doc.Servers.Server))
+	}
+	if got := doc.Servers.Server[0].MaximumMultipleConnections; got != 1 {
+		t.Fatalf("MaximumMultipleConnections = %d, want 1", got)
+	}
+}

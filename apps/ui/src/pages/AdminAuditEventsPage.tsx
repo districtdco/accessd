@@ -5,6 +5,73 @@ import { useAuth } from '../auth'
 import type { AdminAuditItem } from '../types'
 import { Badge, Button, Card, CardBody, CardHeader, EmptyRow, ErrorState, Input, LoadingState, PageHeader, Select, Table, Td, Th } from '../components/ui'
 
+// Format protocol-aware audit action labels for display
+function formatAuditAction(action: string, metadata?: Record<string, any>): string {
+  // Check for protocol-aware metadata first
+  if (metadata?.protocol_action) {
+    return formatProtocolAction(metadata.protocol_action, metadata)
+  }
+
+  // Fallback to direct action formatting
+  return formatProtocolAction(action, metadata)
+}
+
+function formatProtocolAction(action: string, metadata?: Record<string, any>): string {
+  const mappings: Record<string, string> = {
+    // Session lifecycle
+    'shell_session': 'Shell Session',
+    'shell_session_end': 'Shell Session Ended',
+    'sftp_session': 'SFTP Session',
+    'sftp_session_end': 'SFTP Session Ended',
+    'database_session': 'Database Session',
+    'database_session_end': 'Database Session Ended',
+    'redis_session': 'Redis Session',
+    'redis_session_end': 'Redis Session Ended',
+    'session_start': 'Session Start',
+    'session_end': 'Session End',
+    // Upstream auth (protocol-aware)
+    'ssh_upstream_auth': 'Shell Upstream Auth',
+    'sftp_upstream_auth': 'SFTP Upstream Auth',
+    'database_upstream_auth': 'DB Upstream Auth',
+    'redis_upstream_auth': 'Redis Upstream Auth',
+    'upstream_auth': 'Upstream Auth',
+    // Credential usage (protocol-aware)
+    'shell_proxy_upstream_auth': 'Shell Upstream Auth',
+    'sftp_proxy_upstream_auth': 'SFTP Upstream Auth',
+    'database_proxy_upstream_auth': 'DB Upstream Auth',
+    'redis_proxy_upstream_auth': 'Redis Upstream Auth',
+    'shell_launch_prepare': 'Shell Launch Prepare',
+    'sftp_launch_prepare': 'SFTP Launch Prepare',
+    'database_launch_prepare': 'DB Launch Prepare',
+    'redis_launch_prepare': 'Redis Launch Prepare',
+    'credential_usage': 'Credential Usage',
+    // Action end labels
+    'shell_end': 'Shell Session Ended',
+    'sftp_end': 'SFTP Session Ended',
+    'dbeaver_end': 'DB Session Ended',
+    'redis_end': 'Redis Session Ended',
+  }
+
+  const base = mappings[action] || action.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
+  const asset = typeof metadata?.target_asset_name === 'string' ? metadata.target_asset_name : ''
+  const upstream = typeof metadata?.upstream_username === 'string' ? metadata.upstream_username : ''
+  const proto = typeof metadata?.protocol === 'string' ? metadata.protocol : ''
+  if (!asset && !upstream) {
+    return base
+  }
+  let suffix = ''
+  if (asset) {
+    suffix = ` to ${asset}`
+  }
+  if (upstream) {
+    suffix += `${asset ? ' as' : ' as'} ${upstream}`
+  }
+  if (proto) {
+    suffix += ` (${proto})`
+  }
+  return `${base}${suffix}`
+}
+
 const LIMIT_OPTIONS = [
   { value: '25', label: '25' },
   { value: '50', label: '50' },
@@ -120,7 +187,7 @@ export function AdminAuditEventsPage() {
                   </Td>
                   <Td>{new Date(item.event_time).toLocaleString()}</Td>
                   <Td><Badge>{item.event_type}</Badge></Td>
-                  <Td>{item.action || '-'}</Td>
+                  <Td>{formatAuditAction(item.action || '', item.metadata) || '-'}</Td>
                   <Td>{item.outcome || '-'}</Td>
                   <Td>
                     {item.actor_user?.id && isAdmin ? (

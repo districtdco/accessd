@@ -18,12 +18,14 @@ import (
 )
 
 type ShellBridgeArgs struct {
-	Host      string
-	Port      int
-	Username  string
-	SessionID string
-	AssetName string
-	TokenFile string
+	Host             string
+	Port             int
+	Username         string
+	UpstreamUsername string
+	SessionID        string
+	AssetName        string
+	TargetHost       string
+	TokenFile        string
 }
 
 func RunShellBridgeCommand(ctx context.Context, argv []string) error {
@@ -33,8 +35,10 @@ func RunShellBridgeCommand(ctx context.Context, argv []string) error {
 	fs.StringVar(&args.Host, "host", "", "ssh host")
 	fs.IntVar(&args.Port, "port", 0, "ssh port")
 	fs.StringVar(&args.Username, "username", "", "ssh username")
+	fs.StringVar(&args.UpstreamUsername, "upstream-username", "", "upstream target username")
 	fs.StringVar(&args.SessionID, "session-id", "", "pam session id")
 	fs.StringVar(&args.AssetName, "asset-name", "", "pam asset name")
+	fs.StringVar(&args.TargetHost, "target-host", "", "target asset host/ip")
 	fs.StringVar(&args.TokenFile, "token-file", "", "path to launch token file")
 	if err := fs.Parse(argv); err != nil {
 		return err
@@ -49,15 +53,14 @@ func runShellBridge(ctx context.Context, args ShellBridgeArgs) error {
 	fmt.Fprintf(os.Stderr, "pam: connecting to %s:%d as %s (session %s, asset %s)\n",
 		args.Host, args.Port, args.Username, args.SessionID, args.AssetName)
 
-	blob, err := os.ReadFile(args.TokenFile)
+	// Resolve host key BEFORE entering raw mode so errors are readable.
+	endpoint := net.JoinHostPort(args.Host, strconv.Itoa(args.Port))
+	fmt.Fprintf(os.Stderr, "pam: resolving ssh proxy host key at %s\n", endpoint)
+	expectedHostKey, err := fetchSSHHostKey(ctx, args.Host, args.Port)
 	if err != nil {
-		return fmt.Errorf("read launch token: %w", err)
+		return fmt.Errorf("resolve pam ssh proxy host key: %w", err)
 	}
-	_ = os.Remove(args.TokenFile)
-	token := strings.TrimSpace(string(blob))
-	if token == "" {
-		return fmt.Errorf("launch token is empty")
-	}
+	fmt.Fprintf(os.Stderr, "pam: host key resolved, preparing terminal\n")
 
 	fd := int(os.Stdin.Fd())
 	if !term.IsTerminal(fd) {
@@ -71,17 +74,41 @@ func runShellBridge(ctx context.Context, args ShellBridgeArgs) error {
 		_ = term.Restore(fd, oldState)
 	}()
 
-	endpoint := net.JoinHostPort(args.Host, strconv.Itoa(args.Port))
-	expectedHostKey, err := fetchSSHHostKey(ctx, args.Host, args.Port)
-	if err != nil {
-		return fmt.Errorf("resolve pam ssh proxy host key: %w", err)
+	displayName := shellDisplayIdentity(args)
+	if displayName != "" {
+		// Set terminal title to real upstream identity while PAM remains transport broker.
+		fmt.Fprintf(os.Stdout, "\033]0;%s\007", displayName)
 	}
+
+	// Read token once, immediately before authentication, to minimize token age.
+	blob, err := os.ReadFile(args.TokenFile)
+	if err != nil {
+		return fmt.Errorf("read launch token from %s: %w", args.TokenFile, err)
+	}
+	token := strings.TrimSpace(string(blob))
+	// Delete token file immediately after successful read so it cannot be reused.
+	_ = os.Remove(args.TokenFile)
+	if token == "" {
+		return fmt.Errorf("launch token file was empty")
+	}
+
+	fmt.Fprintf(os.Stderr, "pam: launch token loaded (type=launch, length=%d)\n", len(token))
+
 	sshCfg := &ssh.ClientConfig{
 		User: args.Username,
 		Auth: []ssh.AuthMethod{
+			// Keep password auth as a compatibility fallback for proxies
+			// that still route launch token auth through PasswordCallback.
 			ssh.Password(token),
-			ssh.KeyboardInteractive(func(_ string, _ string, _ []string, _ []bool) ([]string, error) {
-				return []string{token}, nil
+			ssh.KeyboardInteractive(func(_ string, _ string, questions []string, _ []bool) ([]string, error) {
+				answers := make([]string, len(questions))
+				for i, q := range questions {
+					if !strings.Contains(strings.ToLower(strings.TrimSpace(q)), "launch token") {
+						return nil, fmt.Errorf("unexpected keyboard-interactive prompt: %q", strings.TrimSpace(q))
+					}
+					answers[i] = token
+				}
+				return answers, nil
 			}),
 		},
 		HostKeyCallback: func(_ string, _ net.Addr, key ssh.PublicKey) error {
@@ -91,10 +118,10 @@ func runShellBridge(ctx context.Context, args ShellBridgeArgs) error {
 			return nil
 		},
 	}
-	fmt.Fprintf(os.Stderr, "pam: dialing ssh proxy %s\n", endpoint)
+	fmt.Fprintf(os.Stderr, "pam: dialing ssh proxy %s (auth=keyboard-interactive, user=%s)\n", endpoint, args.Username)
 	client, err := dialSSHWithContext(ctx, endpoint, sshCfg)
 	if err != nil {
-		return fmt.Errorf("connect to pam ssh proxy %s: %w", endpoint, err)
+		return fmt.Errorf("ssh auth failed at %s (user=%s, token_type=launch, token_len=%d): %w", endpoint, args.Username, len(token), err)
 	}
 	defer client.Close()
 	fmt.Fprintf(os.Stderr, "pam: authenticated, opening session channel\n")
@@ -123,6 +150,9 @@ func runShellBridge(ctx context.Context, args ShellBridgeArgs) error {
 	if err := session.Shell(); err != nil {
 		return fmt.Errorf("start remote shell: %w", err)
 	}
+	if banner := shellSessionBanner(args); banner != "" {
+		fmt.Fprintf(os.Stdout, "\r\n%s\r\n\r\n", banner)
+	}
 
 	winch := make(chan os.Signal, 1)
 	signal.Notify(winch, syscall.SIGWINCH)
@@ -138,6 +168,45 @@ func runShellBridge(ctx context.Context, args ShellBridgeArgs) error {
 	winch <- syscall.SIGWINCH
 
 	return session.Wait()
+}
+
+func shellDisplayIdentity(args ShellBridgeArgs) string {
+	asset := strings.TrimSpace(args.AssetName)
+	user := strings.TrimSpace(args.UpstreamUsername)
+	if user == "" {
+		user = strings.TrimSpace(args.Username)
+	}
+	host := strings.TrimSpace(args.TargetHost)
+	target := asset
+	if target == "" {
+		target = host
+	}
+	if target == "" || user == "" {
+		return ""
+	}
+	if host != "" && !strings.EqualFold(host, target) {
+		return fmt.Sprintf("%s@%s (%s)", user, target, host)
+	}
+	return fmt.Sprintf("%s@%s", user, target)
+}
+
+func shellSessionBanner(args ShellBridgeArgs) string {
+	asset := strings.TrimSpace(args.AssetName)
+	user := strings.TrimSpace(args.UpstreamUsername)
+	if user == "" {
+		user = strings.TrimSpace(args.Username)
+	}
+	host := strings.TrimSpace(args.TargetHost)
+	if asset == "" {
+		asset = host
+	}
+	if asset == "" || user == "" {
+		return ""
+	}
+	if host != "" && !strings.EqualFold(host, asset) {
+		return fmt.Sprintf("Connected to %s (%s) as %s via PAM", asset, host, user)
+	}
+	return fmt.Sprintf("Connected to %s as %s via PAM", asset, user)
 }
 
 func dialSSHWithContext(ctx context.Context, endpoint string, cfg *ssh.ClientConfig) (*ssh.Client, error) {

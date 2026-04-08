@@ -72,7 +72,8 @@ func main() {
 			return
 		}
 		log.Printf("launch/shell accepted session_id=%s", req.SessionID)
-		if err := launcher.LaunchShell(r.Context(), req); err != nil {
+		diag, err := launcher.LaunchShell(r.Context(), req)
+		if err != nil {
 			writeLaunchError(w, err)
 			return
 		}
@@ -80,6 +81,7 @@ func main() {
 			"status":       "launched",
 			"session_id":   req.SessionID,
 			"instructions": "shell launched with automatic token authentication",
+			"diagnostics":  diag,
 		})
 	})
 	mux.HandleFunc("POST /launch/dbeaver", func(w http.ResponseWriter, r *http.Request) {

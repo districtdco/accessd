@@ -49,17 +49,23 @@ export PAM_DB_URL="${PAM_DB_URL:-postgres://pam:pam_dev_password@127.0.0.1:5432/
 export PAM_VAULT_KEY="${PAM_VAULT_KEY:-MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=}"
 export PAM_LAUNCH_TOKEN_SECRET="${PAM_LAUNCH_TOKEN_SECRET:-pam-dev-launch-secret}"
 export PAM_CONNECTOR_SECRET="${PAM_CONNECTOR_SECRET:-pam-dev-connector-secret}"
+export PAM_LAUNCH_MATERIALIZE_TIMEOUT="${PAM_LAUNCH_MATERIALIZE_TIMEOUT:-5m}"
 export PAM_HTTP_ADDR="${PAM_HTTP_ADDR:-:8080}"
 export PAM_SSH_PROXY_ADDR="${PAM_SSH_PROXY_ADDR:-:2222}"
 export PAM_SSH_PROXY_PUBLIC_HOST="${PAM_SSH_PROXY_PUBLIC_HOST:-127.0.0.1}"
 export PAM_SSH_PROXY_PUBLIC_PORT="${PAM_SSH_PROXY_PUBLIC_PORT:-2222}"
-
+export PAM_PG_PROXY_IDLE_TIMEOUT="${PAM_PG_PROXY_IDLE_TIMEOUT:-30m}"
+export PAM_MYSQL_PROXY_IDLE_TIMEOUT="${PAM_MYSQL_PROXY_IDLE_TIMEOUT:-30m}"
+export PAM_MSSQL_PROXY_IDLE_TIMEOUT="${PAM_MSSQL_PROXY_IDLE_TIMEOUT:-30m}"
+export PAM_SSH_PROXY_UPSTREAM_KNOWN_HOSTS_PATH=/Users/ankit/Work/pam/apps/api/.pam_upstream_known_hosts
 cd "$API_DIR"
 
 echo "[dev_api] mode=$MODE"
 echo "[dev_api] env=$PAM_ENV"
 echo "[dev_api] db=$PAM_DB_URL"
 echo "[dev_api] http=$PAM_HTTP_ADDR ssh_proxy=$PAM_SSH_PROXY_PUBLIC_HOST:$PAM_SSH_PROXY_PUBLIC_PORT"
+echo "[dev_api] launch_materialize_timeout=$PAM_LAUNCH_MATERIALIZE_TIMEOUT"
+echo "[dev_api] db_proxy_idle_timeout pg=$PAM_PG_PROXY_IDLE_TIMEOUT mysql=$PAM_MYSQL_PROXY_IDLE_TIMEOUT mssql=$PAM_MSSQL_PROXY_IDLE_TIMEOUT"
 echo "[dev_api] binary=$API_BIN"
 
 case "$MODE" in

@@ -70,6 +70,7 @@ type SessionRegistration struct {
 	SessionID string
 	UserID    string
 	AssetID   string
+	AssetName string
 
 	Engine   string
 	Database string
@@ -181,6 +182,7 @@ func (s *Service) RegisterSession(reg SessionRegistration) (string, int, error) 
 	reg.SessionID = strings.TrimSpace(reg.SessionID)
 	reg.UserID = strings.TrimSpace(reg.UserID)
 	reg.AssetID = strings.TrimSpace(reg.AssetID)
+	reg.AssetName = strings.TrimSpace(reg.AssetName)
 	reg.Engine = normalizeEngine(reg.Engine)
 	reg.Database = strings.TrimSpace(reg.Database)
 	reg.SSLMode = strings.TrimSpace(reg.SSLMode)
@@ -229,42 +231,51 @@ func (s *Service) serveSession(reg SessionRegistration, ln net.Listener) {
 	defer s.unregister(reg.SessionID)
 	defer ln.Close()
 
-	conn, err := ln.Accept()
-	if err != nil {
-		if !errors.Is(err, net.ErrClosed) {
-			s.logger.Warn("mssql proxy accept failed", "session_id", reg.SessionID, "request_id", reg.RequestID, "error", err)
-		}
-		return
-	}
-	conn = connutil.WrapIdleTimeout(conn, s.cfg.IdleTimeout)
-	s.trackConn(conn)
-	defer conn.Close()
-	defer s.untrackConn(conn)
-
+	var connWG sync.WaitGroup
+	defer connWG.Wait()
 	if s.cfg.MaxSessionAge > 0 {
 		timer := time.AfterFunc(s.cfg.MaxSessionAge, func() {
-			s.logger.Warn("mssql proxy max session duration reached; closing connection", "session_id", reg.SessionID, "request_id", reg.RequestID)
-			_ = conn.Close()
+			s.logger.Warn("mssql proxy max session duration reached; closing listener", "session_id", reg.SessionID, "request_id", reg.RequestID)
+			_ = ln.Close()
 		})
 		defer timer.Stop()
 	}
 
-	if err := s.handleSessionConn(reg, conn); err != nil {
-		s.logger.Warn("mssql proxy session failed", "session_id", reg.SessionID, "request_id", reg.RequestID, "error", err)
+	for {
+		conn, err := ln.Accept()
+		if err != nil {
+			if !errors.Is(err, net.ErrClosed) {
+				s.logger.Warn("mssql proxy accept failed", "session_id", reg.SessionID, "request_id", reg.RequestID, "error", err)
+			}
+			return
+		}
+		conn = connutil.WrapIdleTimeout(conn, s.cfg.IdleTimeout)
+		s.trackConn(conn)
+		connWG.Add(1)
+		go func(c net.Conn) {
+			defer connWG.Done()
+			defer c.Close()
+			defer s.untrackConn(c)
+			if err := s.handleSessionConn(reg, c); err != nil {
+				s.logger.Warn("mssql proxy session failed", "session_id", reg.SessionID, "request_id", reg.RequestID, "error", err)
+			}
+		}(conn)
 	}
 }
 
 func (s *Service) handleSessionConn(reg SessionRegistration, client net.Conn) error {
 	lctx := sessions.LaunchContext{
-		SessionID: reg.SessionID,
-		UserID:    reg.UserID,
-		AssetID:   reg.AssetID,
-		RequestID: reg.RequestID,
-		Action:    "dbeaver",
-		Protocol:  sessions.ProtocolDB,
-		AssetType: assets.TypeDatabase,
-		Host:      reg.UpstreamHost,
-		Port:      reg.UpstreamPort,
+		SessionID:        reg.SessionID,
+		UserID:           reg.UserID,
+		AssetID:          reg.AssetID,
+		AssetName:        reg.AssetName,
+		RequestID:        reg.RequestID,
+		Action:           "dbeaver",
+		Protocol:         sessions.ProtocolDB,
+		AssetType:        assets.TypeDatabase,
+		Host:             reg.UpstreamHost,
+		Port:             reg.UpstreamPort,
+		UpstreamUsername: reg.Username,
 	}
 
 	ctx := context.Background()
@@ -286,15 +297,17 @@ func (s *Service) handleSessionConn(reg SessionRegistration, client net.Conn) er
 
 func (s *Service) runProxyFlow(reg SessionRegistration, client net.Conn) error {
 	lctx := sessions.LaunchContext{
-		SessionID: reg.SessionID,
-		UserID:    reg.UserID,
-		AssetID:   reg.AssetID,
-		RequestID: reg.RequestID,
-		Action:    "dbeaver",
-		Protocol:  sessions.ProtocolDB,
-		AssetType: assets.TypeDatabase,
-		Host:      reg.UpstreamHost,
-		Port:      reg.UpstreamPort,
+		SessionID:        reg.SessionID,
+		UserID:           reg.UserID,
+		AssetID:          reg.AssetID,
+		AssetName:        reg.AssetName,
+		RequestID:        reg.RequestID,
+		Action:           "dbeaver",
+		Protocol:         sessions.ProtocolDB,
+		AssetType:        assets.TypeDatabase,
+		Host:             reg.UpstreamHost,
+		Port:             reg.UpstreamPort,
+		UpstreamUsername: reg.Username,
 	}
 
 	clientPrelogin, err := readTDSMessage(client)
@@ -341,15 +354,17 @@ func (s *Service) runProxyFlow(reg SessionRegistration, client net.Conn) error {
 	defer upstream.Close()
 	s.logger.Info("mssql upstream connected", "session_id", reg.SessionID, "upstream", net.JoinHostPort(reg.UpstreamHost, strconv.Itoa(reg.UpstreamPort)))
 	if err := s.sessionsSvc.MarkUpstreamConnected(context.Background(), sessions.LaunchContext{
-		SessionID: reg.SessionID,
-		UserID:    reg.UserID,
-		AssetID:   reg.AssetID,
-		RequestID: reg.RequestID,
-		Action:    "dbeaver",
-		Protocol:  sessions.ProtocolDB,
-		AssetType: assets.TypeDatabase,
-		Host:      reg.UpstreamHost,
-		Port:      reg.UpstreamPort,
+		SessionID:        reg.SessionID,
+		UserID:           reg.UserID,
+		AssetID:          reg.AssetID,
+		AssetName:        reg.AssetName,
+		RequestID:        reg.RequestID,
+		Action:           "dbeaver",
+		Protocol:         sessions.ProtocolDB,
+		AssetType:        assets.TypeDatabase,
+		Host:             reg.UpstreamHost,
+		Port:             reg.UpstreamPort,
+		UpstreamUsername: reg.Username,
 	}); err != nil {
 		s.logger.Warn("failed to record mssql upstream connected", "session_id", reg.SessionID, "error", err)
 	}
