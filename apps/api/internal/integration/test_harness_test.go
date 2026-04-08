@@ -121,7 +121,10 @@ func (h *testHarness) newAuthService(logger *slog.Logger) *auth.Service {
 
 func (h *testHarness) newRouter(logger *slog.Logger) http.Handler {
 	h.t.Helper()
-	adminSvc := admin.NewService(h.pool, logger)
+	adminSvc := admin.NewService(h.pool, logger, config.AuthConfig{
+		ProviderMode: "local",
+		LDAP:         config.LDAPConfig{},
+	})
 	cipher, err := credentials.NewCipher("pam-test-vault-key", "v1")
 	if err != nil {
 		h.t.Fatalf("new cipher: %v", err)

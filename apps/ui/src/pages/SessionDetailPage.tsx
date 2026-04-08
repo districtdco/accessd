@@ -5,7 +5,7 @@ import type { SessionDetail, SessionEvent, SessionReplayChunk, SessionReplayResp
 import { Badge, Button, Card, CardBody, CardHeader, EmptyRow, ErrorState, InfoRow, LoadingState, PageHeader, Table, Td, Th, statusColor } from '../components/ui'
 import { TerminalReplay } from '../components/TerminalReplay'
 
-type SessionTab = 'timeline' | 'transcript' | 'replay' | 'queries' | 'commands' | 'files'
+type SessionTab = 'timeline' | 'transcript' | 'replay' | 'queries' | 'commands' | 'files' | 'connector'
 
 type TranscriptChunk = {
   id: string
@@ -59,6 +59,8 @@ export function SessionDetailPage() {
   const [search, setSearch] = useState('')
   const [sourceFilter, setSourceFilter] = useState<'all' | 'in' | 'out'>('all')
   const [queryProtocolFilter, setQueryProtocolFilter] = useState<'all' | 'simple' | 'extended' | 'prepared' | 'rpc'>('all')
+  const [logOrder, setLogOrder] = useState<'desc' | 'asc'>('desc')
+  const [replayOrder, setReplayOrder] = useState<'asc' | 'desc'>('asc')
   const [playing, setPlaying] = useState(false)
   const [speed, setSpeed] = useState(1)
   const [cursor, setCursor] = useState(0)
@@ -161,7 +163,7 @@ export function SessionDetailPage() {
 
   const filteredChunks = useMemo(() => {
     const needle = search.trim().toLowerCase()
-    return transcriptChunks.filter((chunk) => {
+    const rows = transcriptChunks.filter((chunk) => {
       if (sourceFilter !== 'all' && chunk.source !== sourceFilter) {
         return false
       }
@@ -170,7 +172,8 @@ export function SessionDetailPage() {
       }
       return chunk.text.toLowerCase().includes(needle)
     })
-  }, [transcriptChunks, search, sourceFilter])
+    return orderByEventTime(rows, (row) => row.event_time, logOrder)
+  }, [transcriptChunks, search, sourceFilter, logOrder])
 
   const replayChunks = useMemo(() => {
     if (replay?.supported === true && replay.items.length > 0) {
@@ -203,6 +206,13 @@ export function SessionDetailPage() {
       })
   }, [replay, events])
 
+  const orderedReplayChunks = useMemo(() => {
+    if (replayOrder === 'asc') {
+      return replayChunks
+    }
+    return [...replayChunks].reverse()
+  }, [replayChunks, replayOrder])
+
   const dbQueries = useMemo(() => {
     const rows: DBQueryItem[] = []
     for (const event of events) {
@@ -227,7 +237,7 @@ export function SessionDetailPage() {
 
   const filteredQueries = useMemo(() => {
     const needle = search.trim().toLowerCase()
-    return dbQueries.filter((item) => {
+    const rows = dbQueries.filter((item) => {
       if (queryProtocolFilter === 'prepared' && !item.prepared) {
         return false
       }
@@ -239,7 +249,8 @@ export function SessionDetailPage() {
       }
       return item.query.toLowerCase().includes(needle)
     })
-  }, [dbQueries, search, queryProtocolFilter])
+    return orderByEventTime(rows, (row) => row.event_time, logOrder)
+  }, [dbQueries, search, queryProtocolFilter, logOrder])
 
   const redisCommands = useMemo(() => {
     const rows: RedisCommandItem[] = []
@@ -260,14 +271,15 @@ export function SessionDetailPage() {
 
   const filteredRedisCommands = useMemo(() => {
     const needle = search.trim().toLowerCase()
-    return redisCommands.filter((item) => {
+    const rows = redisCommands.filter((item) => {
       if (!needle) {
         return true
       }
       const joined = [item.command, ...item.args_summary].join(' ').toLowerCase()
       return joined.includes(needle)
     })
-  }, [redisCommands, search])
+    return orderByEventTime(rows, (row) => row.event_time, logOrder)
+  }, [redisCommands, search, logOrder])
 
   const sftpOps = useMemo(() => {
     const rows: SFTPOperationItem[] = []
@@ -289,29 +301,30 @@ export function SessionDetailPage() {
 
   const filteredSFTPOps = useMemo(() => {
     const needle = search.trim().toLowerCase()
-    return sftpOps.filter((item) => {
+    const rows = sftpOps.filter((item) => {
       if (!needle) {
         return true
       }
       return [item.operation, item.path, item.path_to ?? ''].join(' ').toLowerCase().includes(needle)
     })
-  }, [sftpOps, search])
+    return orderByEventTime(rows, (row) => row.event_time, logOrder)
+  }, [sftpOps, search, logOrder])
 
   useEffect(() => {
-    if (!playing || replayChunks.length === 0) {
+    if (!playing || orderedReplayChunks.length === 0) {
       return
     }
-    if (cursor >= replayChunks.length) {
+    if (cursor >= orderedReplayChunks.length) {
       setPlaying(false)
       return
     }
-    const delaySec = replayChunks[cursor]?.delay_sec ?? 0
+    const delaySec = orderedReplayChunks[cursor]?.delay_sec ?? 0
     const timeoutMs = Math.max(20, Math.min(2000, Math.floor((delaySec * 1000) / Math.max(speed, 0.1))))
     const timer = window.setTimeout(() => {
       setCursor((prev) => {
-        if (prev + 1 >= replayChunks.length) {
+        if (prev + 1 >= orderedReplayChunks.length) {
           setPlaying(false)
-          return replayChunks.length
+          return orderedReplayChunks.length
         }
         return prev + 1
       })
@@ -319,7 +332,7 @@ export function SessionDetailPage() {
     return () => {
       window.clearTimeout(timer)
     }
-  }, [playing, speed, cursor, replayChunks])
+  }, [playing, speed, cursor, orderedReplayChunks])
 
   useEffect(() => {
     setPlaying(false)
@@ -332,8 +345,13 @@ export function SessionDetailPage() {
   const resizeCount = useMemo(() => replayChunks.filter((chunk) => chunk.event_type === 'resize').length, [replayChunks])
 
   const connectorEvents = useMemo(() => {
-    return events.filter((event) => event.event_type.startsWith('connector_launch_'))
-  }, [events])
+    const rows = events.filter((event) => event.event_type.startsWith('connector_launch_'))
+    return orderByEventTime(rows, (row) => row.event_time, logOrder)
+  }, [events, logOrder])
+
+  const orderedEvents = useMemo(() => {
+    return orderByEventTime(events, (event) => event.event_time, logOrder)
+  }, [events, logOrder])
 
   const finalLifecycleEvent = useMemo(() => {
     return [...events]
@@ -351,6 +369,16 @@ export function SessionDetailPage() {
     }
     return reason
   }, [finalLifecycleEvent])
+
+  const nonShellTabs = useMemo(() => {
+    const tabs: SessionTab[] = []
+    if (detail?.action === 'dbeaver') tabs.push('queries')
+    if (detail?.action === 'redis') tabs.push('commands')
+    if (detail?.action === 'sftp') tabs.push('files')
+    tabs.push('timeline')
+    if (connectorEvents.length > 0) tabs.push('connector')
+    return tabs
+  }, [detail?.action, connectorEvents.length])
 
   return (
     <>
@@ -407,7 +435,17 @@ export function SessionDetailPage() {
           {shellSession && (
             <Card>
               <CardHeader title="Shell Review">
-                <p className="text-xs text-gray-400">Terminal transcript and replay, loaded in pages.</p>
+                <div className="flex items-center gap-2 text-xs text-gray-500">
+                  <span>Logs Order</span>
+                  <select
+                    value={logOrder}
+                    onChange={(e) => setLogOrder(e.target.value as 'asc' | 'desc')}
+                    className="rounded border border-gray-300 px-2 py-1 text-xs"
+                  >
+                    <option value="desc">Newest first</option>
+                    <option value="asc">Oldest first</option>
+                  </select>
+                </div>
               </CardHeader>
               <CardBody>
                 <div className="mb-4 flex gap-1">
@@ -498,19 +536,34 @@ export function SessionDetailPage() {
                           {REPLAY_SPEEDS.map((v) => <option key={v} value={v}>{v}x</option>)}
                         </select>
                       </label>
+                      <label className="flex items-center gap-2 text-sm text-gray-600">
+                        Order
+                        <select
+                          value={replayOrder}
+                          onChange={(e) => {
+                            setReplayOrder(e.target.value as 'asc' | 'desc')
+                            setPlaying(false)
+                            setCursor(0)
+                          }}
+                          className="rounded border border-gray-300 px-2 py-1 text-sm"
+                        >
+                          <option value="asc">Oldest first</option>
+                          <option value="desc">Newest first</option>
+                        </select>
+                      </label>
                       <input
                         type="range"
                         min={0}
-                        max={replayChunks.length}
+                        max={orderedReplayChunks.length}
                         value={cursor}
                         onChange={(e) => setCursor(Number(e.target.value))}
                         className="w-40"
                       />
-                      <span className="text-xs text-gray-400">{cursor}/{replayChunks.length}</span>
+                      <span className="text-xs text-gray-400">{cursor}/{orderedReplayChunks.length}</span>
                       <span className="text-xs text-gray-400">resize events: {resizeCount}</span>
                     </div>
 
-                    <TerminalReplay chunks={replayChunks} cursor={cursor} />
+                    <TerminalReplay chunks={orderedReplayChunks} cursor={cursor} />
                     {replayNextAfter && (
                       <div className="mt-3">
                         <Button size="sm" variant="secondary" disabled={loadingMoreReplay} onClick={() => void loadMoreReplay()}>
@@ -524,7 +577,40 @@ export function SessionDetailPage() {
             </Card>
           )}
 
-          {!shellSession && detail.action === 'dbeaver' && (
+          {!shellSession && (
+            <Card>
+              <CardHeader title="Log Navigation">
+                <div className="flex items-center gap-2 text-xs text-gray-500">
+                  <span>Order</span>
+                  <select
+                    value={logOrder}
+                    onChange={(e) => setLogOrder(e.target.value as 'asc' | 'desc')}
+                    className="rounded border border-gray-300 px-2 py-1 text-xs"
+                  >
+                    <option value="desc">Newest first</option>
+                    <option value="asc">Oldest first</option>
+                  </select>
+                </div>
+              </CardHeader>
+              <CardBody>
+                <div className="flex flex-wrap gap-1">
+                  {nonShellTabs.map((t) => (
+                    <button
+                      key={t}
+                      onClick={() => setTab(t)}
+                      className={`rounded-lg px-3 py-1.5 text-sm font-medium transition-colors ${
+                        tab === t ? 'bg-indigo-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                      }`}
+                    >
+                      {t.charAt(0).toUpperCase() + t.slice(1)}
+                    </button>
+                  ))}
+                </div>
+              </CardBody>
+            </Card>
+          )}
+
+          {!shellSession && detail.action === 'dbeaver' && tab === 'queries' && (
             <Card>
               <CardHeader title="Database Query Replay">
                 <p className="text-xs text-gray-400">Chronological query timeline (not video replay).</p>
@@ -597,7 +683,7 @@ export function SessionDetailPage() {
             </Card>
           )}
 
-          {!shellSession && detail.action === 'redis' && (
+          {!shellSession && detail.action === 'redis' && tab === 'commands' && (
             <Card>
               <CardHeader title="Redis Command Replay">
                 <p className="text-xs text-gray-400">Chronological command timeline (not video replay).</p>
@@ -646,7 +732,7 @@ export function SessionDetailPage() {
             </Card>
           )}
 
-          {!shellSession && detail.action === 'sftp' && (
+          {!shellSession && detail.action === 'sftp' && tab === 'files' && (
             <Card>
               <CardHeader title="SFTP Operation Replay">
                 <p className="text-xs text-gray-400">File operation timeline (not screen/video replay).</p>
@@ -713,7 +799,7 @@ export function SessionDetailPage() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
-                  {events.map((event) => (
+                  {orderedEvents.map((event) => (
                     <tr key={event.id} className="hover:bg-gray-50">
                       <Td>{event.id}</Td>
                       <Td>{new Date(event.event_time).toLocaleString()}</Td>
@@ -735,7 +821,7 @@ export function SessionDetailPage() {
             </Card>
           )}
 
-          {!shellSession && connectorEvents.length > 0 && (
+          {!shellSession && connectorEvents.length > 0 && tab === 'connector' && (
             <Card>
               <CardHeader title="Connector Lifecycle" />
               <Table>
@@ -953,6 +1039,20 @@ function isControl(ch: string): boolean {
   }
   const code = ch.charCodeAt(0)
   return code < 0x20
+}
+
+function orderByEventTime<T>(items: T[], readTime: (item: T) => string, order: 'asc' | 'desc'): T[] {
+  const sorted = [...items].sort((a, b) => {
+    const at = Date.parse(readTime(a))
+    const bt = Date.parse(readTime(b))
+    const av = Number.isNaN(at) ? 0 : at
+    const bv = Number.isNaN(bt) ? 0 : bt
+    return av - bv
+  })
+  if (order === 'desc') {
+    sorted.reverse()
+  }
+  return sorted
 }
 
 function trimText(value: string): string {

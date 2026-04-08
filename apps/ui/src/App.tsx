@@ -7,6 +7,8 @@ import { AdminAssetDetailPage } from './pages/AdminAssetDetailPage'
 import { AdminDashboardPage } from './pages/AdminDashboardPage'
 import { AdminAuditEventsPage } from './pages/AdminAuditEventsPage'
 import { AdminAuditEventDetailPage } from './pages/AdminAuditEventDetailPage'
+import { AdminAccessManagementPage } from './pages/AdminAccessManagementPage'
+import { AdminLDAPPage } from './pages/AdminLDAPPage'
 import { AdminSessionsPage } from './pages/AdminSessionsPage'
 import { AdminUserDetailPage } from './pages/AdminUserDetailPage'
 import { AdminUsersPage } from './pages/AdminUsersPage'
@@ -26,6 +28,8 @@ function App() {
         <Route path="/admin/users/:userID" element={<AdminRoute><AdminUserDetailPage /></AdminRoute>} />
         <Route path="/admin/assets" element={<AdminRoute><AdminAssetsPage /></AdminRoute>} />
         <Route path="/admin/assets/:assetID" element={<AdminRoute><AdminAssetDetailPage /></AdminRoute>} />
+        <Route path="/admin/access" element={<AdminRoute><AdminAccessManagementPage /></AdminRoute>} />
+        <Route path="/admin/directory" element={<AdminRoute><AdminLDAPPage /></AdminRoute>} />
         <Route path="/admin/dashboard" element={<AdminReadRoute><AdminDashboardPage /></AdminReadRoute>} />
         <Route path="/admin/audit/events" element={<AdminReadRoute><AdminAuditEventsPage /></AdminReadRoute>} />
         <Route path="/admin/audit/events/:eventID" element={<AdminReadRoute><AdminAuditEventDetailPage /></AdminReadRoute>} />

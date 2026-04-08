@@ -28,22 +28,24 @@ type adminUsersResponse struct {
 }
 
 type adminUserResponse struct {
-	ID          string   `json:"id"`
-	Username    string   `json:"username"`
-	Email       string   `json:"email,omitempty"`
-	DisplayName string   `json:"display_name,omitempty"`
-	IsActive    bool     `json:"is_active"`
-	Roles       []string `json:"roles"`
+	ID           string   `json:"id"`
+	Username     string   `json:"username"`
+	Email        string   `json:"email,omitempty"`
+	DisplayName  string   `json:"display_name,omitempty"`
+	AuthProvider string   `json:"auth_provider"`
+	IsActive     bool     `json:"is_active"`
+	Roles        []string `json:"roles"`
 }
 
 type adminUserDetailResponse struct {
-	ID          string               `json:"id"`
-	Username    string               `json:"username"`
-	Email       string               `json:"email,omitempty"`
-	DisplayName string               `json:"display_name,omitempty"`
-	IsActive    bool                 `json:"is_active"`
-	Roles       []string             `json:"roles"`
-	Groups      []adminGroupResponse `json:"groups"`
+	ID           string               `json:"id"`
+	Username     string               `json:"username"`
+	Email        string               `json:"email,omitempty"`
+	DisplayName  string               `json:"display_name,omitempty"`
+	AuthProvider string               `json:"auth_provider"`
+	IsActive     bool                 `json:"is_active"`
+	Roles        []string             `json:"roles"`
+	Groups       []adminGroupResponse `json:"groups"`
 }
 
 type adminRolesResponse struct {
@@ -170,6 +172,82 @@ type adminEffectiveAccessActionResponse struct {
 	Sources []string `json:"sources"`
 }
 
+type adminLDAPSettingsResponse struct {
+	ProviderMode           string `json:"provider_mode"`
+	Enabled                bool   `json:"enabled"`
+	Host                   string `json:"host"`
+	Port                   int    `json:"port"`
+	URL                    string `json:"url"`
+	BaseDN                 string `json:"base_dn"`
+	BindDN                 string `json:"bind_dn"`
+	HasBindPassword        bool   `json:"has_bind_password"`
+	UserSearchFilter       string `json:"user_search_filter"`
+	SyncUserFilter         string `json:"sync_user_filter"`
+	UsernameAttribute      string `json:"username_attribute"`
+	DisplayNameAttribute   string `json:"display_name_attribute"`
+	EmailAttribute         string `json:"email_attribute"`
+	GroupSearchBaseDN      string `json:"group_search_base_dn"`
+	GroupSearchFilter      string `json:"group_search_filter"`
+	GroupNameAttribute     string `json:"group_name_attribute"`
+	GroupRoleMapping       string `json:"group_role_mapping"`
+	UseTLS                 bool   `json:"use_tls"`
+	StartTLS               bool   `json:"start_tls"`
+	InsecureSkipVerify     bool   `json:"insecure_skip_verify"`
+	DeactivateMissingUsers bool   `json:"deactivate_missing_users"`
+	UpdatedBy              string `json:"updated_by,omitempty"`
+	UpdatedAt              string `json:"updated_at,omitempty"`
+}
+
+type upsertLDAPSettingsRequest struct {
+	ProviderMode           string `json:"provider_mode"`
+	Enabled                bool   `json:"enabled"`
+	Host                   string `json:"host"`
+	Port                   int    `json:"port"`
+	URL                    string `json:"url"`
+	BaseDN                 string `json:"base_dn"`
+	BindDN                 string `json:"bind_dn"`
+	BindPassword           string `json:"bind_password"`
+	KeepExistingPassword   bool   `json:"keep_existing_password"`
+	UserSearchFilter       string `json:"user_search_filter"`
+	SyncUserFilter         string `json:"sync_user_filter"`
+	UsernameAttribute      string `json:"username_attribute"`
+	DisplayNameAttribute   string `json:"display_name_attribute"`
+	EmailAttribute         string `json:"email_attribute"`
+	GroupSearchBaseDN      string `json:"group_search_base_dn"`
+	GroupSearchFilter      string `json:"group_search_filter"`
+	GroupNameAttribute     string `json:"group_name_attribute"`
+	GroupRoleMapping       string `json:"group_role_mapping"`
+	UseTLS                 bool   `json:"use_tls"`
+	StartTLS               bool   `json:"start_tls"`
+	InsecureSkipVerify     bool   `json:"insecure_skip_verify"`
+	DeactivateMissingUsers bool   `json:"deactivate_missing_users"`
+}
+
+type ldapSyncRunsResponse struct {
+	Items []ldapSyncRunResponse `json:"items"`
+}
+
+type ldapSyncRunResponse struct {
+	ID          int64                        `json:"id"`
+	StartedAt   string                       `json:"started_at"`
+	CompletedAt string                       `json:"completed_at,omitempty"`
+	Status      string                       `json:"status"`
+	TriggeredBy string                       `json:"triggered_by,omitempty"`
+	Summary     adminLDAPSyncSummaryResponse `json:"summary"`
+	Error       string                       `json:"error,omitempty"`
+}
+
+type adminLDAPSyncSummaryResponse struct {
+	Discovered  int      `json:"discovered"`
+	Created     int      `json:"created"`
+	Updated     int      `json:"updated"`
+	Reactivated int      `json:"reactivated"`
+	Unchanged   int      `json:"unchanged"`
+	Deactivated int      `json:"deactivated"`
+	Samples     []string `json:"samples,omitempty"`
+	Warnings    []string `json:"warnings,omitempty"`
+}
+
 func NewAdminHandler(
 	adminService *admin.Service,
 	assetsService *assets.Service,
@@ -192,12 +270,13 @@ func (h *AdminHandler) ListUsers(w http.ResponseWriter, r *http.Request) {
 	resp := adminUsersResponse{Items: make([]adminUserResponse, 0, len(users))}
 	for _, user := range users {
 		resp.Items = append(resp.Items, adminUserResponse{
-			ID:          user.ID,
-			Username:    user.Username,
-			Email:       user.Email,
-			DisplayName: user.DisplayName,
-			IsActive:    user.IsActive,
-			Roles:       user.Roles,
+			ID:           user.ID,
+			Username:     user.Username,
+			Email:        user.Email,
+			DisplayName:  user.DisplayName,
+			AuthProvider: user.AuthProvider,
+			IsActive:     user.IsActive,
+			Roles:        user.Roles,
 		})
 	}
 
@@ -222,13 +301,14 @@ func (h *AdminHandler) GetUserDetail(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := adminUserDetailResponse{
-		ID:          user.ID,
-		Username:    user.Username,
-		Email:       user.Email,
-		DisplayName: user.DisplayName,
-		IsActive:    user.IsActive,
-		Roles:       user.Roles,
-		Groups:      make([]adminGroupResponse, 0, len(user.Groups)),
+		ID:           user.ID,
+		Username:     user.Username,
+		Email:        user.Email,
+		DisplayName:  user.DisplayName,
+		AuthProvider: user.AuthProvider,
+		IsActive:     user.IsActive,
+		Roles:        user.Roles,
+		Groups:       make([]adminGroupResponse, 0, len(user.Groups)),
 	}
 	for _, group := range user.Groups {
 		resp.Groups = append(resp.Groups, adminGroupResponse{
@@ -729,6 +809,125 @@ func (h *AdminHandler) UserEffectiveAccess(w http.ResponseWriter, r *http.Reques
 	writeJSON(w, http.StatusOK, resp)
 }
 
+func (h *AdminHandler) GetLDAPSettings(w http.ResponseWriter, r *http.Request) {
+	settings, err := h.adminService.GetLDAPSettings(r.Context())
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load ldap settings"})
+		return
+	}
+	writeJSON(w, http.StatusOK, mapLDAPSettingsResponse(settings))
+}
+
+func (h *AdminHandler) UpsertLDAPSettings(w http.ResponseWriter, r *http.Request) {
+	currentUser, ok := auth.CurrentUserFromContext(r.Context())
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+	var req upsertLDAPSettingsRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json body"})
+		return
+	}
+	settings, err := h.adminService.UpsertLDAPSettings(r.Context(), currentUser.ID, admin.LDAPSettings{
+		ProviderMode:           req.ProviderMode,
+		Enabled:                req.Enabled,
+		Host:                   req.Host,
+		Port:                   req.Port,
+		URL:                    req.URL,
+		BaseDN:                 req.BaseDN,
+		BindDN:                 req.BindDN,
+		BindPassword:           req.BindPassword,
+		UserSearchFilter:       req.UserSearchFilter,
+		SyncUserFilter:         req.SyncUserFilter,
+		UsernameAttribute:      req.UsernameAttribute,
+		DisplayNameAttribute:   req.DisplayNameAttribute,
+		EmailAttribute:         req.EmailAttribute,
+		GroupSearchBaseDN:      req.GroupSearchBaseDN,
+		GroupSearchFilter:      req.GroupSearchFilter,
+		GroupNameAttribute:     req.GroupNameAttribute,
+		GroupRoleMapping:       req.GroupRoleMapping,
+		UseTLS:                 req.UseTLS,
+		StartTLS:               req.StartTLS,
+		InsecureSkipVerify:     req.InsecureSkipVerify,
+		DeactivateMissingUsers: req.DeactivateMissingUsers,
+	}, req.KeepExistingPassword)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, mapLDAPSettingsResponse(settings))
+}
+
+func (h *AdminHandler) TestLDAPConnection(w http.ResponseWriter, r *http.Request) {
+	var req upsertLDAPSettingsRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json body"})
+		return
+	}
+	result, err := h.adminService.TestLDAPConnection(r.Context(), admin.LDAPSettings{
+		ProviderMode:           req.ProviderMode,
+		Enabled:                req.Enabled,
+		Host:                   req.Host,
+		Port:                   req.Port,
+		URL:                    req.URL,
+		BaseDN:                 req.BaseDN,
+		BindDN:                 req.BindDN,
+		BindPassword:           req.BindPassword,
+		UserSearchFilter:       req.UserSearchFilter,
+		SyncUserFilter:         req.SyncUserFilter,
+		UsernameAttribute:      req.UsernameAttribute,
+		DisplayNameAttribute:   req.DisplayNameAttribute,
+		EmailAttribute:         req.EmailAttribute,
+		GroupSearchBaseDN:      req.GroupSearchBaseDN,
+		GroupSearchFilter:      req.GroupSearchFilter,
+		GroupNameAttribute:     req.GroupNameAttribute,
+		GroupRoleMapping:       req.GroupRoleMapping,
+		UseTLS:                 req.UseTLS,
+		StartTLS:               req.StartTLS,
+		InsecureSkipVerify:     req.InsecureSkipVerify,
+		DeactivateMissingUsers: req.DeactivateMissingUsers,
+	})
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (h *AdminHandler) TriggerLDAPSync(w http.ResponseWriter, r *http.Request) {
+	currentUser, ok := auth.CurrentUserFromContext(r.Context())
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+	run, err := h.adminService.TriggerLDAPSync(r.Context(), currentUser.ID)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, mapLDAPSyncRunResponse(run))
+}
+
+func (h *AdminHandler) ListLDAPSyncRuns(w http.ResponseWriter, r *http.Request) {
+	limit := 25
+	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+		if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 {
+			limit = parsed
+		}
+	}
+	runs, err := h.adminService.ListLDAPSyncRuns(r.Context(), limit)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to list ldap sync runs"})
+		return
+	}
+	resp := ldapSyncRunsResponse{Items: make([]ldapSyncRunResponse, 0, len(runs))}
+	for _, run := range runs {
+		resp.Items = append(resp.Items, mapLDAPSyncRunResponse(run))
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
 func decodeUpsertAssetRequest(r *http.Request) (upsertAssetRequest, error) {
 	var req upsertAssetRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -841,6 +1040,61 @@ func mapGrantResponses(grants []admin.GrantRecord) []adminGrantResponse {
 	return items
 }
 
+func mapLDAPSettingsResponse(settings admin.LDAPSettings) adminLDAPSettingsResponse {
+	resp := adminLDAPSettingsResponse{
+		ProviderMode:           settings.ProviderMode,
+		Enabled:                settings.Enabled,
+		Host:                   settings.Host,
+		Port:                   settings.Port,
+		URL:                    settings.URL,
+		BaseDN:                 settings.BaseDN,
+		BindDN:                 settings.BindDN,
+		HasBindPassword:        settings.HasBindPassword,
+		UserSearchFilter:       settings.UserSearchFilter,
+		SyncUserFilter:         settings.SyncUserFilter,
+		UsernameAttribute:      settings.UsernameAttribute,
+		DisplayNameAttribute:   settings.DisplayNameAttribute,
+		EmailAttribute:         settings.EmailAttribute,
+		GroupSearchBaseDN:      settings.GroupSearchBaseDN,
+		GroupSearchFilter:      settings.GroupSearchFilter,
+		GroupNameAttribute:     settings.GroupNameAttribute,
+		GroupRoleMapping:       settings.GroupRoleMapping,
+		UseTLS:                 settings.UseTLS,
+		StartTLS:               settings.StartTLS,
+		InsecureSkipVerify:     settings.InsecureSkipVerify,
+		DeactivateMissingUsers: settings.DeactivateMissingUsers,
+		UpdatedBy:              settings.UpdatedBy,
+	}
+	if !settings.UpdatedAt.IsZero() {
+		resp.UpdatedAt = settings.UpdatedAt.UTC().Format(time.RFC3339Nano)
+	}
+	return resp
+}
+
+func mapLDAPSyncRunResponse(run admin.LDAPSyncRun) ldapSyncRunResponse {
+	resp := ldapSyncRunResponse{
+		ID:          run.ID,
+		StartedAt:   run.StartedAt.UTC().Format(time.RFC3339Nano),
+		Status:      run.Status,
+		TriggeredBy: run.TriggeredBy,
+		Summary: adminLDAPSyncSummaryResponse{
+			Discovered:  run.Summary.Discovered,
+			Created:     run.Summary.Created,
+			Updated:     run.Summary.Updated,
+			Reactivated: run.Summary.Reactivated,
+			Unchanged:   run.Summary.Unchanged,
+			Deactivated: run.Summary.Deactivated,
+			Samples:     run.Summary.Samples,
+			Warnings:    run.Summary.Warnings,
+		},
+		Error: run.Error,
+	}
+	if run.CompletedAt != nil {
+		resp.CompletedAt = run.CompletedAt.UTC().Format(time.RFC3339Nano)
+	}
+	return resp
+}
+
 func sortedMapKeys(value map[string]any) []string {
 	if len(value) == 0 {
 		return []string{}
@@ -895,12 +1149,13 @@ func (h *AdminHandler) CreateUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusCreated, adminUserResponse{
-		ID:          user.ID,
-		Username:    user.Username,
-		Email:       user.Email,
-		DisplayName: user.DisplayName,
-		IsActive:    user.IsActive,
-		Roles:       user.Roles,
+		ID:           user.ID,
+		Username:     user.Username,
+		Email:        user.Email,
+		DisplayName:  user.DisplayName,
+		AuthProvider: user.AuthProvider,
+		IsActive:     user.IsActive,
+		Roles:        user.Roles,
 	})
 }
 

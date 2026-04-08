@@ -7,6 +7,10 @@ import type {
   AdminAuditEventDetailResponse,
   AdminEffectiveAccessResponse,
   AdminGrantsResponse,
+  AdminLDAPSettings,
+  AdminLDAPSyncRun,
+  AdminLDAPSyncRunsResponse,
+  AdminLDAPTestResult,
   AdminRolesResponse,
   AdminSummaryResponse,
   AdminUser,
@@ -371,6 +375,57 @@ export async function adminRemoveUserGrant(userID: string, assetID: string, acti
 
 export async function adminGetUserEffectiveAccess(userID: string): Promise<AdminEffectiveAccessResponse> {
   return requestJSON(`/admin/users/${userID}/effective-access`, { method: 'GET' })
+}
+
+type UpsertLDAPSettingsBody = {
+  provider_mode: 'local' | 'ldap' | 'hybrid'
+  enabled: boolean
+  host: string
+  port: number
+  url: string
+  base_dn: string
+  bind_dn: string
+  bind_password: string
+  keep_existing_password: boolean
+  user_search_filter: string
+  sync_user_filter: string
+  username_attribute: string
+  display_name_attribute: string
+  email_attribute: string
+  group_search_base_dn: string
+  group_search_filter: string
+  group_name_attribute: string
+  group_role_mapping: string
+  use_tls: boolean
+  start_tls: boolean
+  insecure_skip_verify: boolean
+  deactivate_missing_users: boolean
+}
+
+export async function adminGetLDAPSettings(): Promise<AdminLDAPSettings> {
+  return requestJSON('/admin/ldap/settings', { method: 'GET' })
+}
+
+export async function adminUpsertLDAPSettings(body: UpsertLDAPSettingsBody): Promise<AdminLDAPSettings> {
+  return requestJSON('/admin/ldap/settings', {
+    method: 'PUT',
+    body: JSON.stringify(body),
+  })
+}
+
+export async function adminTestLDAPConnection(body: UpsertLDAPSettingsBody): Promise<AdminLDAPTestResult> {
+  return requestJSON('/admin/ldap/test', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  })
+}
+
+export async function adminTriggerLDAPSync(): Promise<AdminLDAPSyncRun> {
+  return requestJSON('/admin/ldap/sync', { method: 'POST' })
+}
+
+export async function adminListLDAPSyncRuns(limit = 25): Promise<AdminLDAPSyncRunsResponse> {
+  return requestJSON(`/admin/ldap/sync-runs${toQueryString({ limit })}`, { method: 'GET' })
 }
 
 type SessionListFilters = {

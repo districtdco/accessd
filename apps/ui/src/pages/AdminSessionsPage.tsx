@@ -1,8 +1,8 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { getAdminSessions } from '../api'
 import type { SessionSummary } from '../types'
-import { Badge, Card, EmptyRow, ErrorState, Input, LoadingState, PageHeader, Select, statusColor, Table, Td, Th } from '../components/ui'
+import { Badge, Card, EmptyRow, ErrorState, Input, LoadingState, PageHeader, PaginationControls, Select, statusColor, Table, Td, Th } from '../components/ui'
 
 const ACTION_OPTIONS = [
   { value: '', label: 'All actions' },
@@ -21,6 +21,7 @@ const STATUS_OPTIONS = [
   { value: 'terminated', label: 'Terminated' },
   { value: 'expired', label: 'Expired' },
 ]
+const PAGE_SIZE = 20
 
 export function AdminSessionsPage() {
   const [items, setItems] = useState<SessionSummary[]>([])
@@ -28,6 +29,7 @@ export function AdminSessionsPage() {
   const [action, setAction] = useState('')
   const [userID, setUserID] = useState('')
   const [assetID, setAssetID] = useState('')
+  const [page, setPage] = useState(1)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
@@ -64,6 +66,16 @@ export function AdminSessionsPage() {
   useEffect(() => {
     void load()
   }, [status, action, userID, assetID])
+
+  useEffect(() => {
+    setPage(1)
+  }, [status, action, userID, assetID])
+
+  const totalPages = Math.max(1, Math.ceil(items.length / PAGE_SIZE))
+  const currentPage = Math.min(page, totalPages)
+  const pagedItems = useMemo(() => {
+    return items.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE)
+  }, [items, currentPage])
 
   return (
     <>
@@ -113,7 +125,7 @@ export function AdminSessionsPage() {
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
-              {items.map((item) => (
+              {pagedItems.map((item) => (
                 <tr key={item.session_id} className="hover:bg-gray-50">
                   <Td mono>
                     <Link to={`/sessions/${item.session_id}`} className="text-indigo-600 hover:text-indigo-800">
@@ -130,9 +142,16 @@ export function AdminSessionsPage() {
                   <Td>{item.duration_seconds === undefined ? '-' : `${item.duration_seconds}s`}</Td>
                 </tr>
               ))}
-              {items.length === 0 && <EmptyRow colSpan={9} message="No sessions found for the selected filters." />}
+              {pagedItems.length === 0 && <EmptyRow colSpan={9} message="No sessions found for the selected filters." />}
             </tbody>
           </Table>
+          <PaginationControls
+            page={currentPage}
+            totalPages={totalPages}
+            totalItems={items.length}
+            pageSize={PAGE_SIZE}
+            onPageChange={setPage}
+          />
         </Card>
       )}
     </>

@@ -1,9 +1,9 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { getAdminAuditEvents } from '../api'
 import { useAuth } from '../auth'
 import type { AdminAuditItem } from '../types'
-import { Badge, Button, Card, CardBody, CardHeader, EmptyRow, ErrorState, Input, LoadingState, PageHeader, Select, Table, Td, Th } from '../components/ui'
+import { Badge, Button, Card, CardBody, CardHeader, EmptyRow, ErrorState, Input, LoadingState, PageHeader, PaginationControls, Select, Table, Td, Th } from '../components/ui'
 
 // Format protocol-aware audit action labels for display
 function formatAuditAction(action: string, metadata?: Record<string, any>): string {
@@ -91,6 +91,10 @@ export function AdminAuditEventsPage() {
   const [from, setFrom] = useState('')
   const [to, setTo] = useState('')
   const [limit, setLimit] = useState('100')
+  const [orderBy, setOrderBy] = useState<'time' | 'id'>('time')
+  const [orderDir, setOrderDir] = useState<'desc' | 'asc'>('desc')
+  const [page, setPage] = useState(1)
+  const pageSize = 20
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
@@ -120,6 +124,30 @@ export function AdminAuditEventsPage() {
     void load()
   }, [])
 
+  const orderedItems = useMemo(() => {
+    const rows = [...items]
+    rows.sort((a, b) => {
+      if (orderBy === 'id') {
+        return a.id - b.id
+      }
+      return new Date(a.event_time).getTime() - new Date(b.event_time).getTime()
+    })
+    if (orderDir === 'desc') {
+      rows.reverse()
+    }
+    return rows
+  }, [items, orderBy, orderDir])
+
+  useEffect(() => {
+    setPage(1)
+  }, [eventType, action, userID, assetID, sessionID, from, to, limit, orderBy, orderDir, items.length])
+
+  const totalPages = Math.max(1, Math.ceil(orderedItems.length / pageSize))
+  const currentPage = Math.min(page, totalPages)
+  const pagedItems = useMemo(() => {
+    return orderedItems.slice((currentPage - 1) * pageSize, currentPage * pageSize)
+  }, [orderedItems, currentPage])
+
   return (
     <>
       <PageHeader title="Audit Events" />
@@ -134,6 +162,24 @@ export function AdminAuditEventsPage() {
             <Input label="Asset ID" value={assetID} onChange={setAssetID} placeholder="asset id" />
             <Input label="Session ID" value={sessionID} onChange={setSessionID} placeholder="session id" />
             <Select label="Limit" value={limit} onChange={setLimit} options={LIMIT_OPTIONS} />
+            <Select
+              label="Order By"
+              value={orderBy}
+              onChange={(v) => setOrderBy(v as 'time' | 'id')}
+              options={[
+                { value: 'time', label: 'Time' },
+                { value: 'id', label: 'Event ID' },
+              ]}
+            />
+            <Select
+              label="Direction"
+              value={orderDir}
+              onChange={(v) => setOrderDir(v as 'desc' | 'asc')}
+              options={[
+                { value: 'desc', label: 'Newest first' },
+                { value: 'asc', label: 'Oldest first' },
+              ]}
+            />
             <label className="block">
               <span className="mb-1 block text-sm font-medium text-gray-700">From</span>
               <input
@@ -180,7 +226,7 @@ export function AdminAuditEventsPage() {
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
-              {items.map((item) => (
+              {pagedItems.map((item) => (
                 <tr key={item.id} className="hover:bg-gray-50">
                   <Td>
                     <Link to={`/admin/audit/events/${item.id}`} className="text-indigo-600 hover:text-indigo-800">{item.id}</Link>
@@ -212,9 +258,16 @@ export function AdminAuditEventsPage() {
                   </Td>
                 </tr>
               ))}
-              {items.length === 0 && <EmptyRow colSpan={8} message="No audit events found for current filters." />}
+              {pagedItems.length === 0 && <EmptyRow colSpan={8} message="No audit events found for current filters." />}
             </tbody>
           </Table>
+          <PaginationControls
+            page={currentPage}
+            totalPages={totalPages}
+            totalItems={orderedItems.length}
+            pageSize={pageSize}
+            onPageChange={setPage}
+          />
         </Card>
       )}
     </>

@@ -56,7 +56,7 @@ func New(_ context.Context, cfg config.Config, logger *slog.Logger, pool *pgxpoo
 	}
 	assetsService := assets.NewService(pool, logger)
 	accessService := access.NewService(pool, logger)
-	adminService := admin.NewService(pool, logger)
+	adminService := admin.NewService(pool, logger, cfg.Auth)
 	cipher, err := credentials.NewCipher(cfg.Credentials.MasterKey, cfg.Credentials.KeyID)
 	if err != nil {
 		return nil, fmt.Errorf("initialize credential cipher: %w", err)

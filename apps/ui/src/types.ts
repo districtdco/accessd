@@ -105,6 +105,7 @@ export type AdminUser = {
   username: string
   email?: string
   display_name?: string
+  auth_provider: string
   is_active: boolean
   roles: string[]
 }
@@ -139,9 +140,69 @@ export type AdminUserDetail = {
   username: string
   email?: string
   display_name?: string
+  auth_provider: string
   is_active: boolean
   roles: string[]
   groups: AdminGroup[]
+}
+
+export type AdminLDAPSettings = {
+  provider_mode: 'local' | 'ldap' | 'hybrid'
+  enabled: boolean
+  host: string
+  port: number
+  url: string
+  base_dn: string
+  bind_dn: string
+  has_bind_password: boolean
+  user_search_filter: string
+  sync_user_filter: string
+  username_attribute: string
+  display_name_attribute: string
+  email_attribute: string
+  group_search_base_dn: string
+  group_search_filter: string
+  group_name_attribute: string
+  group_role_mapping: string
+  use_tls: boolean
+  start_tls: boolean
+  insecure_skip_verify: boolean
+  deactivate_missing_users: boolean
+  updated_by?: string
+  updated_at?: string
+}
+
+export type AdminLDAPTestResult = {
+  connected: boolean
+  bind_ok: boolean
+  message: string
+  server: string
+  search_base: string
+}
+
+export type AdminLDAPSyncSummary = {
+  discovered: number
+  created: number
+  updated: number
+  reactivated: number
+  unchanged: number
+  deactivated: number
+  samples?: string[]
+  warnings?: string[]
+}
+
+export type AdminLDAPSyncRun = {
+  id: number
+  started_at: string
+  completed_at?: string
+  status: 'running' | 'success' | 'failed'
+  triggered_by?: string
+  summary: AdminLDAPSyncSummary
+  error?: string
+}
+
+export type AdminLDAPSyncRunsResponse = {
+  items: AdminLDAPSyncRun[]
 }
 
 export type AdminAsset = {

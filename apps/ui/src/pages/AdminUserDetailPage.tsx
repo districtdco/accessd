@@ -241,6 +241,7 @@ export function AdminUserDetailPage() {
             <CardBody>
               <div className="grid gap-x-8 gap-y-1 sm:grid-cols-2 mb-4">
                 <InfoRow label="Username" value={detail.username} />
+                <InfoRow label="Auth Provider" value={<Badge color={detail.auth_provider === 'ldap' ? 'blue' : 'gray'}>{detail.auth_provider}</Badge>} />
                 <InfoRow label="Status" value={
                   <Badge color={detail.is_active ? 'green' : 'red'}>
                     {detail.is_active ? 'Active' : 'Inactive'}
@@ -269,11 +270,16 @@ export function AdminUserDetailPage() {
           <Card>
             <CardHeader title="Reset Password" />
             <CardBody>
+              {detail.auth_provider === 'ldap' && (
+                <p className="mb-3 text-sm text-amber-700">
+                  This user is LDAP-managed. Local password reset may be ignored by LDAP authentication mode.
+                </p>
+              )}
               <div className="flex items-end gap-2">
                 <div className="w-64">
                   <Input label="New Password" value={newPassword} onChange={setNewPassword} type="password" placeholder="min 8 characters" />
                 </div>
-                <Button disabled={savingPassword} onClick={() => void resetPassword()}>
+                <Button disabled={savingPassword || detail.auth_provider === 'ldap'} onClick={() => void resetPassword()}>
                   {savingPassword ? 'Resetting...' : 'Reset Password'}
                 </Button>
               </div>

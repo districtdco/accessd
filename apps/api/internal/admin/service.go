@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/districtd/pam/api/internal/config"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/crypto/bcrypt"
@@ -23,27 +24,30 @@ var (
 )
 
 type Service struct {
-	pool   *pgxpool.Pool
-	logger *slog.Logger
+	pool    *pgxpool.Pool
+	logger  *slog.Logger
+	authCfg config.AuthConfig
 }
 
 type UserSummary struct {
-	ID          string
-	Username    string
-	Email       string
-	DisplayName string
-	IsActive    bool
-	Roles       []string
+	ID           string
+	Username     string
+	Email        string
+	DisplayName  string
+	AuthProvider string
+	IsActive     bool
+	Roles        []string
 }
 
 type UserDetail struct {
-	ID          string
-	Username    string
-	Email       string
-	DisplayName string
-	IsActive    bool
-	Roles       []string
-	Groups      []GroupSummary
+	ID           string
+	Username     string
+	Email        string
+	DisplayName  string
+	AuthProvider string
+	IsActive     bool
+	Roles        []string
+	Groups       []GroupSummary
 }
 
 type Role struct {
@@ -115,8 +119,8 @@ type effectiveAccessRow struct {
 	source    string
 }
 
-func NewService(pool *pgxpool.Pool, logger *slog.Logger) *Service {
-	return &Service{pool: pool, logger: logger.With("component", "admin")}
+func NewService(pool *pgxpool.Pool, logger *slog.Logger, authCfg config.AuthConfig) *Service {
+	return &Service{pool: pool, logger: logger.With("component", "admin"), authCfg: authCfg}
 }
 
 func (s *Service) RecordCredentialUpsertAudit(ctx context.Context, input CredentialAuditInput) error {
@@ -162,6 +166,7 @@ SELECT
 	u.username,
 	COALESCE(u.email, ''),
 	COALESCE(u.display_name, ''),
+	COALESCE(u.auth_provider, 'local'),
 	u.is_active,
 	COALESCE(
 		ARRAY(
@@ -190,6 +195,7 @@ ORDER BY u.username ASC;`
 			&user.Username,
 			&user.Email,
 			&user.DisplayName,
+			&user.AuthProvider,
 			&user.IsActive,
 			&user.Roles,
 		); scanErr != nil {
@@ -212,6 +218,7 @@ SELECT
 	u.username,
 	COALESCE(u.email, ''),
 	COALESCE(u.display_name, ''),
+	COALESCE(u.auth_provider, 'local'),
 	u.is_active,
 	COALESCE(
 		ARRAY(
@@ -233,6 +240,7 @@ LIMIT 1;`
 		&user.Username,
 		&user.Email,
 		&user.DisplayName,
+		&user.AuthProvider,
 		&user.IsActive,
 		&user.Roles,
 	); err != nil {
@@ -701,6 +709,13 @@ func (s *Service) GrantUserAllow(ctx context.Context, userID, assetID, action st
 	if !exists {
 		return ErrAssetNotFound
 	}
+	assetType, err := s.assetTypeByID(ctx, aid)
+	if err != nil {
+		return err
+	}
+	if !isActionAllowedForAssetType(act, assetType) {
+		return fmt.Errorf("action %q is not allowed for asset type %q", act, assetType)
+	}
 
 	const query = `
 INSERT INTO access_grants (subject_type, subject_id, asset_id, action, effect, created_by)
@@ -879,6 +894,19 @@ func isSupportedAction(action string) bool {
 	}
 }
 
+func isActionAllowedForAssetType(action, assetType string) bool {
+	switch strings.TrimSpace(assetType) {
+	case "linux_vm":
+		return action == "shell" || action == "sftp"
+	case "database":
+		return action == "dbeaver"
+	case "redis":
+		return action == "redis"
+	default:
+		return false
+	}
+}
+
 func (s *Service) userExists(ctx context.Context, userID string) (bool, error) {
 	const query = `SELECT EXISTS (SELECT 1 FROM users WHERE id = $1);`
 	var exists bool
@@ -904,6 +932,18 @@ func (s *Service) assetExists(ctx context.Context, assetID string) (bool, error)
 		return false, fmt.Errorf("check asset exists: %w", err)
 	}
 	return exists, nil
+}
+
+func (s *Service) assetTypeByID(ctx context.Context, assetID string) (string, error) {
+	const query = `SELECT asset_type FROM assets WHERE id = $1 LIMIT 1;`
+	var assetType string
+	if err := s.pool.QueryRow(ctx, query, assetID).Scan(&assetType); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", ErrAssetNotFound
+		}
+		return "", fmt.Errorf("fetch asset type: %w", err)
+	}
+	return strings.TrimSpace(assetType), nil
 }
 
 func (s *Service) roleIDByName(ctx context.Context, roleName string) (string, error) {
@@ -961,12 +1001,13 @@ RETURNING id;`
 	}
 
 	return UserSummary{
-		ID:          userID,
-		Username:    username,
-		Email:       email,
-		DisplayName: displayName,
-		IsActive:    true,
-		Roles:       []string{},
+		ID:           userID,
+		Username:     username,
+		Email:        email,
+		DisplayName:  displayName,
+		AuthProvider: "local",
+		IsActive:     true,
+		Roles:        []string{},
 	}, nil
 }
 
