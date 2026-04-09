@@ -121,10 +121,7 @@ func (h *testHarness) newAuthService(logger *slog.Logger) *auth.Service {
 
 func (h *testHarness) newRouter(logger *slog.Logger) http.Handler {
 	h.t.Helper()
-	adminSvc := admin.NewService(h.pool, logger, config.AuthConfig{
-		ProviderMode: "local",
-		LDAP:         config.LDAPConfig{},
-	})
+	adminSvc := admin.NewService(h.pool, logger)
 	cipher, err := credentials.NewCipher("pam-test-vault-key", "v1")
 	if err != nil {
 		h.t.Fatalf("new cipher: %v", err)
@@ -329,12 +326,12 @@ func (h *testHarness) responseJSON(t *testing.T, rr *httptest.ResponseRecorder) 
 
 func getTestPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
-	url := strings.TrimSpace(os.Getenv("PAM_TEST_DB_URL"))
+	url := strings.TrimSpace(os.Getenv("ACCESSD_TEST_DB_URL"))
 	if url == "" {
-		t.Skip("set PAM_TEST_DB_URL to run backend integration tests")
+		t.Skip("set ACCESSD_TEST_DB_URL to run backend integration tests")
 	}
-	if !strings.Contains(strings.ToLower(url), "test") && os.Getenv("PAM_TEST_DB_UNSAFE_OK") != "1" {
-		t.Skip("PAM_TEST_DB_URL must point to a dedicated test database (or set PAM_TEST_DB_UNSAFE_OK=1)")
+	if !strings.Contains(strings.ToLower(url), "test") && os.Getenv("ACCESSD_TEST_DB_UNSAFE_OK") != "1" {
+		t.Skip("ACCESSD_TEST_DB_URL must point to a dedicated test database (or set ACCESSD_TEST_DB_UNSAFE_OK=1)")
 	}
 
 	testPoolOnce.Do(func() {

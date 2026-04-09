@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func clearAccessDEnvForCompatTests(t *testing.T) {
+func clearAccessDEnvForTests(t *testing.T) {
 	t.Helper()
 	keys := []string{
 		"ACCESSD_CONFIG_FILE",
@@ -14,8 +14,6 @@ func clearAccessDEnvForCompatTests(t *testing.T) {
 		"ACCESSD_DB_URL",
 		"ACCESSD_VAULT_KEY",
 		"ACCESSD_LAUNCH_TOKEN_SECRET",
-		"ACCESSD_AUTH_PROVIDER_MODE",
-		"ACCESSD_LDAP_BASE_DN",
 		"ACCESSD_AUTH_COOKIE_SECURE",
 		"ACCESSD_ALLOW_UNSAFE_MODE",
 	}
@@ -25,14 +23,11 @@ func clearAccessDEnvForCompatTests(t *testing.T) {
 }
 
 func TestLoadLDAPSambaDefaults(t *testing.T) {
-	clearAccessDEnvForCompatTests(t)
-	t.Setenv("PAM_ENV", "development")
-	t.Setenv("PAM_DB_URL", "postgres://postgres:postgres@localhost:5432/pam?sslmode=disable")
-	t.Setenv("PAM_VAULT_KEY", "dev-only-key")
-	t.Setenv("PAM_LAUNCH_TOKEN_SECRET", "dev-secret")
-	t.Setenv("PAM_AUTH_PROVIDER_MODE", "ldap")
-	t.Setenv("PAM_LDAP_BASE_DN", "dc=corp,dc=example,dc=com")
-
+	clearAccessDEnvForTests(t)
+	t.Setenv("ACCESSD_ENV", "development")
+	t.Setenv("ACCESSD_DB_URL", "postgres://postgres:postgres@localhost:5432/pam?sslmode=disable")
+	t.Setenv("ACCESSD_VAULT_KEY", "dev-only-key")
+	t.Setenv("ACCESSD_LAUNCH_TOKEN_SECRET", "dev-secret")
 	cfg, err := Load()
 	if err != nil {
 		t.Fatalf("Load() unexpected error: %v", err)
@@ -50,40 +45,27 @@ func TestLoadLDAPSambaDefaults(t *testing.T) {
 	if got, want := cfg.Auth.LDAP.GroupSearchFilter, "(&(objectClass=group)(member={{user_dn}}))"; got != want {
 		t.Fatalf("GroupSearchFilter = %q, want %q", got, want)
 	}
-}
-
-func TestLoadHybridRequiresLDAPBaseDN(t *testing.T) {
-	clearAccessDEnvForCompatTests(t)
-	t.Setenv("PAM_ENV", "development")
-	t.Setenv("PAM_DB_URL", "postgres://postgres:postgres@localhost:5432/pam?sslmode=disable")
-	t.Setenv("PAM_VAULT_KEY", "dev-only-key")
-	t.Setenv("PAM_LAUNCH_TOKEN_SECRET", "dev-secret")
-	t.Setenv("PAM_AUTH_PROVIDER_MODE", "hybrid")
-	t.Setenv("PAM_LDAP_BASE_DN", "")
-
-	_, err := Load()
-	if err == nil {
-		t.Fatal("Load() expected error, got nil")
+	if got, want := cfg.Auth.ProviderMode, "local"; got != want {
+		t.Fatalf("ProviderMode = %q, want %q", got, want)
 	}
 }
 
 func TestLoad_UsesConfigFileWhenEnvMissing(t *testing.T) {
-	clearAccessDEnvForCompatTests(t)
+	clearAccessDEnvForTests(t)
 	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "pam.env")
-	content := "PAM_DB_URL=postgres://postgres:postgres@localhost:5432/pam?sslmode=disable\n" +
-		"PAM_VAULT_KEY=dev-only-key\n" +
-		"PAM_LAUNCH_TOKEN_SECRET=dev-secret\n" +
-		"PAM_AUTH_PROVIDER_MODE=local\n"
+	cfgPath := filepath.Join(dir, "accessd.env")
+	content := "ACCESSD_DB_URL=postgres://postgres:postgres@localhost:5432/pam?sslmode=disable\n" +
+		"ACCESSD_VAULT_KEY=dev-only-key\n" +
+		"ACCESSD_LAUNCH_TOKEN_SECRET=dev-secret\n"
 	if err := os.WriteFile(cfgPath, []byte(content), 0o600); err != nil {
 		t.Fatalf("write config file: %v", err)
 	}
 
-	t.Setenv("PAM_CONFIG_FILE", cfgPath)
-	t.Setenv("PAM_DB_URL", "")
-	t.Setenv("PAM_VAULT_KEY", "")
-	t.Setenv("PAM_LAUNCH_TOKEN_SECRET", "")
-	t.Setenv("PAM_ENV", "development")
+	t.Setenv("ACCESSD_CONFIG_FILE", cfgPath)
+	t.Setenv("ACCESSD_DB_URL", "")
+	t.Setenv("ACCESSD_VAULT_KEY", "")
+	t.Setenv("ACCESSD_LAUNCH_TOKEN_SECRET", "")
+	t.Setenv("ACCESSD_ENV", "development")
 
 	cfg, err := Load()
 	if err != nil {
@@ -95,21 +77,21 @@ func TestLoad_UsesConfigFileWhenEnvMissing(t *testing.T) {
 }
 
 func TestLoad_ConfigFileDoesNotOverrideExplicitEnv(t *testing.T) {
-	clearAccessDEnvForCompatTests(t)
+	clearAccessDEnvForTests(t)
 	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "pam.env")
-	content := "PAM_DB_URL=postgres://postgres:postgres@localhost:5432/from_file?sslmode=disable\n" +
-		"PAM_VAULT_KEY=dev-only-key\n" +
-		"PAM_LAUNCH_TOKEN_SECRET=dev-secret\n"
+	cfgPath := filepath.Join(dir, "accessd.env")
+	content := "ACCESSD_DB_URL=postgres://postgres:postgres@localhost:5432/from_file?sslmode=disable\n" +
+		"ACCESSD_VAULT_KEY=dev-only-key\n" +
+		"ACCESSD_LAUNCH_TOKEN_SECRET=dev-secret\n"
 	if err := os.WriteFile(cfgPath, []byte(content), 0o600); err != nil {
 		t.Fatalf("write config file: %v", err)
 	}
 
-	t.Setenv("PAM_CONFIG_FILE", cfgPath)
-	t.Setenv("PAM_ENV", "development")
-	t.Setenv("PAM_DB_URL", "postgres://postgres:postgres@localhost:5432/from_env?sslmode=disable")
-	t.Setenv("PAM_VAULT_KEY", "dev-only-key")
-	t.Setenv("PAM_LAUNCH_TOKEN_SECRET", "dev-secret")
+	t.Setenv("ACCESSD_CONFIG_FILE", cfgPath)
+	t.Setenv("ACCESSD_ENV", "development")
+	t.Setenv("ACCESSD_DB_URL", "postgres://postgres:postgres@localhost:5432/from_env?sslmode=disable")
+	t.Setenv("ACCESSD_VAULT_KEY", "dev-only-key")
+	t.Setenv("ACCESSD_LAUNCH_TOKEN_SECRET", "dev-secret")
 
 	cfg, err := Load()
 	if err != nil {

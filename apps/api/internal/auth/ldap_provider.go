@@ -184,20 +184,27 @@ func buildLDAPTLSConfig(cfg config.LDAPConfig) (*tls.Config, error) {
 		MinVersion:         tls.VersionTLS12,
 		InsecureSkipVerify: cfg.InsecureSkipVerify,
 	}
+	caPEM := strings.TrimSpace(cfg.CACertPEM)
 	caFile := strings.TrimSpace(cfg.CACertFile)
-	if caFile == "" {
+	if caPEM == "" && caFile == "" {
 		return tlsConfig, nil
 	}
 	pool, err := x509.SystemCertPool()
 	if err != nil || pool == nil {
 		pool = x509.NewCertPool()
 	}
-	pemData, err := os.ReadFile(caFile)
-	if err != nil {
-		return nil, fmt.Errorf("read ACCESSD_LDAP_CA_CERT_FILE %q: %w", caFile, err)
+	pemData := []byte(caPEM)
+	if caFile != "" {
+		pemData, err = os.ReadFile(caFile)
+		if err != nil {
+			return nil, fmt.Errorf("read ldap ca cert file %q: %w", caFile, err)
+		}
 	}
 	if ok := pool.AppendCertsFromPEM(pemData); !ok {
-		return nil, fmt.Errorf("ACCESSD_LDAP_CA_CERT_FILE %q does not contain a valid PEM certificate", caFile)
+		if caFile != "" {
+			return nil, fmt.Errorf("ldap ca cert file %q does not contain a valid PEM certificate", caFile)
+		}
+		return nil, fmt.Errorf("ldap ca cert pem is invalid")
 	}
 	tlsConfig.RootCAs = pool
 	return tlsConfig, nil
@@ -487,10 +494,10 @@ func parseGroupRoleMapping(raw string) (map[string][]string, error) {
 			return nil, err
 		}
 		if groupName == "" {
-			return nil, fmt.Errorf("invalid ACCESSD_LDAP_GROUP_ROLE_MAPPING entry %q (empty group)", entry)
+			return nil, fmt.Errorf("invalid ldap group_role_mapping entry %q (empty group)", entry)
 		}
 		if len(cleanRoles) == 0 {
-			return nil, fmt.Errorf("invalid ACCESSD_LDAP_GROUP_ROLE_MAPPING entry %q (no roles)", entry)
+			return nil, fmt.Errorf("invalid ldap group_role_mapping entry %q (no roles)", entry)
 		}
 		result[groupName] = appendUnique(result[groupName], cleanRoles...)
 	}
@@ -521,10 +528,10 @@ func splitGroupRoleEntries(raw string) ([]string, error) {
 		}
 	}
 	if strings.TrimSpace(buffer) != "" {
-		return nil, fmt.Errorf("invalid ACCESSD_LDAP_GROUP_ROLE_MAPPING entry %q (expected group=role1|role2)", buffer)
+		return nil, fmt.Errorf("invalid ldap group_role_mapping entry %q (expected group=role1|role2)", buffer)
 	}
 	if len(entries) == 0 {
-		return nil, fmt.Errorf("invalid ACCESSD_LDAP_GROUP_ROLE_MAPPING entry %q (expected group=role1|role2)", raw)
+		return nil, fmt.Errorf("invalid ldap group_role_mapping entry %q (expected group=role1|role2)", raw)
 	}
 	return entries, nil
 }
@@ -553,15 +560,15 @@ func parseGroupRoleEntry(entry string) (string, []string, error) {
 	trimmed := strings.TrimSpace(entry)
 	lastEq := strings.LastIndex(trimmed, "=")
 	if lastEq <= 0 || lastEq >= len(trimmed)-1 {
-		return "", nil, fmt.Errorf("invalid ACCESSD_LDAP_GROUP_ROLE_MAPPING entry %q (expected group=role1|role2)", entry)
+		return "", nil, fmt.Errorf("invalid ldap group_role_mapping entry %q (expected group=role1|role2)", entry)
 	}
 	groupName := strings.ToLower(strings.TrimSpace(trimmed[:lastEq]))
 	rolesRaw := strings.TrimSpace(trimmed[lastEq+1:])
 	if groupName == "" {
-		return "", nil, fmt.Errorf("invalid ACCESSD_LDAP_GROUP_ROLE_MAPPING entry %q (empty group)", entry)
+		return "", nil, fmt.Errorf("invalid ldap group_role_mapping entry %q (empty group)", entry)
 	}
 	if rolesRaw == "" {
-		return "", nil, fmt.Errorf("invalid ACCESSD_LDAP_GROUP_ROLE_MAPPING entry %q (no roles)", entry)
+		return "", nil, fmt.Errorf("invalid ldap group_role_mapping entry %q (no roles)", entry)
 	}
 	roles := strings.Split(rolesRaw, "|")
 	cleanRoles := make([]string, 0, len(roles))
@@ -571,12 +578,12 @@ func parseGroupRoleEntry(entry string) (string, []string, error) {
 			continue
 		}
 		if !ldapRoleTokenPattern.MatchString(role) {
-			return "", nil, fmt.Errorf("invalid ACCESSD_LDAP_GROUP_ROLE_MAPPING entry %q (invalid role token %q)", entry, role)
+			return "", nil, fmt.Errorf("invalid ldap group_role_mapping entry %q (invalid role token %q)", entry, role)
 		}
 		cleanRoles = append(cleanRoles, role)
 	}
 	if len(cleanRoles) == 0 {
-		return "", nil, fmt.Errorf("invalid ACCESSD_LDAP_GROUP_ROLE_MAPPING entry %q (no roles)", entry)
+		return "", nil, fmt.Errorf("invalid ldap group_role_mapping entry %q (no roles)", entry)
 	}
 	return groupName, cleanRoles, nil
 }

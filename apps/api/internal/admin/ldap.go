@@ -3,6 +3,7 @@ package admin
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -39,6 +40,7 @@ type LDAPSettings struct {
 	GroupSearchFilter      string
 	GroupNameAttribute     string
 	GroupRoleMapping       string
+	CACertPEM              string
 	UseTLS                 bool
 	StartTLS               bool
 	InsecureSkipVerify     bool
@@ -46,6 +48,7 @@ type LDAPSettings struct {
 	UpdatedBy              string
 	UpdatedAt              time.Time
 	HasBindPassword        bool
+	HasCACertPEM           bool
 }
 
 type LDAPSyncSummary struct {
@@ -85,26 +88,27 @@ type ldapUserEntry struct {
 
 func (s *Service) defaultLDAPSettings() LDAPSettings {
 	return LDAPSettings{
-		ProviderMode:           strings.TrimSpace(s.authCfg.ProviderMode),
-		Enabled:                strings.TrimSpace(s.authCfg.ProviderMode) != "local",
-		Host:                   strings.TrimSpace(s.authCfg.LDAP.Host),
-		Port:                   s.authCfg.LDAP.Port,
-		URL:                    strings.TrimSpace(s.authCfg.LDAP.URL),
-		BaseDN:                 strings.TrimSpace(s.authCfg.LDAP.BaseDN),
-		BindDN:                 strings.TrimSpace(s.authCfg.LDAP.BindDN),
-		BindPassword:           strings.TrimSpace(s.authCfg.LDAP.BindPassword),
-		UserSearchFilter:       strings.TrimSpace(s.authCfg.LDAP.UserSearchFilter),
+		ProviderMode:           "local",
+		Enabled:                false,
+		Host:                   "",
+		Port:                   389,
+		URL:                    "",
+		BaseDN:                 "",
+		BindDN:                 "",
+		BindPassword:           "",
+		UserSearchFilter:       defaultLDAPUserSearchFilter,
 		SyncUserFilter:         defaultLDAPSyncSearchFilter,
-		UsernameAttribute:      strings.TrimSpace(s.authCfg.LDAP.UsernameAttribute),
-		DisplayNameAttribute:   strings.TrimSpace(s.authCfg.LDAP.DisplayNameAttribute),
-		EmailAttribute:         strings.TrimSpace(s.authCfg.LDAP.EmailAttribute),
-		GroupSearchBaseDN:      strings.TrimSpace(s.authCfg.LDAP.GroupSearchBaseDN),
-		GroupSearchFilter:      strings.TrimSpace(s.authCfg.LDAP.GroupSearchFilter),
-		GroupNameAttribute:     strings.TrimSpace(s.authCfg.LDAP.GroupNameAttribute),
-		GroupRoleMapping:       strings.TrimSpace(s.authCfg.LDAP.GroupRoleMappingRaw),
-		UseTLS:                 s.authCfg.LDAP.UseTLS,
-		StartTLS:               s.authCfg.LDAP.StartTLS,
-		InsecureSkipVerify:     s.authCfg.LDAP.InsecureSkipVerify,
+		UsernameAttribute:      "sAMAccountName",
+		DisplayNameAttribute:   "displayName",
+		EmailAttribute:         "mail",
+		GroupSearchBaseDN:      "",
+		GroupSearchFilter:      defaultLDAPGroupSearchFilter,
+		GroupNameAttribute:     "cn",
+		GroupRoleMapping:       "",
+		CACertPEM:              "",
+		UseTLS:                 false,
+		StartTLS:               false,
+		InsecureSkipVerify:     false,
 		DeactivateMissingUsers: true,
 	}
 }
@@ -134,6 +138,7 @@ func (s *Service) normalizeLDAPSettings(in LDAPSettings, keepExistingPassword bo
 	out.GroupSearchFilter = strings.TrimSpace(out.GroupSearchFilter)
 	out.GroupNameAttribute = strings.TrimSpace(out.GroupNameAttribute)
 	out.GroupRoleMapping = strings.TrimSpace(out.GroupRoleMapping)
+	out.CACertPEM = strings.TrimSpace(out.CACertPEM)
 
 	if out.Port <= 0 || out.Port > 65535 {
 		return LDAPSettings{}, fmt.Errorf("port must be between 1 and 65535")
@@ -176,7 +181,7 @@ func (s *Service) normalizeLDAPSettings(in LDAPSettings, keepExistingPassword bo
 func (s *Service) GetLDAPSettings(ctx context.Context) (LDAPSettings, error) {
 	defaults := s.defaultLDAPSettings()
 	const q = `
-SELECT
+	SELECT
 	provider_mode,
 	enabled,
 	host,
@@ -194,6 +199,7 @@ SELECT
 	group_search_filter,
 	group_name_attribute,
 	group_role_mapping,
+	ca_cert_pem,
 	use_tls,
 	start_tls,
 	insecure_skip_verify,
@@ -222,6 +228,7 @@ LIMIT 1;`
 		&row.GroupSearchFilter,
 		&row.GroupNameAttribute,
 		&row.GroupRoleMapping,
+		&row.CACertPEM,
 		&row.UseTLS,
 		&row.StartTLS,
 		&row.InsecureSkipVerify,
@@ -232,17 +239,21 @@ LIMIT 1;`
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			defaults.HasBindPassword = defaults.BindPassword != ""
+			defaults.HasCACertPEM = defaults.CACertPEM != ""
 			defaults.BindPassword = ""
+			defaults.CACertPEM = ""
 			return defaults, nil
 		}
 		return LDAPSettings{}, fmt.Errorf("get ldap settings: %w", err)
 	}
 	row.HasBindPassword = row.BindPassword != ""
+	row.HasCACertPEM = strings.TrimSpace(row.CACertPEM) != ""
 	row.BindPassword = ""
+	row.CACertPEM = ""
 	return row, nil
 }
 
-func (s *Service) UpsertLDAPSettings(ctx context.Context, actorUserID string, input LDAPSettings, keepExistingPassword bool) (LDAPSettings, error) {
+func (s *Service) UpsertLDAPSettings(ctx context.Context, actorUserID string, input LDAPSettings, keepExistingPassword bool, keepExistingCACertPEM bool) (LDAPSettings, error) {
 	normalized, err := s.normalizeLDAPSettings(input, keepExistingPassword)
 	if err != nil {
 		return LDAPSettings{}, err
@@ -253,6 +264,10 @@ func (s *Service) UpsertLDAPSettings(ctx context.Context, actorUserID string, in
 	if keepExistingPassword {
 		passwordExpr = "COALESCE(NULLIF(ldap_settings.bind_password, ''), '')"
 		passwordArg = ""
+	}
+	caCertExpr := "EXCLUDED.ca_cert_pem"
+	if keepExistingCACertPEM {
+		caCertExpr = "COALESCE(NULLIF(ldap_settings.ca_cert_pem, ''), '')"
 	}
 
 	q := `
@@ -275,6 +290,7 @@ INSERT INTO ldap_settings (
 	group_search_filter,
 	group_name_attribute,
 	group_role_mapping,
+	ca_cert_pem,
 	use_tls,
 	start_tls,
 	insecure_skip_verify,
@@ -305,7 +321,8 @@ VALUES (
 	$19,
 	$20,
 	$21,
-	NULLIF($22, '')::uuid,
+	$22,
+	NULLIF($23, '')::uuid,
 	NOW()
 )
 ON CONFLICT (id) DO UPDATE SET
@@ -326,6 +343,7 @@ ON CONFLICT (id) DO UPDATE SET
 	group_search_filter = EXCLUDED.group_search_filter,
 	group_name_attribute = EXCLUDED.group_name_attribute,
 	group_role_mapping = EXCLUDED.group_role_mapping,
+	ca_cert_pem = ` + caCertExpr + `,
 	use_tls = EXCLUDED.use_tls,
 	start_tls = EXCLUDED.start_tls,
 	insecure_skip_verify = EXCLUDED.insecure_skip_verify,
@@ -350,6 +368,7 @@ ON CONFLICT (id) DO UPDATE SET
 		normalized.GroupSearchFilter,
 		normalized.GroupNameAttribute,
 		normalized.GroupRoleMapping,
+		normalized.CACertPEM,
 		normalized.UseTLS,
 		normalized.StartTLS,
 		normalized.InsecureSkipVerify,
@@ -383,6 +402,7 @@ SELECT
 	group_search_filter,
 	group_name_attribute,
 	group_role_mapping,
+	ca_cert_pem,
 	use_tls,
 	start_tls,
 	insecure_skip_verify,
@@ -411,6 +431,7 @@ LIMIT 1;`
 		&row.GroupSearchFilter,
 		&row.GroupNameAttribute,
 		&row.GroupRoleMapping,
+		&row.CACertPEM,
 		&row.UseTLS,
 		&row.StartTLS,
 		&row.InsecureSkipVerify,
@@ -729,6 +750,16 @@ func dialLDAP(settings LDAPSettings) (*ldap.Conn, string, error) {
 	tlsConfig := &tls.Config{
 		MinVersion:         tls.VersionTLS12,
 		InsecureSkipVerify: settings.InsecureSkipVerify,
+	}
+	if strings.TrimSpace(settings.CACertPEM) != "" {
+		pool, err := x509.SystemCertPool()
+		if err != nil || pool == nil {
+			pool = x509.NewCertPool()
+		}
+		if ok := pool.AppendCertsFromPEM([]byte(settings.CACertPEM)); !ok {
+			return nil, address, fmt.Errorf("ldap ca cert pem is invalid")
+		}
+		tlsConfig.RootCAs = pool
 	}
 
 	options := []ldap.DialOpt{}

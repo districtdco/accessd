@@ -185,6 +185,7 @@ export type AdminLDAPSettings = {
   group_search_filter: string
   group_name_attribute: string
   group_role_mapping: string
+  has_ca_cert_pem: boolean
   use_tls: boolean
   start_tls: boolean
   insecure_skip_verify: boolean

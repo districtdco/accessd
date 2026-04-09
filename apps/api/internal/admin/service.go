@@ -10,7 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/districtd/pam/api/internal/config"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/crypto/bcrypt"
@@ -24,9 +23,8 @@ var (
 )
 
 type Service struct {
-	pool    *pgxpool.Pool
-	logger  *slog.Logger
-	authCfg config.AuthConfig
+	pool   *pgxpool.Pool
+	logger *slog.Logger
 }
 
 type UserSummary struct {
@@ -119,8 +117,8 @@ type effectiveAccessRow struct {
 	source    string
 }
 
-func NewService(pool *pgxpool.Pool, logger *slog.Logger, authCfg config.AuthConfig) *Service {
-	return &Service{pool: pool, logger: logger.With("component", "admin"), authCfg: authCfg}
+func NewService(pool *pgxpool.Pool, logger *slog.Logger) *Service {
+	return &Service{pool: pool, logger: logger.With("component", "admin")}
 }
 
 func (s *Service) RecordCredentialUpsertAudit(ctx context.Context, input CredentialAuditInput) error {

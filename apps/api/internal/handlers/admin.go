@@ -190,6 +190,7 @@ type adminLDAPSettingsResponse struct {
 	GroupSearchFilter      string `json:"group_search_filter"`
 	GroupNameAttribute     string `json:"group_name_attribute"`
 	GroupRoleMapping       string `json:"group_role_mapping"`
+	HasCACertPEM           bool   `json:"has_ca_cert_pem"`
 	UseTLS                 bool   `json:"use_tls"`
 	StartTLS               bool   `json:"start_tls"`
 	InsecureSkipVerify     bool   `json:"insecure_skip_verify"`
@@ -208,6 +209,7 @@ type upsertLDAPSettingsRequest struct {
 	BindDN                 string `json:"bind_dn"`
 	BindPassword           string `json:"bind_password"`
 	KeepExistingPassword   bool   `json:"keep_existing_password"`
+	KeepExistingCACertPEM  bool   `json:"keep_existing_ca_cert_pem"`
 	UserSearchFilter       string `json:"user_search_filter"`
 	SyncUserFilter         string `json:"sync_user_filter"`
 	UsernameAttribute      string `json:"username_attribute"`
@@ -217,6 +219,7 @@ type upsertLDAPSettingsRequest struct {
 	GroupSearchFilter      string `json:"group_search_filter"`
 	GroupNameAttribute     string `json:"group_name_attribute"`
 	GroupRoleMapping       string `json:"group_role_mapping"`
+	CACertPEM              string `json:"ca_cert_pem"`
 	UseTLS                 bool   `json:"use_tls"`
 	StartTLS               bool   `json:"start_tls"`
 	InsecureSkipVerify     bool   `json:"insecure_skip_verify"`
@@ -847,11 +850,12 @@ func (h *AdminHandler) UpsertLDAPSettings(w http.ResponseWriter, r *http.Request
 		GroupSearchFilter:      req.GroupSearchFilter,
 		GroupNameAttribute:     req.GroupNameAttribute,
 		GroupRoleMapping:       req.GroupRoleMapping,
+		CACertPEM:              req.CACertPEM,
 		UseTLS:                 req.UseTLS,
 		StartTLS:               req.StartTLS,
 		InsecureSkipVerify:     req.InsecureSkipVerify,
 		DeactivateMissingUsers: req.DeactivateMissingUsers,
-	}, req.KeepExistingPassword)
+	}, req.KeepExistingPassword, req.KeepExistingCACertPEM)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
@@ -883,6 +887,7 @@ func (h *AdminHandler) TestLDAPConnection(w http.ResponseWriter, r *http.Request
 		GroupSearchFilter:      req.GroupSearchFilter,
 		GroupNameAttribute:     req.GroupNameAttribute,
 		GroupRoleMapping:       req.GroupRoleMapping,
+		CACertPEM:              req.CACertPEM,
 		UseTLS:                 req.UseTLS,
 		StartTLS:               req.StartTLS,
 		InsecureSkipVerify:     req.InsecureSkipVerify,
@@ -1059,6 +1064,7 @@ func mapLDAPSettingsResponse(settings admin.LDAPSettings) adminLDAPSettingsRespo
 		GroupSearchFilter:      settings.GroupSearchFilter,
 		GroupNameAttribute:     settings.GroupNameAttribute,
 		GroupRoleMapping:       settings.GroupRoleMapping,
+		HasCACertPEM:           settings.HasCACertPEM,
 		UseTLS:                 settings.UseTLS,
 		StartTLS:               settings.StartTLS,
 		InsecureSkipVerify:     settings.InsecureSkipVerify,

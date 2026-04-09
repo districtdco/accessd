@@ -1,0 +1,3 @@
+ALTER TABLE ldap_settings
+    ADD COLUMN IF NOT EXISTS ca_cert_pem TEXT NOT NULL DEFAULT '';
+

@@ -21,6 +21,7 @@ When not set, verification is skipped (suitable for development only).
 ## Local HTTP API (this slice)
 
 - `GET /healthz` → connector liveness
+- `GET /info` → runtime diagnostics (effective config + missing required env)
 - `POST /launch/shell` → receive shell launch payload and spawn local client
 - `POST /launch/dbeaver` → receive DBeaver launch payload and spawn local DBeaver process
 - `POST /launch/redis` → receive Redis launch payload and spawn local `redis-cli` in terminal
@@ -141,6 +142,8 @@ For SFTP in this slice, connector launches FileZilla/WinSCP against the AccessD 
 | `ACCESSD_CONNECTOR_ALLOWED_ORIGIN` | `http://127.0.0.1:3000,http://localhost:3000` | CORS allowlist (comma-separated origins) |
 | `ACCESSD_CONNECTOR_ALLOW_ANY_ORIGIN` | `false` | If `true`, sets `Access-Control-Allow-Origin: *` (unsafe) |
 | `ACCESSD_CONNECTOR_ALLOW_REMOTE` | `false` | If `true`, allows non-loopback HTTP callers (unsafe) |
+| `ACCESSD_CONNECTOR_AUTO_TRUST_SERVER_CERT` | `true` | Installer helper: auto-fetch and trust AccessD HTTPS cert on operator machine |
+| `ACCESSD_CONNECTOR_TRUST_CERT_URL` | derived from UI domain | Installer helper override for cert download URL |
 | `ACCESSD_CONNECTOR_PUTTY_PATH` | `putty` | PuTTY executable/path on Windows |
 | `ACCESSD_CONNECTOR_WINSCP_PATH` | `winscp` | WinSCP executable/path on Windows |
 | `ACCESSD_CONNECTOR_FILEZILLA_PATH` | `filezilla` | FileZilla executable/path on macOS/Linux |

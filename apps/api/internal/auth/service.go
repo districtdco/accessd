@@ -36,7 +36,8 @@ type Service struct {
 func NewService(pool *pgxpool.Pool, cfg config.AuthConfig, logger *slog.Logger) (*Service, error) {
 	provider, err := NewProvider(pool, cfg, logger)
 	if err != nil {
-		return nil, err
+		logger.Warn("auth provider init failed; falling back to local provider until runtime config is available", "error", err)
+		provider = NewLocalProvider(pool, logger)
 	}
 
 	svc := &Service{
@@ -182,25 +183,26 @@ func (s *Service) LoginWithContext(ctx context.Context, req LoginRequest) (Login
 
 	if s.rateLimiter.IsBlocked(rateLimitKey) {
 		s.logger.Warn("login rate limited", "username", username, "source_ip", req.SourceIP)
-		s.recordLoginAudit(ctx, AuditLoginFailedRateLimited, username, nil, req.SourceIP, req.UserAgent, "rate_limited")
+		s.recordLoginAudit(ctx, AuditLoginFailedRateLimited, username, nil, req.SourceIP, req.UserAgent, "rate_limited", "rate_limiter")
 		return LoginResult{}, nil, ErrRateLimited
 	}
 
-	user, err := s.provider.Authenticate(ctx, username, req.Password)
+	provider := s.resolveProviderForLogin(ctx, username)
+	user, err := provider.Authenticate(ctx, username, req.Password)
 	if err != nil {
 		s.rateLimiter.RecordFailure(rateLimitKey)
 		auditType, reason := classifyLoginFailure(err)
 		s.logger.Warn("login failed",
 			"username", username,
-			"provider", s.provider.Name(),
+			"provider", provider.Name(),
 			"reason", reason,
 			"source_ip", req.SourceIP,
 		)
-		s.recordLoginAudit(ctx, auditType, username, nil, req.SourceIP, req.UserAgent, reason)
+		s.recordLoginAudit(ctx, auditType, username, nil, req.SourceIP, req.UserAgent, reason, provider.Name())
 		if errors.Is(err, ErrInvalidCredentials) {
 			return LoginResult{}, nil, ErrInvalidCredentials
 		}
-		return LoginResult{}, nil, fmt.Errorf("authenticate with provider %s: %w", s.provider.Name(), err)
+		return LoginResult{}, nil, fmt.Errorf("authenticate with provider %s: %w", provider.Name(), err)
 	}
 
 	s.rateLimiter.Reset(rateLimitKey)
@@ -218,10 +220,10 @@ func (s *Service) LoginWithContext(ctx context.Context, req LoginRequest) (Login
 	s.logger.Info("login success",
 		"username", username,
 		"user_id", user.ID,
-		"provider", s.provider.Name(),
+		"provider", provider.Name(),
 		"source_ip", req.SourceIP,
 	)
-	s.recordLoginAudit(ctx, AuditLoginSuccess, username, &user.ID, req.SourceIP, req.UserAgent, "success")
+	s.recordLoginAudit(ctx, AuditLoginSuccess, username, &user.ID, req.SourceIP, req.UserAgent, "success", provider.Name())
 
 	cookie := &http.Cookie{
 		Name:     s.cfg.SessionCookieName,
@@ -257,10 +259,10 @@ func classifyLoginFailure(err error) (string, string) {
 	return AuditLoginFailed, "provider_error"
 }
 
-func (s *Service) recordLoginAudit(ctx context.Context, eventType, username string, userID *string, sourceIP, userAgent, outcome string) {
+func (s *Service) recordLoginAudit(ctx context.Context, eventType, username string, userID *string, sourceIP, userAgent, outcome, providerName string) {
 	meta := map[string]any{
 		"username": username,
-		"provider": s.provider.Name(),
+		"provider": providerName,
 	}
 	if err := writeAuditEvent(ctx, s.pool, AuditEvent{
 		EventType:   eventType,
@@ -273,6 +275,81 @@ func (s *Service) recordLoginAudit(ctx context.Context, eventType, username stri
 	}); err != nil {
 		s.logger.Warn("failed to write login audit event", "event_type", eventType, "username", username, "error", err)
 	}
+}
+
+func (s *Service) resolveProviderForLogin(ctx context.Context, username string) Provider {
+	resolvedCfg, err := resolveAuthConfigFromAdmin(ctx, s.pool, s.cfg)
+	if err != nil {
+		s.logger.Warn("failed to resolve auth config from admin settings; using fallback provider", "error", err)
+		return s.provider
+	}
+
+	localProvider := NewLocalProvider(s.pool, s.logger)
+	mode := strings.ToLower(strings.TrimSpace(resolvedCfg.ProviderMode))
+	if mode == "" {
+		mode = "local"
+	}
+
+	// Local-only mode is explicit and bypasses LDAP.
+	if mode == "local" {
+		return localProvider
+	}
+
+	ldapProvider, err := NewLDAPProvider(s.pool, resolvedCfg.LDAP, s.logger)
+	if err != nil {
+		s.logger.Warn("failed to build ldap provider; using local provider", "error", err)
+		return localProvider
+	}
+
+	mappedProvider, mapped, lookupErr := s.lookupMappedAuthProvider(ctx, username)
+	if lookupErr != nil {
+		s.logger.Warn("failed to lookup mapped auth provider; using mode defaults", "username", username, "error", lookupErr)
+	}
+
+	// Username mapping in users table decides provider when known:
+	// - local mapping always wins to keep local admin/IT break-glass login reliable
+	// - ldap mapping uses ldap
+	if mapped {
+		switch mappedProvider {
+		case "local":
+			return localProvider
+		case "ldap":
+			return ldapProvider
+		default:
+			return localProvider
+		}
+	}
+
+	// Unknown user: follow configured mode behavior.
+	switch mode {
+	case "ldap":
+		return ldapProvider
+	case "hybrid":
+		return &FallbackProvider{
+			primary:  ldapProvider,
+			fallback: localProvider,
+			logger:   s.logger.With("auth_provider", "hybrid"),
+		}
+	default:
+		return localProvider
+	}
+}
+
+func (s *Service) lookupMappedAuthProvider(ctx context.Context, username string) (string, bool, error) {
+	const q = `
+SELECT COALESCE(auth_provider, 'local')
+FROM users
+WHERE username = $1
+LIMIT 1;`
+	var provider string
+	err := s.pool.QueryRow(ctx, q, strings.TrimSpace(username)).Scan(&provider)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", false, nil
+		}
+		return "", false, fmt.Errorf("query user auth provider: %w", err)
+	}
+	return strings.ToLower(strings.TrimSpace(provider)), true, nil
 }
 
 func (s *Service) Logout(ctx context.Context, sessionToken string) error {

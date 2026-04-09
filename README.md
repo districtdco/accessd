@@ -191,7 +191,7 @@ See [docs/CONNECTOR_DISTRIBUTION.md](docs/CONNECTOR_DISTRIBUTION.md) for:
 
 ## Production Deployment
 
-See [DEPLOY_PRIVATE_DEBIAN_SYSTEMD.md](DEPLOY_PRIVATE_DEBIAN_SYSTEMD.md) for the complete end-to-end guide:
+See [DEPLOY.md](DEPLOY.md) for the complete end-to-end guide:
 
 - Debian + systemd + nginx setup
 - Filesystem layout and file permissions
@@ -248,7 +248,7 @@ Generate secrets: `openssl rand -base64 32`
 
 See [deploy/env/accessd.env.example](deploy/env/accessd.env.example) for the full configuration reference.
 
-> **Backward compatibility:** Existing deployments using `PAM_*` environment variables continue to work unchanged. AccessD automatically bridges `PAM_*` → `ACCESSD_*` on startup. Migrate at your own pace.
+> Use `ACCESSD_*` environment variables only.
 
 ---
 
@@ -291,7 +291,7 @@ accessd-connector bridge-shell [flags]   Internal: transparent SSH auth bridge
 - Connector bound to loopback on operator machine
 - `ACCESSD_ALLOW_UNSAFE_MODE=false` is the default and is validated at startup
 
-See [DEPLOY_PRIVATE_DEBIAN_SYSTEMD.md §15](DEPLOY_PRIVATE_DEBIAN_SYSTEMD.md#15-security-hardening-and-operational-safeguards) for the full security hardening guide.
+See [DEPLOY.md §15](DEPLOY.md#15-security-hardening-and-operational-safeguards) for the full security hardening guide.
 
 ---
 

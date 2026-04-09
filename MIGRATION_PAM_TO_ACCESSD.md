@@ -17,9 +17,9 @@ This guide covers the naming changes made when the project was renamed from PAM 
 
 All `PAM_*` variables have been renamed to `ACCESSD_*`.
 
-**Backward compatibility is built in.** AccessD automatically copies `PAM_*` env vars to their `ACCESSD_*` equivalents at startup, so existing deployments continue to work without any changes.
+**Runtime fallback is removed.** AccessD reads `ACCESSD_*` keys only.
 
-You can migrate at your own pace by updating your env files to use `ACCESSD_*` prefixes.
+You must migrate env files to `ACCESSD_*` prefixes before upgrading.
 
 #### Example
 
@@ -59,6 +59,9 @@ Full variable mapping (old → new):
 | `PAM_LDAP_BIND_PASSWORD`                   | `ACCESSD_LDAP_BIND_PASSWORD`                    |
 | `PAM_LDAP_USE_TLS`                         | `ACCESSD_LDAP_USE_TLS`                          |
 | `PAM_LDAP_GROUP_ROLE_MAPPING`              | `ACCESSD_LDAP_GROUP_ROLE_MAPPING`               |
+
+> LDAP runtime configuration is now managed from Admin UI (`Directory & LDAP`) and persisted in DB.
+> LDAP env variables are not used for current deployments.
 | `PAM_SSH_PROXY_ADDR`                       | `ACCESSD_SSH_PROXY_ADDR`                        |
 | `PAM_SSH_PROXY_PUBLIC_HOST`                | `ACCESSD_SSH_PROXY_PUBLIC_HOST`                 |
 | `PAM_SSH_PROXY_HOST_KEY_PATH`              | `ACCESSD_SSH_PROXY_HOST_KEY_PATH`               |
@@ -106,7 +109,7 @@ The connector's optional config file path changed:
 | `~/.pam-connector/config.yaml`   | `~/.accessd-connector/config.yaml`   |
 | `PAM_CONNECTOR_CONFIG_FILE`      | `ACCESSD_CONNECTOR_CONFIG_FILE`      |
 
-Operators using a custom connector config file should move it to the new path (or continue using the old env var — the compat migration bridges it).
+Operators using a custom connector config file should move it to the new path. The old env var is no longer read.
 
 ### SSH proxy username default
 
@@ -116,7 +119,7 @@ The default SSH proxy username changed:
 |---------|-----------|
 | `pam`   | `accessd` |
 
-**Impact:** This only affects deployments where `PAM_SSH_PROXY_USERNAME` was not explicitly set (i.e., using the default). Operators who have `pam` in their SSH known_hosts for the proxy will see a username change in connection strings.
+**Impact:** This only affects deployments where `ACCESSD_SSH_PROXY_USERNAME` was not explicitly set (i.e., using the default). Operators who have `pam` in their SSH known_hosts for the proxy will see a username change in connection strings.
 
 To preserve the old username:
 ```
@@ -166,8 +169,7 @@ sudo install -o root -g accessd -m 0755 accessd /opt/accessd/bin/accessd
 # Or if staying at old path:
 sudo install -o root -g pam -m 0755 accessd /opt/pam/bin/pam-api
 
-# 3. Update env file (PAM_* still works — migrate at your own pace)
-# Optionally rename keys from PAM_* to ACCESSD_*
+# 3. Update env file (rename keys from PAM_* to ACCESSD_*)
 
 # 4. Restart
 sudo systemctl restart accessd  # or pam-api if using old service name

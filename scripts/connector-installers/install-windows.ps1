@@ -103,6 +103,105 @@ function Write-InstallerConfig {
   Write-Host "[accessd-connector] Wrote config: $ConfigFile"
 }
 
+function Write-RuntimeEnvFile {
+  param([string]$EnvFile)
+
+  $envDir = Split-Path -Parent $EnvFile
+  New-Item -ItemType Directory -Force -Path $envDir | Out-Null
+  if (Test-Path $EnvFile) {
+    Write-Host "[accessd-connector] Keeping existing runtime env: $EnvFile"
+    return
+  }
+
+  $defaultOrigin = if ([string]::IsNullOrWhiteSpace($env:ACCESSD_CONNECTOR_ALLOWED_ORIGIN)) {
+    'https://accessd.example.internal'
+  } else {
+    $env:ACCESSD_CONNECTOR_ALLOWED_ORIGIN
+  }
+
+  $lines = @(
+    '# AccessD Connector runtime env (non-sensitive defaults)'
+    '# Keep secrets out of this file.'
+    'ACCESSD_CONNECTOR_ADDR=127.0.0.1:9494'
+    "ACCESSD_CONNECTOR_ALLOWED_ORIGIN=$defaultOrigin"
+    'ACCESSD_CONNECTOR_ALLOW_ANY_ORIGIN=false'
+    'ACCESSD_CONNECTOR_ALLOW_REMOTE=false'
+    'ACCESSD_CONNECTOR_AUTO_TRUST_SERVER_CERT=true'
+    '# ACCESSD_CONNECTOR_TRUST_CERT_URL=https://accessd.example.internal/downloads/certs/accessd-server.crt'
+    ''
+    '# Optional: set ACCESSD_CONNECTOR_SECRET in system environment'
+    '# (recommended) instead of storing it here.'
+  )
+  Set-Content -Path $EnvFile -Value $lines -Encoding UTF8
+  Write-Host "[accessd-connector] Wrote runtime env: $EnvFile"
+}
+
+function Get-OriginHost {
+  param([string]$Origin)
+  if ([string]::IsNullOrWhiteSpace($Origin)) { return $null }
+  try {
+    return ([Uri]$Origin).Host
+  } catch {
+    return $null
+  }
+}
+
+function Save-RemoteServerCert {
+  param(
+    [string]$Host,
+    [string]$OutFile
+  )
+  $tcp = $null
+  $ssl = $null
+  try {
+    $tcp = New-Object System.Net.Sockets.TcpClient($Host, 443)
+    $ssl = New-Object System.Net.Security.SslStream($tcp.GetStream(), $false, ({ $true }))
+    $ssl.AuthenticateAsClient($Host)
+    $remote = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2($ssl.RemoteCertificate)
+    [System.IO.File]::WriteAllBytes($OutFile, $remote.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Cert))
+    return $true
+  } catch {
+    return $false
+  } finally {
+    if ($ssl) { $ssl.Dispose() }
+    if ($tcp) { $tcp.Close() }
+  }
+}
+
+function Trust-AccessDServerCert {
+  param([string]$RuntimeEnvFile)
+
+  $autoTrust = $env:ACCESSD_CONNECTOR_AUTO_TRUST_SERVER_CERT
+  if (-not [string]::IsNullOrWhiteSpace($autoTrust) -and $autoTrust -match '^(?i:false|0|no|off)$') {
+    Write-Host "[accessd-connector] Auto trust disabled (ACCESSD_CONNECTOR_AUTO_TRUST_SERVER_CERT=$autoTrust)."
+    return
+  }
+
+  $origin = $env:ACCESSD_CONNECTOR_ALLOWED_ORIGIN
+  $host = Get-OriginHost -Origin $origin
+  if ([string]::IsNullOrWhiteSpace($host) -or $host -in @('localhost', '127.0.0.1', 'accessd.example.internal')) {
+    return
+  }
+
+  $certDir = Join-Path $configDir 'certs'
+  New-Item -ItemType Directory -Force -Path $certDir | Out-Null
+  $certFile = Join-Path $certDir ("accessd-{0}.cer" -f $host)
+
+  $saved = Save-RemoteServerCert -Host $host -OutFile $certFile
+  if (-not $saved) {
+    Write-Host "[accessd-connector] WARNING: failed to fetch TLS certificate from $host:443"
+    return
+  }
+
+  try {
+    Import-Certificate -FilePath $certFile -CertStoreLocation 'Cert:\CurrentUser\Root' | Out-Null
+    Write-Host "[accessd-connector] Installed server cert into CurrentUser Root trust store: $certFile"
+  } catch {
+    Write-Host "[accessd-connector] WARNING: failed to import cert into CurrentUser Root: $($_.Exception.Message)"
+    Write-Host "[accessd-connector] Saved cert at: $certFile"
+  }
+}
+
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $sourceBin = Join-Path $scriptDir 'accessd-connector.exe'
 if (-not (Test-Path $sourceBin)) {
@@ -116,8 +215,10 @@ $installDir = if ($env:ACCESSD_CONNECTOR_INSTALL_DIR) { $env:ACCESSD_CONNECTOR_I
 $configDir = Join-Path $env:USERPROFILE '.accessd-connector'
 $configFile = Join-Path $configDir 'config.yaml'
 $helperDir = Join-Path $configDir 'bin'
+$runtimeEnvFile = Join-Path (Join-Path $env:USERPROFILE '.config\accessd') 'connector.env'
 $targetBin = Join-Path $installDir 'accessd-connector.exe'
 $handlerScript = Join-Path $helperDir 'url-handler-windows.ps1'
+$trustHelperScript = Join-Path $helperDir 'trust-refresh-windows.ps1'
 
 New-Item -ItemType Directory -Force -Path $installDir | Out-Null
 New-Item -ItemType Directory -Force -Path $helperDir | Out-Null
@@ -138,8 +239,76 @@ Copy-Item -Force $sourceBin $targetBin
 
 @"
 `$ErrorActionPreference = 'SilentlyContinue'
+function Get-OriginHost {
+  param([string]`$Origin)
+  if ([string]::IsNullOrWhiteSpace(`$Origin)) { return `$null }
+  try { return ([Uri]`$Origin).Host } catch { return `$null }
+}
+function Save-RemoteServerCert {
+  param([string]`$Host, [string]`$OutFile)
+  `$tcp = `$null
+  `$ssl = `$null
+  try {
+    `$tcp = New-Object System.Net.Sockets.TcpClient(`$Host, 443)
+    `$ssl = New-Object System.Net.Security.SslStream(`$tcp.GetStream(), `$false, ({ `$true }))
+    `$ssl.AuthenticateAsClient(`$Host)
+    `$remote = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2(`$ssl.RemoteCertificate)
+    [System.IO.File]::WriteAllBytes(`$OutFile, `$remote.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Cert))
+    return `$true
+  } catch {
+    return `$false
+  } finally {
+    if (`$ssl) { `$ssl.Dispose() }
+    if (`$tcp) { `$tcp.Close() }
+  }
+}
+`$envFile = Join-Path `$env:USERPROFILE '.config\accessd\connector.env'
+if (Test-Path `$envFile) {
+  Get-Content `$envFile | ForEach-Object {
+    `$line = (`$_.Trim())
+    if ([string]::IsNullOrWhiteSpace(`$line) -or `$line.StartsWith('#')) { return }
+    if (`$line -notmatch '^[A-Za-z_][A-Za-z0-9_]*=') { return }
+    `$parts = `$line.Split('=', 2)
+    if (`$parts.Count -ne 2) { return }
+    `$key = `$parts[0].Trim()
+    `$value = `$parts[1].Trim().Trim('"').Trim("'")
+    [System.Environment]::SetEnvironmentVariable(`$key, `$value, 'Process')
+  }
+}
+`$autoTrust = `$env:ACCESSD_CONNECTOR_AUTO_TRUST_SERVER_CERT
+if (-not [string]::IsNullOrWhiteSpace(`$autoTrust) -and `$autoTrust -match '^(?i:false|0|no|off)$') { exit 0 }
+`$host = Get-OriginHost -Origin `$env:ACCESSD_CONNECTOR_ALLOWED_ORIGIN
+if ([string]::IsNullOrWhiteSpace(`$host) -or `$host -in @('localhost', '127.0.0.1', 'accessd.example.internal')) { exit 0 }
+`$certDir = Join-Path `$env:USERPROFILE '.accessd-connector\certs'
+New-Item -ItemType Directory -Force -Path `$certDir | Out-Null
+`$certFile = Join-Path `$certDir ("accessd-{0}.cer" -f `$host)
+if (-not (Save-RemoteServerCert -Host `$host -OutFile `$certFile)) { exit 0 }
+Import-Certificate -FilePath `$certFile -CertStoreLocation 'Cert:\CurrentUser\Root' | Out-Null
+"@ | Set-Content -Path $trustHelperScript -Encoding UTF8
+
+@"
+`$ErrorActionPreference = 'SilentlyContinue'
+$envFile = Join-Path `$env:USERPROFILE '.config\accessd\connector.env'
+if (Test-Path `$envFile) {
+  Get-Content `$envFile | ForEach-Object {
+    `$line = (`$_.Trim())
+    if ([string]::IsNullOrWhiteSpace(`$line) -or `$line.StartsWith('#')) { return }
+    if (`$line -notmatch '^[A-Za-z_][A-Za-z0-9_]*=') { return }
+    `$parts = `$line.Split('=', 2)
+    if (`$parts.Count -ne 2) { return }
+    `$key = `$parts[0].Trim()
+    `$value = `$parts[1].Trim().Trim('"').Trim("'")
+    [System.Environment]::SetEnvironmentVariable(`$key, `$value, 'Process')
+  }
+}
+`$connectorAddr = if ([string]::IsNullOrWhiteSpace(`$env:ACCESSD_CONNECTOR_ADDR)) { '127.0.0.1:9494' } else { `$env:ACCESSD_CONNECTOR_ADDR }
+`$trustScript = Join-Path `$env:USERPROFILE '.accessd-connector\bin\trust-refresh-windows.ps1'
+if ([string]::IsNullOrWhiteSpace(`$env:ACCESSD_CONNECTOR_SECRET)) {
+  Write-Host '[accessd-connector] WARNING: ACCESSD_CONNECTOR_SECRET is not set in process env.'
+}
+if (Test-Path `$trustScript) { powershell.exe -NoProfile -ExecutionPolicy Bypass -File `$trustScript | Out-Null }
 try {
-  Invoke-WebRequest -UseBasicParsing -Uri 'http://127.0.0.1:9494/version' -TimeoutSec 1 | Out-Null
+  Invoke-WebRequest -UseBasicParsing -Uri ("http://{0}/version" -f `$connectorAddr) -TimeoutSec 1 | Out-Null
   exit 0
 } catch {
 }
@@ -200,10 +369,36 @@ if (-not $puttyPath) {
 }
 
 Write-InstallerConfig -ConfigFile $configFile -DBeaverPath $dbeaverPath -FileZillaPath $filezillaPath -RedisCLIPath $redisCLIPath -PuTTYPath $puttyPath -WinSCPPath $winscpPath -TerminalPref $terminalPref
+Write-RuntimeEnvFile -EnvFile $runtimeEnvFile
+if (Test-Path $runtimeEnvFile) {
+  Get-Content $runtimeEnvFile | ForEach-Object {
+    $line = ($_.Trim())
+    if ([string]::IsNullOrWhiteSpace($line) -or $line.StartsWith('#')) { return }
+    if ($line -notmatch '^[A-Za-z_][A-Za-z0-9_]*=') { return }
+    $parts = $line.Split('=', 2)
+    if ($parts.Count -ne 2) { return }
+    $key = $parts[0].Trim()
+    $value = $parts[1].Trim().Trim('"').Trim("'")
+    [System.Environment]::SetEnvironmentVariable($key, $value, 'Process')
+  }
+}
+Trust-AccessDServerCert -RuntimeEnvFile $runtimeEnvFile
 
 if ($wasRunning) {
   Write-Host '[accessd-connector] Restarting connector after reinstall...'
   try {
+    if (Test-Path $runtimeEnvFile) {
+      Get-Content $runtimeEnvFile | ForEach-Object {
+        $line = ($_.Trim())
+        if ([string]::IsNullOrWhiteSpace($line) -or $line.StartsWith('#')) { return }
+        if ($line -notmatch '^[A-Za-z_][A-Za-z0-9_]*=') { return }
+        $parts = $line.Split('=', 2)
+        if ($parts.Count -ne 2) { return }
+        $key = $parts[0].Trim()
+        $value = $parts[1].Trim().Trim('"').Trim("'")
+        [System.Environment]::SetEnvironmentVariable($key, $value, 'Process')
+      }
+    }
     Start-Process -FilePath $targetBin -WindowStyle Hidden | Out-Null
   } catch {
     Write-Host "[accessd-connector] WARNING: failed to restart connector automatically: $($_.Exception.Message)"
@@ -211,6 +406,7 @@ if ($wasRunning) {
 }
 
 Write-Host "[accessd-connector] Installed binary: $targetBin"
+Write-Host "[accessd-connector] Runtime env file: $runtimeEnvFile"
 Write-Host "[accessd-connector] Handler script: $handlerScript"
 Write-Host "[accessd-connector] Registered URL scheme: accessd-connector://"
 Write-Host "[accessd-connector] UI auto-start can now invoke accessd-connector://start"

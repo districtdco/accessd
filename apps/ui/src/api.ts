@@ -415,6 +415,7 @@ type UpsertLDAPSettingsBody = {
   bind_dn: string
   bind_password: string
   keep_existing_password: boolean
+  keep_existing_ca_cert_pem: boolean
   user_search_filter: string
   sync_user_filter: string
   username_attribute: string
@@ -424,6 +425,7 @@ type UpsertLDAPSettingsBody = {
   group_search_filter: string
   group_name_attribute: string
   group_role_mapping: string
+  ca_cert_pem: string
   use_tls: boolean
   start_tls: boolean
   insecure_skip_verify: boolean

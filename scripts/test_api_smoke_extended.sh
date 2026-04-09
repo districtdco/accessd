@@ -12,8 +12,8 @@ require_cmd curl
 require_cmd jq
 
 API_BASE_URL="${API_BASE_URL:-http://127.0.0.1:8080}"
-USERNAME="${ACCESSD_SMOKE_USERNAME:-${PAM_SMOKE_USERNAME:-admin}}"
-PASSWORD="${ACCESSD_SMOKE_PASSWORD:-${PAM_SMOKE_PASSWORD:-admin123}}"
+USERNAME="${ACCESSD_SMOKE_USERNAME:-admin}"
+PASSWORD="${ACCESSD_SMOKE_PASSWORD:-admin123}"
 
 COOKIE_JAR="$(mktemp -t accessd-matrix-cookie.XXXXXX)"
 trap 'rm -f "$COOKIE_JAR"' EXIT

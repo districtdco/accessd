@@ -43,6 +43,16 @@ WEB_GROUP="${WEB_GROUP:-www-data}"
 NGINX_SITE_NAME="${NGINX_SITE_NAME:-accessd.conf}"
 INSTALL_NGINX="${INSTALL_NGINX:-true}"
 INSTALL_POSTGRES="${INSTALL_POSTGRES:-auto}" # auto|true|false
+TLS_SETUP_MODE="${TLS_SETUP_MODE:-prompt}"   # prompt|existing|self-signed|csr|skip
+ACCESSD_DOMAIN="${ACCESSD_DOMAIN:-}"
+ACCESSD_TLS_CERT_DIR="${ACCESSD_TLS_CERT_DIR:-/etc/ssl/accessd}"
+ACCESSD_TLS_VALID_DAYS="${ACCESSD_TLS_VALID_DAYS:-825}"
+ACCESSD_TLS_ORG="${ACCESSD_TLS_ORG:-AccessD}"
+ACCESSD_TLS_KEY_PATH="${ACCESSD_TLS_KEY_PATH:-${ACCESSD_TLS_CERT_DIR}/privkey.pem}"
+ACCESSD_TLS_CERT_PATH="${ACCESSD_TLS_CERT_PATH:-${ACCESSD_TLS_CERT_DIR}/fullchain.pem}"
+ACCESSD_TLS_CSR_PATH="${ACCESSD_TLS_CSR_PATH:-${ACCESSD_TLS_CERT_DIR}/accessd.csr}"
+PUBLISH_OPERATOR_TLS_CERT="${PUBLISH_OPERATOR_TLS_CERT:-true}"
+ACCESSD_PUBLIC_CERT_SOURCE="${ACCESSD_PUBLIC_CERT_SOURCE:-${ACCESSD_TLS_CERT_PATH}}"
 
 log() {
   echo "[install] $*"
@@ -58,6 +68,163 @@ bool_is_true() {
     1|true|yes|on) return 0 ;;
     *) return 1 ;;
   esac
+}
+
+has_tty() {
+  [[ -t 0 && -t 1 ]]
+}
+
+trim() {
+  local s="${1:-}"
+  s="${s#${s%%[![:space:]]*}}"
+  s="${s%${s##*[![:space:]]}}"
+  printf '%s' "${s}"
+}
+
+escape_sed_replacement() {
+  printf '%s' "$1" | sed -e 's/[\/&]/\\&/g'
+}
+
+set_or_replace_env_kv() {
+  local env_file="$1"
+  local key="$2"
+  local value="$3"
+  local escaped
+  escaped="$(escape_sed_replacement "${value}")"
+  if grep -qE "^${key}=" "${env_file}"; then
+    sed -i -E "s|^${key}=.*$|${key}=${escaped}|" "${env_file}"
+  else
+    echo "${key}=${value}" >> "${env_file}"
+  fi
+}
+
+apply_domain_to_api_env_if_placeholder() {
+  local env_file="$1"
+  local domain="$2"
+  [[ -f "${env_file}" ]] || return 0
+  local keys=(
+    "ACCESSD_CORS_ALLOWED_ORIGINS"
+    "ACCESSD_SSH_PROXY_PUBLIC_HOST"
+    "ACCESSD_PG_PROXY_PUBLIC_HOST"
+    "ACCESSD_MYSQL_PROXY_PUBLIC_HOST"
+    "ACCESSD_MSSQL_PROXY_PUBLIC_HOST"
+    "ACCESSD_REDIS_PROXY_PUBLIC_HOST"
+    "ACCESSD_CONNECTOR_RELEASES_BASE_URL"
+  )
+  for key in "${keys[@]}"; do
+    local current
+    current="$(env_value_from_file "${env_file}" "${key}" || true)"
+    if [[ -z "${current}" || "${current}" == *accessd.example.internal* ]]; then
+      case "${key}" in
+        ACCESSD_CORS_ALLOWED_ORIGINS|ACCESSD_CONNECTOR_RELEASES_BASE_URL)
+          if [[ "${key}" == "ACCESSD_CORS_ALLOWED_ORIGINS" ]]; then
+            set_or_replace_env_kv "${env_file}" "${key}" "https://${domain}"
+          else
+            set_or_replace_env_kv "${env_file}" "${key}" "https://${domain}/downloads/connectors"
+          fi
+          ;;
+        *)
+          set_or_replace_env_kv "${env_file}" "${key}" "${domain}"
+          ;;
+      esac
+    fi
+  done
+}
+
+configure_nginx_site_for_domain_and_tls() {
+  local site_file="$1"
+  local domain="$2"
+  local cert_path="$3"
+  local key_path="$4"
+  [[ -f "${site_file}" ]] || return 0
+  local domain_esc cert_esc key_esc
+  domain_esc="$(escape_sed_replacement "${domain}")"
+  cert_esc="$(escape_sed_replacement "${cert_path}")"
+  key_esc="$(escape_sed_replacement "${key_path}")"
+  sed -i -E "s|server_name accessd\\.example\\.internal;|server_name ${domain_esc};|g" "${site_file}"
+  sed -i -E "s|ssl_certificate[[:space:]]+/etc/ssl/accessd/fullchain\\.pem;|ssl_certificate     ${cert_esc};|g" "${site_file}"
+  sed -i -E "s|ssl_certificate_key[[:space:]]+/etc/ssl/accessd/privkey\\.pem;|ssl_certificate_key ${key_esc};|g" "${site_file}"
+}
+
+choose_tls_mode() {
+  local mode="${TLS_SETUP_MODE,,}"
+  case "${mode}" in
+    existing|self-signed|csr|skip)
+      printf '%s' "${mode}"
+      return 0
+      ;;
+  esac
+  if ! has_tty; then
+    printf 'existing'
+    return 0
+  fi
+  echo "[install] TLS setup mode"
+  echo "  1) existing cert/key (default)"
+  echo "  2) generate self-signed cert"
+  echo "  3) generate private key + CSR"
+  echo "  4) skip TLS setup"
+  local choice
+  read -r -p "Select mode [1-4]: " choice
+  choice="$(trim "${choice}")"
+  case "${choice}" in
+    2|self-signed) printf 'self-signed' ;;
+    3|csr) printf 'csr' ;;
+    4|skip) printf 'skip' ;;
+    *) printf 'existing' ;;
+  esac
+}
+
+prompt_for_domain_if_needed() {
+  if [[ -n "${ACCESSD_DOMAIN}" ]]; then
+    return 0
+  fi
+  if has_tty; then
+    read -r -p "AccessD domain (for nginx server_name/CORS) [accessd.example.internal]: " ACCESSD_DOMAIN
+    ACCESSD_DOMAIN="$(trim "${ACCESSD_DOMAIN}")"
+  fi
+  if [[ -z "${ACCESSD_DOMAIN}" ]]; then
+    ACCESSD_DOMAIN="accessd.example.internal"
+  fi
+}
+
+setup_tls_assets() {
+  local mode="$1"
+  mkdir -p "${ACCESSD_TLS_CERT_DIR}"
+  case "${mode}" in
+    self-signed)
+      log "generating self-signed TLS cert for domain ${ACCESSD_DOMAIN}"
+      openssl req -x509 -newkey rsa:4096 -sha256 -nodes \
+        -keyout "${ACCESSD_TLS_KEY_PATH}" \
+        -out "${ACCESSD_TLS_CERT_PATH}" \
+        -days "${ACCESSD_TLS_VALID_DAYS}" \
+        -subj "/CN=${ACCESSD_DOMAIN}/O=${ACCESSD_TLS_ORG}" \
+        -addext "subjectAltName=DNS:${ACCESSD_DOMAIN}"
+      chmod 0600 "${ACCESSD_TLS_KEY_PATH}"
+      chmod 0644 "${ACCESSD_TLS_CERT_PATH}"
+      ACCESSD_PUBLIC_CERT_SOURCE="${ACCESSD_TLS_CERT_PATH}"
+      ;;
+    csr)
+      log "generating TLS private key + CSR for domain ${ACCESSD_DOMAIN}"
+      openssl req -new -newkey rsa:4096 -sha256 -nodes \
+        -keyout "${ACCESSD_TLS_KEY_PATH}" \
+        -out "${ACCESSD_TLS_CSR_PATH}" \
+        -subj "/CN=${ACCESSD_DOMAIN}/O=${ACCESSD_TLS_ORG}" \
+        -addext "subjectAltName=DNS:${ACCESSD_DOMAIN}"
+      chmod 0600 "${ACCESSD_TLS_KEY_PATH}"
+      chmod 0644 "${ACCESSD_TLS_CSR_PATH}"
+      warn "CSR created at ${ACCESSD_TLS_CSR_PATH}; install signed cert at ${ACCESSD_TLS_CERT_PATH} before enabling nginx TLS."
+      ;;
+    existing|skip)
+      return 0
+      ;;
+    *)
+      warn "unknown TLS_SETUP_MODE=${mode}; skipping TLS setup"
+      ;;
+  esac
+}
+
+nginx_tls_ready() {
+  [[ -f "${ACCESSD_TLS_CERT_PATH}" && -f "${ACCESSD_TLS_KEY_PATH}" ]]
 }
 
 assert_safe_web_root() {
@@ -276,6 +443,37 @@ REVOKE ALL ON DATABASE "${DB_URL_NAME}" FROM public;
 SQL
 }
 
+publish_operator_tls_cert_if_available() {
+  if ! bool_is_true "${PUBLISH_OPERATOR_TLS_CERT}"; then
+    log "operator TLS cert publish skipped (PUBLISH_OPERATOR_TLS_CERT=${PUBLISH_OPERATOR_TLS_CERT})"
+    return 0
+  fi
+  if [[ ! -f "${ACCESSD_PUBLIC_CERT_SOURCE}" ]]; then
+    warn "operator TLS cert source not found: ${ACCESSD_PUBLIC_CERT_SOURCE}; skipping cert publish"
+    return 0
+  fi
+
+  local cert_dir="${VM_DOWNLOADS_DIR}/certs"
+  local cert_out="${cert_dir}/accessd-server.crt"
+  mkdir -p "${cert_dir}"
+
+  awk '
+    /-----BEGIN CERTIFICATE-----/ {in_cert=1}
+    in_cert {print}
+    /-----END CERTIFICATE-----/ {exit}
+  ' "${ACCESSD_PUBLIC_CERT_SOURCE}" > "${cert_out}" || true
+
+  if [[ ! -s "${cert_out}" ]]; then
+    warn "failed extracting PEM certificate from ${ACCESSD_PUBLIC_CERT_SOURCE}; skipping cert publish"
+    rm -f "${cert_out}" || true
+    return 0
+  fi
+
+  chown root:"${WEB_GROUP}" "${cert_out}"
+  chmod 0644 "${cert_out}"
+  log "published operator TLS cert: ${cert_out}"
+}
+
 log "bundle: ${BUNDLE_DIR}"
 log "connector tag: ${ACCESSD_CONNECTOR_TAG}"
 
@@ -320,6 +518,22 @@ if bool_is_true "${INSTALL_NGINX}"; then
   ln -sfn "${VM_NGINX_SITES_AVAILABLE_DIR}/${NGINX_SITE_NAME}" "${VM_NGINX_SITES_ENABLED_DIR}/${NGINX_SITE_NAME}"
 fi
 
+prompt_for_domain_if_needed
+apply_domain_to_api_env_if_placeholder "${VM_ETC_DIR}/accessd.env" "${ACCESSD_DOMAIN}"
+
+TLS_MODE="$(choose_tls_mode)"
+setup_tls_assets "${TLS_MODE}"
+
+if bool_is_true "${INSTALL_NGINX}"; then
+  configure_nginx_site_for_domain_and_tls \
+    "${VM_NGINX_SITES_AVAILABLE_DIR}/${NGINX_SITE_NAME}" \
+    "${ACCESSD_DOMAIN}" \
+    "${ACCESSD_TLS_CERT_PATH}" \
+    "${ACCESSD_TLS_KEY_PATH}"
+fi
+
+publish_operator_tls_cert_if_available
+
 setup_local_postgres_if_requested
 
 log "reloading systemd + services"
@@ -331,9 +545,14 @@ else
   systemctl start accessd
 fi
 if bool_is_true "${INSTALL_NGINX}"; then
-  systemctl enable --now nginx
-  nginx -t
-  systemctl reload nginx
+  if nginx_tls_ready; then
+    systemctl enable --now nginx
+    nginx -t
+    systemctl reload nginx
+  else
+    warn "nginx TLS cert/key not ready at ${ACCESSD_TLS_CERT_PATH} and ${ACCESSD_TLS_KEY_PATH}; skipping nginx start/reload"
+    warn "complete TLS cert provisioning and run: nginx -t && systemctl reload nginx"
+  fi
 fi
 
 echo

@@ -45,6 +45,7 @@ type FormState = {
   bind_dn: string
   bind_password: string
   keep_existing_password: boolean
+  keep_existing_ca_cert_pem: boolean
   user_search_filter: string
   sync_user_filter: string
   username_attribute: string
@@ -54,6 +55,7 @@ type FormState = {
   group_search_filter: string
   group_name_attribute: string
   group_role_mapping: string
+  ca_cert_pem: string
   use_tls: boolean
   start_tls: boolean
   insecure_skip_verify: boolean
@@ -71,6 +73,7 @@ function settingsToForm(settings: AdminLDAPSettings): FormState {
     bind_dn: settings.bind_dn,
     bind_password: '',
     keep_existing_password: settings.has_bind_password,
+    keep_existing_ca_cert_pem: settings.has_ca_cert_pem,
     user_search_filter: settings.user_search_filter,
     sync_user_filter: settings.sync_user_filter,
     username_attribute: settings.username_attribute,
@@ -80,6 +83,7 @@ function settingsToForm(settings: AdminLDAPSettings): FormState {
     group_search_filter: settings.group_search_filter,
     group_name_attribute: settings.group_name_attribute,
     group_role_mapping: settings.group_role_mapping,
+    ca_cert_pem: '',
     use_tls: settings.use_tls,
     start_tls: settings.start_tls,
     insecure_skip_verify: settings.insecure_skip_verify,
@@ -289,6 +293,21 @@ export function AdminLDAPPage() {
                 checked={form.deactivate_missing_users}
                 onChange={(v) => updateField('deactivate_missing_users', v)}
                 hint="Users are deactivated (not deleted), preserving session/audit history."
+              />
+            </div>
+
+            <div className="mt-4 grid gap-4">
+              <TextArea
+                label={settings?.has_ca_cert_pem ? 'CA Certificate PEM (optional update)' : 'CA Certificate PEM (optional)'}
+                value={form.ca_cert_pem}
+                onChange={(v) => {
+                  updateField('ca_cert_pem', v)
+                  if (v.trim().length > 0) {
+                    updateField('keep_existing_ca_cert_pem', false)
+                  }
+                }}
+                rows={4}
+                placeholder={settings?.has_ca_cert_pem ? 'Leave blank to keep existing CA certificate' : '-----BEGIN CERTIFICATE----- ...'}
               />
             </div>
 

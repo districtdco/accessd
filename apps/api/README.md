@@ -95,7 +95,6 @@ Optional:
 - `ACCESSD_AUTH_SESSION_TTL` (default: `12h`)
 - `ACCESSD_AUTH_COOKIE_SECURE` (default: `false` in `development`, `true` otherwise)
 - `ACCESSD_AUTH_COOKIE_SAMESITE` (default: `lax` in `development`, `strict` otherwise; options: `lax`, `strict`, `none`)
-- `ACCESSD_AUTH_PROVIDER_MODE` (default: `local`; options: `local`, `ldap`, `hybrid`)
 - `ACCESSD_VAULT_KEY` (required): master key for credential encryption (base64-encoded 32-byte key recommended; required outside development unless `ACCESSD_ALLOW_UNSAFE_MODE=true`)
 - `ACCESSD_VAULT_KEY_ID` (default: `v1`)
 - `ACCESSD_LAUNCH_TOKEN_SECRET` (required): HMAC signing secret for launch tokens
@@ -144,23 +143,7 @@ Optional:
 - `ACCESSD_DEV_ADMIN_PASSWORD` (default: `admin123`)
 - `ACCESSD_DEV_ADMIN_EMAIL` (default: `admin@accessd.local`)
 - `ACCESSD_DEV_ADMIN_NAME` (default: `AccessD Administrator`)
-- `ACCESSD_LDAP_URL` (optional; overrides host/port when set)
-- `ACCESSD_LDAP_HOST` (default: `127.0.0.1`)
-- `ACCESSD_LDAP_PORT` (default: `389`)
-- `ACCESSD_LDAP_BASE_DN` (required when auth mode is `ldap` or `hybrid`)
-- `ACCESSD_LDAP_BIND_DN` / `ACCESSD_LDAP_BIND_PASSWORD` (optional service account for user/group searches)
-- `ACCESSD_LDAP_USER_FILTER` (default: `(&(objectCategory=person)(objectClass=user)({{username_attr}}={{username}}))`)
-- `ACCESSD_LDAP_USERNAME_ATTR` (default: `sAMAccountName`)
-- `ACCESSD_LDAP_DISPLAY_NAME_ATTR` (default: `displayName`; falls back to `cn`/`name` when empty)
-- `ACCESSD_LDAP_EMAIL_ATTR` (default: `mail`)
-- `ACCESSD_LDAP_USE_TLS` (default: `false`)
-- `ACCESSD_LDAP_STARTTLS` (default: `false`; mutually exclusive with `ACCESSD_LDAP_USE_TLS`)
-- `ACCESSD_LDAP_INSECURE_SKIP_VERIFY` (default: `false`; dev-only certificate bypass)
-- `ACCESSD_LDAP_CA_CERT_FILE` (optional path to PEM CA cert; use for Samba AD/private/self-signed CA trust)
-- `ACCESSD_LDAP_GROUP_BASE_DN` (optional; defaults to `ACCESSD_LDAP_BASE_DN`)
-- `ACCESSD_LDAP_GROUP_FILTER` (default: `(&(objectClass=group)(member={{user_dn}}))`)
-- `ACCESSD_LDAP_GROUP_NAME_ATTR` (default: `cn`)
-- `ACCESSD_LDAP_GROUP_ROLE_MAPPING` (optional additive mapping: `ldapGroup=role1|role2,groupDN=role3`)
+- LDAP provider mode and connection settings are managed from Admin UI (`/admin/directory`) and stored in `ldap_settings`.
 - `ACCESSD_ALLOW_UNSAFE_MODE` (default: `false`; enables development-only unsafe settings outside `development`)
 
 Deployment note:
@@ -305,7 +288,7 @@ Paste launch token when prompted. Password auth also works as first-pass fallbac
 - Upstream host key validation defaults to `accept-new` and persists accepted fingerprints in `ACCESSD_SSH_PROXY_UPSTREAM_KNOWN_HOSTS_PATH`.
 - In `accept-new`, unknown and rotated keys are accepted and recorded with SHA256 fingerprint logs.
 - `insecure` SSH host-key mode is blocked outside `development` unless `ACCESSD_ALLOW_UNSAFE_MODE=true`.
-- `ACCESSD_AUTH_COOKIE_SECURE=false`, `ACCESSD_AUTH_COOKIE_SAMESITE=none`, and `ACCESSD_LDAP_INSECURE_SKIP_VERIFY=true` are blocked outside `development` unless `ACCESSD_ALLOW_UNSAFE_MODE=true`.
+- `ACCESSD_AUTH_COOKIE_SECURE=false` and `ACCESSD_AUTH_COOKIE_SAMESITE=none` are blocked outside `development` unless `ACCESSD_ALLOW_UNSAFE_MODE=true`.
 - Admin credential updates (`PUT /admin/assets/{assetID}/credentials/{credentialType}`) now write an explicit `audit_events` record (`event_type=admin_action`, `action=credential_upsert`).
 - Session stream capture stores `data_in`/`data_out` chunks in `session_events` with base64 payload plus asciicast-v2-like timing tuples; terminal resizes are tracked as `terminal_resize`.
 - Shell replay data remains raw/timed capture; UI replay now uses terminal-emulator rendering for CSI/control-sequence fidelity.
@@ -323,15 +306,12 @@ Paste launch token when prompted. Password auth also works as first-pass fallbac
 
 ## Auth/RBAC Notes
 
-- Auth mode is selected by `ACCESSD_AUTH_PROVIDER_MODE`:
-  - `local`: local provider only.
-  - `ldap`: LDAP provider only.
-  - `hybrid`: LDAP provider first, local fallback second.
+- Auth mode is selected from Admin UI Directory settings (`local`, `ldap`, `hybrid`).
 - Passwords are stored as bcrypt hashes (`password_hash`), never plaintext.
 - Authenticated API access uses server-controlled HTTP-only cookies.
 - LDAP login maps users into local `users` rows (`auth_provider=ldap`) and updates basic profile attributes on login.
 - LDAP diagnostics now differentiate user-not-found, invalid password, bind/search config issues, and TLS/connectivity issues in logs without leaking secrets.
-- Optional LDAP group-to-role mapping is additive-only on login (`ACCESSD_LDAP_GROUP_ROLE_MAPPING`); existing local roles are preserved.
+- Optional LDAP group-to-role mapping is additive-only on login; existing local roles are preserved.
 - Group-role mapping keys can be either LDAP group names (`cn`) or full LDAP group DNs.
 - Roles are stored in `roles` and `user_roles`, with baseline roles:
   - `admin`
@@ -346,24 +326,13 @@ Paste launch token when prompted. Password auth also works as first-pass fallbac
 
 ## Samba AD Example Configuration
 
-```env
-ACCESSD_AUTH_PROVIDER_MODE=hybrid
-ACCESSD_LDAP_HOST=dc1.corp.example.com
-ACCESSD_LDAP_PORT=636
-ACCESSD_LDAP_USE_TLS=true
-ACCESSD_LDAP_CA_CERT_FILE=/etc/accessd/certs/samba-ad-ca.pem
-ACCESSD_LDAP_BASE_DN=DC=corp,DC=example,DC=com
-ACCESSD_LDAP_BIND_DN=CN=pam-reader,OU=Service Accounts,DC=corp,DC=example,DC=com
-ACCESSD_LDAP_BIND_PASSWORD=replace-me
-ACCESSD_LDAP_USERNAME_ATTR=sAMAccountName
-ACCESSD_LDAP_USER_FILTER=(&(objectCategory=person)(objectClass=user)({{username_attr}}={{username}}))
-ACCESSD_LDAP_DISPLAY_NAME_ATTR=displayName
-ACCESSD_LDAP_EMAIL_ATTR=mail
-ACCESSD_LDAP_GROUP_BASE_DN=OU=Groups,DC=corp,DC=example,DC=com
-ACCESSD_LDAP_GROUP_FILTER=(&(objectClass=group)(member={{user_dn}}))
-ACCESSD_LDAP_GROUP_NAME_ATTR=cn
-ACCESSD_LDAP_GROUP_ROLE_MAPPING=AccessD Operators=operator,CN=AccessD Admins,OU=Groups,DC=corp,DC=example,DC=com=admin|auditor
-```
+Configure these in Admin UI (`Admin -> Directory & LDAP`):
+- Provider mode: `hybrid`
+- Host/port or URL: `dc1.corp.example.com:636` or `ldaps://dc1.corp.example.com:636`
+- Base DN: `DC=corp,DC=example,DC=com`
+- Bind DN/password: service account with read permissions
+- TLS: enabled, and CA certificate PEM pasted in the UI when private CA is used
+- Group-role mapping: `AccessD Operators=operator,CN=AccessD Admins,OU=Groups,DC=corp,DC=example,DC=com=admin|auditor`
 
 - Typical DN/base DN examples:
   - Domain base DN: `DC=corp,DC=example,DC=com`

@@ -30,30 +30,7 @@ type Config struct {
 	Resolver *discovery.Resolver
 }
 
-// migrateEnvCompat bridges legacy PAM_CONNECTOR_* env vars to ACCESSD_CONNECTOR_*
-// equivalents so that existing connector installations continue to work without
-// changes. ACCESSD_* values win if both are set.
-func migrateEnvCompat() {
-	for _, env := range os.Environ() {
-		eq := strings.IndexByte(env, '=')
-		if eq <= 0 {
-			continue
-		}
-		key := env[:eq]
-		val := env[eq+1:]
-		if !strings.HasPrefix(key, "PAM_") {
-			continue
-		}
-		newKey := "ACCESSD_" + key[4:]
-		if strings.TrimSpace(os.Getenv(newKey)) == "" {
-			_ = os.Setenv(newKey, val)
-		}
-	}
-}
-
 func Load() Config {
-	// Migrate legacy PAM_* env vars first so ACCESSD_* reads below pick them up.
-	migrateEnvCompat()
 	if path, created, err := discovery.EnsureDefaultConfigFile(); err != nil {
 		log.Printf("WARNING: failed to prepare default discovery config file: %v", err)
 	} else if created {

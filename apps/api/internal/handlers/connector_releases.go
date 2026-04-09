@@ -63,8 +63,8 @@ func (h *ConnectorReleasesHandler) Latest(w http.ResponseWriter, _ *http.Request
 		ChecksumFileURL: fmt.Sprintf("%s/%s/accessd-connector-%s-checksums.txt", base, tag, trimmedVersion),
 		Artifacts:       artifacts,
 		BackwardCompat: []string{
-			"PAM_* environment variables are still accepted and mapped to ACCESSD_*",
-			"Legacy pam-connector naming remains temporarily supported in migration docs",
+			"Use ACCESSD_* environment variable names",
+			"Connector installer auto-refreshes AccessD TLS trust when enabled",
 		},
 	})
 }

@@ -73,6 +73,34 @@ func main() {
 			"built_at": builtAt,
 		})
 	})
+	mux.HandleFunc("GET /info", func(w http.ResponseWriter, _ *http.Request) {
+		missing := make([]string, 0, 1)
+		if strings.TrimSpace(cfg.ConnectorSecret) == "" && !cfg.AllowInsecureNoToken {
+			missing = append(missing, "ACCESSD_CONNECTOR_SECRET")
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"service":  "accessd-connector",
+			"version":  version,
+			"commit":   commit,
+			"built_at": builtAt,
+			"runtime": map[string]any{
+				"addr":                 cfg.Addr,
+				"allow_remote":         cfg.AllowRemote,
+				"allow_any_origin":     cfg.AllowAnyOrigin,
+				"allow_insecure_token": cfg.AllowInsecureNoToken,
+				"allowed_origins":      cfg.AllowedOrigins,
+			},
+			"requirements": map[string]any{
+				"ok":                      len(missing) == 0,
+				"missing_env":             missing,
+				"connector_secret_present": strings.TrimSpace(cfg.ConnectorSecret) != "",
+				"notes": []string{
+					"Connector runtime settings are operator-machine specific.",
+					"Set ACCESSD_CONNECTOR_ALLOWED_ORIGIN to the UI origin.",
+				},
+			},
+		})
+	})
 
 	mux.HandleFunc("POST /launch/shell", func(w http.ResponseWriter, r *http.Request) {
 		var req launch.Request

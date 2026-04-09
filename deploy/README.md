@@ -59,7 +59,7 @@ curl -fs http://127.0.0.1:8080/health/ready && echo "API ready"
 sudo journalctl -u accessd -f
 ```
 
-See [DEPLOY_PRIVATE_DEBIAN_SYSTEMD.md](../DEPLOY_PRIVATE_DEBIAN_SYSTEMD.md) for the complete guide.
+See [DEPLOY.md](../DEPLOY.md) for the complete guide.
 
 Bundle install helper:
 
@@ -84,16 +84,29 @@ Installer behavior:
 Useful installer flags:
 - `INSTALL_NGINX=true|false` (default: `true`)
 - `INSTALL_POSTGRES=auto|true|false` (default: `auto`)
+- `TLS_SETUP_MODE=prompt|existing|self-signed|csr|skip` (default: `prompt`)
+- `ACCESSD_DOMAIN=accessd.example.internal` (used for nginx `server_name` + env placeholders)
+- `ACCESSD_TLS_CERT_DIR=/etc/ssl/accessd` (default cert dir)
+- `ACCESSD_TLS_CERT_PATH=/etc/ssl/accessd/fullchain.pem` (nginx cert path)
+- `ACCESSD_TLS_KEY_PATH=/etc/ssl/accessd/privkey.pem` (nginx key path)
+- `ACCESSD_TLS_CSR_PATH=/etc/ssl/accessd/accessd.csr` (CSR output path when `TLS_SETUP_MODE=csr`)
 - `ACCESSD_CONNECTOR_TAG=vX.Y.Z` (override connector artifact tag to publish)
+- `PUBLISH_OPERATOR_TLS_CERT=true|false` (default: `true`; publishes `/downloads/certs/accessd-server.crt` when source cert exists)
+- `ACCESSD_PUBLIC_CERT_SOURCE=/path/to/fullchain.pem` (default: `/etc/ssl/accessd/fullchain.pem`)
+
+Interactive behavior:
+- With `TLS_SETUP_MODE=prompt`, installer asks for domain and TLS mode.
+- `self-signed` generates cert/key directly (quick lab setup).
+- `csr` generates key + CSR and skips nginx reload until signed cert is installed.
 
 Connector runtime note:
 
 - In normal operator setups, connector is started on-demand by the UI via `accessd-connector://start` after installer protocol registration.
 - `systemd/accessd-connector.service` is not required for this default flow.
-
-## Legacy PAM_* Variables
-
-AccessD automatically migrates `PAM_*` environment variables to `ACCESSD_*` equivalents on startup. Existing deployments using `PAM_*` continue to work without changes.
+- Connector installers can auto-trust the AccessD HTTPS cert on operator machines:
+  - Default source URL: `https://<ui-domain>/downloads/certs/accessd-server.crt`
+  - Override with `ACCESSD_CONNECTOR_TRUST_CERT_URL`
+  - Disable with `ACCESSD_CONNECTOR_AUTO_TRUST_SERVER_CERT=false`
 
 ## Secrets
 
@@ -114,7 +127,7 @@ Connector hardening default:
 - `ACCESSD_CONNECTOR_ALLOW_INSECURE_NO_TOKEN=false` (recommended default)
 - Set `true` only for temporary local debugging; never for production rollout.
 
-LDAP with Samba AD self-signed/private CA:
-- Keep `ACCESSD_LDAP_INSECURE_SKIP_VERIFY=false`.
-- Set `ACCESSD_LDAP_CA_CERT_FILE` to the PEM CA certificate path on the server host.
-- Example: `/etc/accessd/certs/samba-ad-ca.pem`.
+LDAP configuration:
+- Configure LDAP from Admin UI (`Directory & LDAP`) after first admin login.
+- LDAP provider mode, bind settings, filters, and TLS CA PEM are persisted in DB (`ldap_settings`).
+- Do not keep LDAP runtime settings in `/etc/accessd/accessd.env`; this avoids env/UI drift.

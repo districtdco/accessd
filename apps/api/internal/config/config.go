@@ -89,6 +89,7 @@ type LDAPConfig struct {
 	BindDN               string
 	BindPassword         string
 	CACertFile           string
+	CACertPEM            string
 	UserSearchFilter     string
 	UsernameAttribute    string
 	DisplayNameAttribute string
@@ -168,43 +169,14 @@ type RedisProxyConfig struct {
 	MaxSessionAge   time.Duration
 }
 
-// migrateEnvCompat bridges legacy PAM_* environment variables to their ACCESSD_*
-// equivalents. Called at the start of Load() so that deployments using the old
-// prefix continue to work without modification. ACCESSD_* values always win if
-// both are set.
-func migrateEnvCompat() {
-	for _, env := range os.Environ() {
-		eq := strings.IndexByte(env, '=')
-		if eq <= 0 {
-			continue
-		}
-		key := env[:eq]
-		val := env[eq+1:]
-		if !strings.HasPrefix(key, "PAM_") {
-			continue
-		}
-		// PAM_SOMETHING → ACCESSD_SOMETHING
-		newKey := "ACCESSD_" + key[4:]
-		if strings.TrimSpace(os.Getenv(newKey)) == "" {
-			_ = os.Setenv(newKey, val)
-		}
-	}
-}
-
 func Load() (Config, error) {
-	// 1. Resolve config file path: check ACCESSD_CONFIG_FILE first, then legacy PAM_CONFIG_FILE.
+	// 1. Resolve config file path from ACCESSD_CONFIG_FILE.
 	configFile := strings.TrimSpace(os.Getenv("ACCESSD_CONFIG_FILE"))
-	if configFile == "" {
-		configFile = strings.TrimSpace(os.Getenv("PAM_CONFIG_FILE"))
-	}
 	if err := loadConfigFileIntoEnv(configFile); err != nil {
 		return Config{}, err
 	}
 
-	// 2. Migrate any PAM_* vars (from env or config file) to ACCESSD_* equivalents.
-	migrateEnvCompat()
-
-	// 3. Read all configuration from ACCESSD_* env vars.
+	// 2. Read all configuration from ACCESSD_* env vars.
 	cfg := Config{}
 
 	cfg.App.Name = getEnv("ACCESSD_APP_NAME", "accessd")
@@ -247,26 +219,27 @@ func Load() (Config, error) {
 		DevAdminPassword:  getEnv("ACCESSD_DEV_ADMIN_PASSWORD", "admin123"),
 		DevAdminEmail:     getEnv("ACCESSD_DEV_ADMIN_EMAIL", "admin@accessd.local"),
 		DevAdminName:      getEnv("ACCESSD_DEV_ADMIN_NAME", "AccessD Administrator"),
-		ProviderMode:      strings.ToLower(getEnv("ACCESSD_AUTH_PROVIDER_MODE", "local")),
+		ProviderMode:      "local",
 		LDAP: LDAPConfig{
-			URL:                  strings.TrimSpace(os.Getenv("ACCESSD_LDAP_URL")),
-			Host:                 getEnv("ACCESSD_LDAP_HOST", "127.0.0.1"),
-			Port:                 getIntEnv("ACCESSD_LDAP_PORT", 389),
-			BaseDN:               strings.TrimSpace(os.Getenv("ACCESSD_LDAP_BASE_DN")),
-			BindDN:               strings.TrimSpace(os.Getenv("ACCESSD_LDAP_BIND_DN")),
-			BindPassword:         strings.TrimSpace(os.Getenv("ACCESSD_LDAP_BIND_PASSWORD")),
-			CACertFile:           strings.TrimSpace(os.Getenv("ACCESSD_LDAP_CA_CERT_FILE")),
-			UserSearchFilter:     getEnv("ACCESSD_LDAP_USER_FILTER", "(&(objectClass=user)({{username_attr}}={{username}}))"),
-			UsernameAttribute:    getEnv("ACCESSD_LDAP_USERNAME_ATTR", "sAMAccountName"),
-			DisplayNameAttribute: getEnv("ACCESSD_LDAP_DISPLAY_NAME_ATTR", "displayName"),
-			EmailAttribute:       getEnv("ACCESSD_LDAP_EMAIL_ATTR", "mail"),
-			UseTLS:               getBoolEnv("ACCESSD_LDAP_USE_TLS", false),
-			StartTLS:             getBoolEnv("ACCESSD_LDAP_STARTTLS", false),
-			InsecureSkipVerify:   getBoolEnv("ACCESSD_LDAP_INSECURE_SKIP_VERIFY", false),
-			GroupSearchBaseDN:    strings.TrimSpace(os.Getenv("ACCESSD_LDAP_GROUP_BASE_DN")),
-			GroupSearchFilter:    getEnv("ACCESSD_LDAP_GROUP_FILTER", "(&(objectClass=group)(member={{user_dn}}))"),
-			GroupNameAttribute:   getEnv("ACCESSD_LDAP_GROUP_NAME_ATTR", "cn"),
-			GroupRoleMappingRaw:  strings.TrimSpace(os.Getenv("ACCESSD_LDAP_GROUP_ROLE_MAPPING")),
+			URL:                  "",
+			Host:                 "",
+			Port:                 389,
+			BaseDN:               "",
+			BindDN:               "",
+			BindPassword:         "",
+			CACertFile:           "",
+			CACertPEM:            "",
+			UserSearchFilter:     "(&(objectClass=user)({{username_attr}}={{username}}))",
+			UsernameAttribute:    "sAMAccountName",
+			DisplayNameAttribute: "displayName",
+			EmailAttribute:       "mail",
+			UseTLS:               false,
+			StartTLS:             false,
+			InsecureSkipVerify:   false,
+			GroupSearchBaseDN:    "",
+			GroupSearchFilter:    "(&(objectClass=group)(member={{user_dn}}))",
+			GroupNameAttribute:   "cn",
+			GroupRoleMappingRaw:  "",
 		},
 	}
 	cfg.Credentials = CredentialsConfig{
@@ -381,28 +354,6 @@ func Load() (Config, error) {
 
 	if strings.TrimSpace(cfg.Auth.DevAdminPassword) == "" {
 		return Config{}, fmt.Errorf("ACCESSD_DEV_ADMIN_PASSWORD cannot be empty")
-	}
-	switch cfg.Auth.ProviderMode {
-	case "local", "ldap", "hybrid":
-	default:
-		return Config{}, fmt.Errorf("ACCESSD_AUTH_PROVIDER_MODE must be one of: local, ldap, hybrid")
-	}
-	if cfg.Auth.ProviderMode != "local" {
-		if strings.TrimSpace(cfg.Auth.LDAP.BaseDN) == "" {
-			return Config{}, fmt.Errorf("ACCESSD_LDAP_BASE_DN is required when ACCESSD_AUTH_PROVIDER_MODE is ldap or hybrid")
-		}
-		if strings.TrimSpace(cfg.Auth.LDAP.UsernameAttribute) == "" {
-			return Config{}, fmt.Errorf("ACCESSD_LDAP_USERNAME_ATTR cannot be empty")
-		}
-		if strings.TrimSpace(cfg.Auth.LDAP.UserSearchFilter) == "" {
-			return Config{}, fmt.Errorf("ACCESSD_LDAP_USER_FILTER cannot be empty")
-		}
-		if cfg.Auth.LDAP.Port <= 0 || cfg.Auth.LDAP.Port > 65535 {
-			return Config{}, fmt.Errorf("ACCESSD_LDAP_PORT must be between 1 and 65535")
-		}
-		if cfg.Auth.LDAP.UseTLS && cfg.Auth.LDAP.StartTLS {
-			return Config{}, fmt.Errorf("ACCESSD_LDAP_USE_TLS and ACCESSD_LDAP_STARTTLS cannot both be true")
-		}
 	}
 	if cfg.Credentials.MasterKey == "" {
 		return Config{}, fmt.Errorf("ACCESSD_VAULT_KEY is required")
@@ -547,9 +498,6 @@ func Load() (Config, error) {
 		}
 		if cfg.Auth.SessionSameSite == "none" {
 			return Config{}, fmt.Errorf("ACCESSD_AUTH_COOKIE_SAMESITE=none is blocked outside development unless ACCESSD_ALLOW_UNSAFE_MODE=true")
-		}
-		if cfg.Auth.LDAP.InsecureSkipVerify {
-			return Config{}, fmt.Errorf("ACCESSD_LDAP_INSECURE_SKIP_VERIFY=true is blocked outside development unless ACCESSD_ALLOW_UNSAFE_MODE=true")
 		}
 		if strings.EqualFold(strings.TrimSpace(cfg.SSHProxy.UpstreamHostKeyMode), "insecure") {
 			return Config{}, fmt.Errorf("ACCESSD_SSH_PROXY_UPSTREAM_HOSTKEY_MODE=%s is blocked outside development unless ACCESSD_ALLOW_UNSAFE_MODE=true", cfg.SSHProxy.UpstreamHostKeyMode)

@@ -153,6 +153,6 @@ When a user launches Shell/SFTP/DBeaver/Redis:
 - Connector versioning follows server release tags (`vX.Y.Z`).
 - Server declares `minimum_version` for connector compatibility.
 - Connector older than minimum is blocked at UI preflight.
-- Backward compatibility:
-  - `PAM_*` env vars remain supported and mapped to `ACCESSD_*`.
-  - Legacy naming remains documented in migration notes during transition.
+- Configuration policy:
+  - Use `ACCESSD_*` env names.
+  - Connector installer can auto-refresh AccessD TLS trust from `/downloads/certs/accessd-server.crt` when enabled.

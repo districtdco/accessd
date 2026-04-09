@@ -15,10 +15,13 @@ fi
 INSTALL_DIR="${ACCESSD_CONNECTOR_INSTALL_DIR:-${HOME}/.local/bin}"
 CONFIG_DIR="${HOME}/.accessd-connector"
 CONFIG_FILE="${CONFIG_DIR}/config.yaml"
+ENV_DIR="${HOME}/.config/accessd"
+ENV_FILE="${ENV_DIR}/connector.env"
 HELPER_DIR="${CONFIG_DIR}/bin"
 DESKTOP_DIR="${HOME}/.local/share/applications"
 TARGET_BIN="${INSTALL_DIR}/accessd-connector"
 HANDLER_SCRIPT="${HELPER_DIR}/url-handler-linux.sh"
+TRUST_SCRIPT="${HELPER_DIR}/trust-refresh-linux.sh"
 DESKTOP_FILE="${DESKTOP_DIR}/accessd-connector.desktop"
 
 has_tty() {
@@ -30,6 +33,16 @@ trim() {
   s="${s#${s%%[![:space:]]*}}"
   s="${s%${s##*[![:space:]]}}"
   printf '%s' "$s"
+}
+
+origin_host() {
+  local origin="$1"
+  origin="$(trim "${origin}")"
+  origin="${origin#http://}"
+  origin="${origin#https://}"
+  origin="${origin%%/*}"
+  origin="${origin%%:*}"
+  printf '%s' "${origin}"
 }
 
 pick_existing_path() {
@@ -149,6 +162,106 @@ write_installer_config() {
   echo "[accessd-connector] Wrote config: ${CONFIG_FILE}"
 }
 
+write_runtime_env_file() {
+  local default_origin="${ACCESSD_CONNECTOR_ALLOWED_ORIGIN:-https://accessd.example.internal}"
+  mkdir -p "${ENV_DIR}"
+  if [[ -f "${ENV_FILE}" ]]; then
+    echo "[accessd-connector] Keeping existing runtime env: ${ENV_FILE}"
+    return 0
+  fi
+
+  {
+    echo "# AccessD Connector runtime env (non-sensitive defaults)"
+    echo "# Keep secrets out of this file."
+    echo "ACCESSD_CONNECTOR_ADDR=127.0.0.1:9494"
+    echo "ACCESSD_CONNECTOR_ALLOWED_ORIGIN=${default_origin}"
+    echo "ACCESSD_CONNECTOR_ALLOW_ANY_ORIGIN=false"
+    echo "ACCESSD_CONNECTOR_ALLOW_REMOTE=false"
+    echo "ACCESSD_CONNECTOR_AUTO_TRUST_SERVER_CERT=true"
+    echo "# ACCESSD_CONNECTOR_TRUST_CERT_URL=https://accessd.example.internal/downloads/certs/accessd-server.crt"
+    echo ""
+    echo "# Optional: set ACCESSD_CONNECTOR_SECRET in system environment"
+    echo "# (recommended) instead of storing it here."
+  } > "${ENV_FILE}"
+  chmod 0600 "${ENV_FILE}"
+  echo "[accessd-connector] Wrote runtime env: ${ENV_FILE}"
+}
+
+write_trust_refresh_script() {
+  cat > "${TRUST_SCRIPT}" <<'TRUST'
+#!/usr/bin/env bash
+set -euo pipefail
+
+trim() {
+  local s="$1"
+  s="${s#${s%%[![:space:]]*}}"
+  s="${s%${s##*[![:space:]]}}"
+  printf '%s' "$s"
+}
+
+origin_host() {
+  local origin="$1"
+  origin="$(trim "${origin}")"
+  origin="${origin#http://}"
+  origin="${origin#https://}"
+  origin="${origin%%/*}"
+  origin="${origin%%:*}"
+  printf '%s' "${origin}"
+}
+
+ENV_FILE="${HOME}/.config/accessd/connector.env"
+if [[ -f "${ENV_FILE}" ]]; then
+  set -a
+  # shellcheck disable=SC1090
+  . "${ENV_FILE}"
+  set +a
+fi
+
+auto_trust="${ACCESSD_CONNECTOR_AUTO_TRUST_SERVER_CERT:-true}"
+case "${auto_trust,,}" in
+  0|false|no|off)
+    exit 0
+    ;;
+esac
+
+host="$(origin_host "${ACCESSD_CONNECTOR_ALLOWED_ORIGIN:-}")"
+if [[ -z "${host}" || "${host}" == "localhost" || "${host}" == "127.0.0.1" || "${host}" == "accessd.example.internal" ]]; then
+  exit 0
+fi
+
+cert_url="${ACCESSD_CONNECTOR_TRUST_CERT_URL:-https://${host}/downloads/certs/accessd-server.crt}"
+cert_dir="${HOME}/.accessd-connector/certs"
+cert_file="${cert_dir}/accessd-${host}.crt"
+mkdir -p "${cert_dir}"
+
+if ! command -v curl >/dev/null 2>&1; then
+  exit 0
+fi
+if ! curl -fsS -k -L "${cert_url}" -o "${cert_file}"; then
+  exit 0
+fi
+
+if command -v update-ca-certificates >/dev/null 2>&1; then
+  target="/usr/local/share/ca-certificates/accessd-${host}.crt"
+  if [[ "$(id -u)" -eq 0 ]]; then
+    cp "${cert_file}" "${target}" && update-ca-certificates >/dev/null 2>&1 || true
+    exit 0
+  fi
+  if command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1; then
+    sudo cp "${cert_file}" "${target}" && sudo update-ca-certificates >/dev/null 2>&1 || true
+    exit 0
+  fi
+fi
+TRUST
+  chmod 0755 "${TRUST_SCRIPT}"
+}
+
+trust_accessd_server_cert() {
+  if [[ -x "${TRUST_SCRIPT}" ]]; then
+    "${TRUST_SCRIPT}" || true
+  fi
+}
+
 is_connector_running() {
   if curl -fsS --max-time 1 "http://127.0.0.1:9494/version" >/dev/null 2>&1; then
     return 0
@@ -174,6 +287,13 @@ stop_running_connector() {
 }
 
 start_connector() {
+  if [[ -f "${ENV_FILE}" ]]; then
+    set -a
+    # shellcheck disable=SC1090
+    . "${ENV_FILE}"
+    set +a
+  fi
+  trust_accessd_server_cert
   nohup "${TARGET_BIN}" >/tmp/accessd-connector.out 2>/tmp/accessd-connector.err < /dev/null &
 }
 
@@ -188,6 +308,7 @@ fi
 
 mkdir -p "${INSTALL_DIR}" "${HELPER_DIR}" "${DESKTOP_DIR}"
 install -m 0755 "${SOURCE_BIN}" "${TARGET_BIN}"
+write_trust_refresh_script
 
 cat > "${HANDLER_SCRIPT}" <<'HANDLER'
 #!/usr/bin/env bash
@@ -198,7 +319,24 @@ if [[ ! -x "${CONNECTOR_BIN}" ]]; then
   CONNECTOR_BIN="accessd-connector"
 fi
 
-if curl -fsS --max-time 1 "http://127.0.0.1:9494/version" >/dev/null 2>&1; then
+ENV_FILE="${HOME}/.config/accessd/connector.env"
+if [[ -f "${ENV_FILE}" ]]; then
+  set -a
+  # shellcheck disable=SC1090
+  . "${ENV_FILE}"
+  set +a
+fi
+
+CONNECTOR_ADDR="${ACCESSD_CONNECTOR_ADDR:-127.0.0.1:9494}"
+TRUST_SCRIPT="${HOME}/.accessd-connector/bin/trust-refresh-linux.sh"
+if [[ -z "${ACCESSD_CONNECTOR_SECRET:-}" ]]; then
+  echo "[accessd-connector] WARNING: ACCESSD_CONNECTOR_SECRET is not set in process env." >&2
+fi
+if [[ -x "${TRUST_SCRIPT}" ]]; then
+  "${TRUST_SCRIPT}" || true
+fi
+
+if curl -fsS --max-time 1 "http://${CONNECTOR_ADDR}/version" >/dev/null 2>&1; then
   exit 0
 fi
 
@@ -239,6 +377,14 @@ redis_cli_path="$(prompt_for_path_if_missing "redis-cli" "${redis_detected}")"
 terminal_pref="$(choose_terminal_pref)"
 
 write_installer_config "${dbeaver_path}" "${filezilla_path}" "${redis_cli_path}" "${terminal_pref}"
+write_runtime_env_file
+if [[ -f "${ENV_FILE}" ]]; then
+  set -a
+  # shellcheck disable=SC1090
+  . "${ENV_FILE}"
+  set +a
+fi
+trust_accessd_server_cert
 
 if [[ "${WAS_RUNNING}" == "1" ]]; then
   echo "[accessd-connector] Restarting connector after reinstall..."
@@ -246,6 +392,7 @@ if [[ "${WAS_RUNNING}" == "1" ]]; then
 fi
 
 echo "[accessd-connector] Installed binary: ${TARGET_BIN}"
+echo "[accessd-connector] Runtime env file: ${ENV_FILE}"
 echo "[accessd-connector] Desktop handler: ${DESKTOP_FILE}"
 echo "[accessd-connector] Registered URL scheme: accessd-connector://"
 echo "[accessd-connector] UI auto-start can now invoke accessd-connector://start"

@@ -180,7 +180,7 @@ Key architectural decisions:
 
 ### `vault`
 - Credential storage: encrypted at rest using AES-256-GCM
-- **v1 key management (temporary)**: single application master key loaded from `PAM_VAULT_KEY` environment variable. This is explicitly a temporary v1 approach — documented as requiring migration to external KMS or HashiCorp Vault-backed key management in hardening/post-v1.
+- **v1 key management (temporary)**: single application master key loaded from `ACCESSD_VAULT_KEY` environment variable. This is explicitly a temporary v1 approach — documented as requiring migration to external KMS or HashiCorp Vault-backed key management in hardening/post-v1.
 - Credential types: SSH key pair, SSH password, DB username/password, Redis password, SFTP credentials
 - Credential retrieval: internal only, never exposed to API consumers
 
@@ -422,7 +422,7 @@ Connector launches terminal with: redis-cli -h <pam_host> -p <pam_redis_port> -a
 ### v1 key management — TEMPORARY APPROACH
 > **This is explicitly a temporary v1 design.** It must be replaced by external KMS or HashiCorp Vault-backed key management in hardening or post-v1.
 
-- Single application master key loaded from `PAM_VAULT_KEY` env var
+- Single application master key loaded from `ACCESSD_VAULT_KEY` env var
 - Key rotation: re-encrypt all credentials with new key (manual process in v1)
 - The env var must be protected by OS-level access controls (file permissions, systemd `LoadCredential`, etc.)
 - Migration path: post-v1, integrate with HashiCorp Vault or cloud KMS (AWS KMS, GCP KMS) for envelope encryption
@@ -467,7 +467,7 @@ Connector launches terminal with: redis-cli -h <pam_host> -p <pam_redis_port> -a
 ### Security assumptions
 - PAM server is deployed in a secured network segment
 - PostgreSQL is not publicly accessible
-- The `PAM_VAULT_KEY` environment variable is protected by OS-level access controls
+- The `ACCESSD_VAULT_KEY` environment variable is protected by OS-level access controls
 - PAM authentication is provider-based. In development mode, PAM stores local password hashes; with LDAP enabled, LDAP becomes external source of truth for identity verification.
 - JWT tokens are signed with a strong secret/key pair; short-lived access tokens minimize impact of theft
 - The connector is installed on authorized workstations; it is not a security boundary itself (the proxy is)

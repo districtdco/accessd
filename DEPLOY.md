@@ -5,6 +5,53 @@ fresh Debian host. It is written for an internal/private deployment, not a publi
 
 ---
 
+## 0. Exact Order (Single VM: AccessD + PostgreSQL + nginx)
+
+Use this exact sequence when API, DB, and nginx are all on the same VM:
+
+1. Build and copy bundle to VM:
+```bash
+# from repo root on build machine
+./scripts/build_deploy_bundle.sh
+scp -r dist/accessd-<version> user@vm:/tmp/
+```
+2. SSH to VM and run installer with local-DB + nginx enabled:
+```bash
+ssh user@vm
+cd /tmp/accessd-<version>/deploy
+sudo INSTALL_POSTGRES=true INSTALL_NGINX=true TLS_SETUP_MODE=prompt ./install_on_vm.sh
+```
+3. During installer prompts:
+- enter your real domain (for nginx `server_name` + AccessD public host vars)
+- choose TLS mode:
+- `self-signed` for internal/testing
+- `csr` if you want CA-signed cert flow
+- `existing` if cert/key already present
+4. Fill required secrets in `/etc/accessd/accessd.env` if placeholders remain:
+```bash
+sudo grep -n 'CHANGE_ME' /etc/accessd/accessd.env
+```
+5. Re-run installer after env updates (idempotent):
+```bash
+cd /tmp/accessd-<version>/deploy
+sudo INSTALL_POSTGRES=true INSTALL_NGINX=true TLS_SETUP_MODE=existing ./install_on_vm.sh
+```
+6. Verify services:
+```bash
+sudo systemctl status accessd --no-pager
+sudo systemctl status nginx --no-pager
+curl -kfs https://<your-domain>/api/health/ready
+```
+7. Install connector on operator machines and launch from UI.
+
+Notes:
+- In `csr` mode, nginx reload is skipped until signed cert is installed at:
+- cert: `/etc/ssl/accessd/fullchain.pem`
+- key: `/etc/ssl/accessd/privkey.pem`
+- Installer publishes `/downloads/certs/accessd-server.crt` (when cert exists) for connector trust bootstrap.
+
+---
+
 ## Table of Contents
 
 1. [Deployment Architecture](#1-deployment-architecture)
@@ -421,25 +468,30 @@ sudo rm -f /etc/nginx/sites-enabled/default
 
 ### TLS certificate
 
+If you use `deploy/install_on_vm.sh`, TLS can be configured during install:
+- script prompts for domain + TLS mode (`existing`, `self-signed`, `csr`, `skip`)
+- `self-signed` generates `/etc/ssl/accessd/privkey.pem` + `/etc/ssl/accessd/fullchain.pem`
+- `csr` generates `/etc/ssl/accessd/accessd.csr` and waits for signed cert before nginx reload
+
 For an internal deployment with an internal CA:
 
 ```bash
 # Generate a self-signed cert (testing only) or use your internal CA:
-sudo mkdir -p /etc/ssl/pam
+sudo mkdir -p /etc/ssl/accessd
 sudo openssl req -x509 -newkey rsa:4096 -sha256 -days 3650 -nodes \
-  -keyout /etc/ssl/pam/privkey.pem \
-  -out /etc/ssl/pam/fullchain.pem \
-  -subj "/CN=pam.example.internal" \
-  -addext "subjectAltName=DNS:pam.example.internal"
-sudo chmod 640 /etc/ssl/pam/privkey.pem
-sudo chown root:www-data /etc/ssl/pam/privkey.pem
+  -keyout /etc/ssl/accessd/privkey.pem \
+  -out /etc/ssl/accessd/fullchain.pem \
+  -subj "/CN=accessd.example.internal" \
+  -addext "subjectAltName=DNS:accessd.example.internal"
+sudo chmod 640 /etc/ssl/accessd/privkey.pem
+sudo chown root:www-data /etc/ssl/accessd/privkey.pem
 ```
 
 For Let's Encrypt (if the server has a public DNS name):
 
 ```bash
 sudo apt-get install -y certbot python3-certbot-nginx
-sudo certbot --nginx -d pam.example.internal
+sudo certbot --nginx -d accessd.example.internal
 ```
 
 ### Test and reload nginx
@@ -715,10 +767,10 @@ There is a brief window between API restart and connector restart where launch
 verification will fail for operators using the old secret. Coordinate with operators
 to minimize this window.
 
-### LDAP bind password (`ACCESSD_LDAP_BIND_PASSWORD`)
+### LDAP credentials and TLS material
 
 ```bash
-# Update /etc/accessd/accessd.env, then:
+# Update Directory & LDAP in Admin UI, then:
 sudo systemctl restart accessd
 ```
 
@@ -935,8 +987,8 @@ if not overridden. A deployment that forgets to change these has a well-known ad
 - Change `ACCESSD_DEV_ADMIN_PASSWORD` to a randomly generated strong password on every deployment.
 - After first login, create named admin accounts for humans and deactivate or rotate
   the bootstrap account.
-- Consider setting `ACCESSD_AUTH_PROVIDER_MODE=ldap` for production so local accounts are
-  not the primary auth path.
+- Configure LDAP provider mode in Admin UI (`Directory & LDAP`) so local accounts are
+  not the primary auth path in production.
 
 **Don't:**
 - Leave the default `admin`/`admin123` credentials in production even for "temporary" use.
@@ -1020,8 +1072,8 @@ echoes environment variables.
 
 **What was confirmed:**
 - Startup logs (`main.go`) log configuration shape (addresses, booleans, timeouts) but
-  not secret values. `ACCESSD_VAULT_KEY`, `ACCESSD_LAUNCH_TOKEN_SECRET`, `ACCESSD_CONNECTOR_SECRET`,
-  `ACCESSD_LDAP_BIND_PASSWORD` are not logged.
+  not secret values. `ACCESSD_VAULT_KEY`, `ACCESSD_LAUNCH_TOKEN_SECRET`, and
+  `ACCESSD_CONNECTOR_SECRET` are not logged.
 - `connector_trust` is logged as a boolean (whether the secret is set), not the secret value.
 
 **Do:**
