@@ -15,26 +15,19 @@ Use this exact sequence when API, DB, and nginx are all on the same VM:
 ./scripts/build_deploy_bundle.sh
 scp -r dist/accessd-<version> user@vm:/tmp/
 ```
-2. SSH to VM and run installer with local-DB + nginx enabled:
+2. SSH to VM and run installer (smart defaults: nginx + local postgres + self-signed TLS when missing):
 ```bash
 ssh user@vm
 cd /tmp/accessd-<version>/deploy
-sudo INSTALL_POSTGRES=true INSTALL_NGINX=true TLS_SETUP_MODE=prompt ./install_on_vm.sh
+sudo ./install_on_vm.sh
 ```
 3. During installer prompts:
 - enter your real domain (for nginx `server_name` + AccessD public host vars)
-- choose TLS mode:
-- `self-signed` for internal/testing
-- `csr` if you want CA-signed cert flow
-- `existing` if cert/key already present
-4. Fill required secrets in `/etc/accessd/accessd.env` if placeholders remain:
-```bash
-sudo grep -n 'CHANGE_ME' /etc/accessd/accessd.env
-```
-5. Re-run installer after env updates (idempotent):
+4. Installer auto-generates missing secrets (`openssl rand -base64 32`) and configures env values.
+5. Re-run installer anytime (idempotent, merges missing env keys without overriding existing values):
 ```bash
 cd /tmp/accessd-<version>/deploy
-sudo INSTALL_POSTGRES=true INSTALL_NGINX=true TLS_SETUP_MODE=existing ./install_on_vm.sh
+sudo ./install_on_vm.sh
 ```
 6. Verify services:
 ```bash

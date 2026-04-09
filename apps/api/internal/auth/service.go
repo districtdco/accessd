@@ -90,17 +90,27 @@ RETURNING id;`
 		}
 
 		const existingQuery = `
-SELECT id, COALESCE(password_hash, '')
+SELECT id, COALESCE(password_hash, ''), COALESCE(auth_provider, '')
 FROM users
 WHERE username = $1
 LIMIT 1;`
 
 		var existingHash string
-		if scanErr := s.pool.QueryRow(ctx, existingQuery, s.cfg.DevAdminUsername).Scan(&userID, &existingHash); scanErr != nil {
+		var existingProvider string
+		if scanErr := s.pool.QueryRow(ctx, existingQuery, s.cfg.DevAdminUsername).Scan(&userID, &existingHash, &existingProvider); scanErr != nil {
 			return fmt.Errorf("find dev admin user: %w", scanErr)
 		}
 
-		if existingHash == "" {
+		// Keep bootstrap-admin local password in sync with ACCESSD_DEV_ADMIN_PASSWORD
+		// when this account is local (or missing provider metadata).
+		if existingHash == "" || existingProvider == "" || strings.EqualFold(existingProvider, "local") {
+			needsUpdate := existingHash == ""
+			if !needsUpdate {
+				needsUpdate = bcrypt.CompareHashAndPassword([]byte(existingHash), []byte(s.cfg.DevAdminPassword)) != nil
+			}
+			if !needsUpdate {
+				goto assignRole
+			}
 			const updatePasswordSQL = `
 UPDATE users
 SET password_hash = $2, auth_provider = 'local', updated_at = NOW()
@@ -108,11 +118,19 @@ WHERE id = $1;`
 			if _, execErr := s.pool.Exec(ctx, updatePasswordSQL, userID, string(passwordHash)); execErr != nil {
 				return fmt.Errorf("set missing dev admin password hash: %w", execErr)
 			}
+			s.logger.Info("updated bootstrap admin password", "username", s.cfg.DevAdminUsername)
+		} else {
+			s.logger.Warn(
+				"bootstrap admin exists with non-local provider; leaving password unchanged",
+				"username", s.cfg.DevAdminUsername,
+				"auth_provider", existingProvider,
+			)
 		}
 	} else {
 		s.logger.Info("seeded development admin user", "username", s.cfg.DevAdminUsername)
 	}
 
+assignRole:
 	const assignAdminRole = `
 INSERT INTO user_roles (user_id, role_id)
 SELECT $1, r.id

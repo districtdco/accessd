@@ -33,6 +33,7 @@ VM_OPT_DIR="${VM_OPT_DIR:-/opt/accessd}"
 VM_ETC_DIR="${VM_ETC_DIR:-/etc/accessd}"
 VM_WWW_DIR="${VM_WWW_DIR:-/var/www/accessd}"
 VM_DOWNLOADS_DIR="${VM_DOWNLOADS_DIR:-/var/www/accessd-downloads}"
+VM_STATE_DIR="${VM_STATE_DIR:-/var/lib/accessd}"
 VM_SYSTEMD_DIR="${VM_SYSTEMD_DIR:-/etc/systemd/system}"
 VM_NGINX_SITES_AVAILABLE_DIR="${VM_NGINX_SITES_AVAILABLE_DIR:-/etc/nginx/sites-available}"
 VM_NGINX_SITES_ENABLED_DIR="${VM_NGINX_SITES_ENABLED_DIR:-/etc/nginx/sites-enabled}"
@@ -41,20 +42,25 @@ ACCESSD_USER="${ACCESSD_USER:-accessd}"
 ACCESSD_GROUP="${ACCESSD_GROUP:-accessd}"
 WEB_GROUP="${WEB_GROUP:-www-data}"
 NGINX_SITE_NAME="${NGINX_SITE_NAME:-accessd.conf}"
-INSTALL_NGINX="${INSTALL_NGINX:-true}"
-INSTALL_POSTGRES="${INSTALL_POSTGRES:-auto}" # auto|true|false
-PUBLISH_OPERATOR_CONNECTOR_ENV="${PUBLISH_OPERATOR_CONNECTOR_ENV:-true}"
-PUBLISH_OPERATOR_CONNECTOR_SECRET="${PUBLISH_OPERATOR_CONNECTOR_SECRET:-false}"
-TLS_SETUP_MODE="${TLS_SETUP_MODE:-prompt}"   # prompt|existing|self-signed|csr|skip
+
+INSTALL_NGINX="${INSTALL_NGINX:-auto}"          # auto|true|false
+INSTALL_POSTGRES="${INSTALL_POSTGRES:-auto}"    # auto|true|false
+TLS_SETUP_MODE="${TLS_SETUP_MODE:-auto}"        # auto|prompt|existing|self-signed|csr|skip
 ACCESSD_DOMAIN="${ACCESSD_DOMAIN:-}"
+
 ACCESSD_TLS_CERT_DIR="${ACCESSD_TLS_CERT_DIR:-/etc/ssl/accessd}"
 ACCESSD_TLS_VALID_DAYS="${ACCESSD_TLS_VALID_DAYS:-825}"
 ACCESSD_TLS_ORG="${ACCESSD_TLS_ORG:-AccessD}"
 ACCESSD_TLS_KEY_PATH="${ACCESSD_TLS_KEY_PATH:-${ACCESSD_TLS_CERT_DIR}/privkey.pem}"
 ACCESSD_TLS_CERT_PATH="${ACCESSD_TLS_CERT_PATH:-${ACCESSD_TLS_CERT_DIR}/fullchain.pem}"
 ACCESSD_TLS_CSR_PATH="${ACCESSD_TLS_CSR_PATH:-${ACCESSD_TLS_CERT_DIR}/accessd.csr}"
-PUBLISH_OPERATOR_TLS_CERT="${PUBLISH_OPERATOR_TLS_CERT:-true}"
+
 ACCESSD_PUBLIC_CERT_SOURCE="${ACCESSD_PUBLIC_CERT_SOURCE:-${ACCESSD_TLS_CERT_PATH}}"
+PUBLISH_OPERATOR_CONNECTOR_ENV="${PUBLISH_OPERATOR_CONNECTOR_ENV:-true}"
+PUBLISH_OPERATOR_TLS_CERT="${PUBLISH_OPERATOR_TLS_CERT:-true}"
+
+GENERATED_ADMIN_PASSWORD=""
+BOOTSTRAP_ADMIN_USERNAME=""
 
 log() {
   echo "[install] $*"
@@ -64,11 +70,25 @@ warn() {
   echo "[install][warn] $*"
 }
 
+fail() {
+  echo "[install][error] $*" >&2
+  exit 1
+}
+
 bool_is_true() {
   local v="${1:-}"
   case "${v,,}" in
     1|true|yes|on) return 0 ;;
     *) return 1 ;;
+  esac
+}
+
+should_manage_nginx() {
+  case "${INSTALL_NGINX,,}" in
+    false|0|no|off) return 1 ;;
+    true|1|yes|on) return 0 ;;
+    auto|"") return 0 ;;
+    *) return 0 ;;
   esac
 }
 
@@ -100,160 +120,10 @@ set_or_replace_env_kv() {
   fi
 }
 
-apply_domain_to_api_env_if_placeholder() {
+remove_env_kv() {
   local env_file="$1"
-  local domain="$2"
-  [[ -f "${env_file}" ]] || return 0
-  local keys=(
-    "ACCESSD_CORS_ALLOWED_ORIGINS"
-    "ACCESSD_SSH_PROXY_PUBLIC_HOST"
-    "ACCESSD_PG_PROXY_PUBLIC_HOST"
-    "ACCESSD_MYSQL_PROXY_PUBLIC_HOST"
-    "ACCESSD_MSSQL_PROXY_PUBLIC_HOST"
-    "ACCESSD_REDIS_PROXY_PUBLIC_HOST"
-    "ACCESSD_CONNECTOR_RELEASES_BASE_URL"
-  )
-  for key in "${keys[@]}"; do
-    local current
-    current="$(env_value_from_file "${env_file}" "${key}" || true)"
-    if [[ -z "${current}" || "${current}" == *accessd.example.internal* ]]; then
-      case "${key}" in
-        ACCESSD_CORS_ALLOWED_ORIGINS|ACCESSD_CONNECTOR_RELEASES_BASE_URL)
-          if [[ "${key}" == "ACCESSD_CORS_ALLOWED_ORIGINS" ]]; then
-            set_or_replace_env_kv "${env_file}" "${key}" "https://${domain}"
-          else
-            set_or_replace_env_kv "${env_file}" "${key}" "https://${domain}/downloads/connectors"
-          fi
-          ;;
-        *)
-          set_or_replace_env_kv "${env_file}" "${key}" "${domain}"
-          ;;
-      esac
-    fi
-  done
-}
-
-configure_nginx_site_for_domain_and_tls() {
-  local site_file="$1"
-  local domain="$2"
-  local cert_path="$3"
-  local key_path="$4"
-  [[ -f "${site_file}" ]] || return 0
-  local domain_esc cert_esc key_esc
-  domain_esc="$(escape_sed_replacement "${domain}")"
-  cert_esc="$(escape_sed_replacement "${cert_path}")"
-  key_esc="$(escape_sed_replacement "${key_path}")"
-  sed -i -E "s|server_name accessd\\.example\\.internal;|server_name ${domain_esc};|g" "${site_file}"
-  sed -i -E "s|ssl_certificate[[:space:]]+/etc/ssl/accessd/fullchain\\.pem;|ssl_certificate     ${cert_esc};|g" "${site_file}"
-  sed -i -E "s|ssl_certificate_key[[:space:]]+/etc/ssl/accessd/privkey\\.pem;|ssl_certificate_key ${key_esc};|g" "${site_file}"
-}
-
-choose_tls_mode() {
-  local mode="${TLS_SETUP_MODE,,}"
-  case "${mode}" in
-    existing|self-signed|csr|skip)
-      printf '%s' "${mode}"
-      return 0
-      ;;
-  esac
-  if ! has_tty; then
-    printf 'existing'
-    return 0
-  fi
-  echo "[install] TLS setup mode" >&2
-  echo "  1) existing cert/key (default)" >&2
-  echo "  2) generate self-signed cert" >&2
-  echo "  3) generate private key + CSR" >&2
-  echo "  4) skip TLS setup" >&2
-  local choice
-  read -r -p "Select mode [1-4]: " choice </dev/tty
-  choice="$(trim "${choice}")"
-  case "${choice}" in
-    2|self-signed) printf 'self-signed' ;;
-    3|csr) printf 'csr' ;;
-    4|skip) printf 'skip' ;;
-    *) printf 'existing' ;;
-  esac
-}
-
-prompt_for_domain_if_needed() {
-  if [[ -n "${ACCESSD_DOMAIN}" ]]; then
-    return 0
-  fi
-  if has_tty; then
-    read -r -p "AccessD domain (for nginx server_name/CORS) [accessd.example.internal]: " ACCESSD_DOMAIN
-    ACCESSD_DOMAIN="$(trim "${ACCESSD_DOMAIN}")"
-  fi
-  if [[ -z "${ACCESSD_DOMAIN}" ]]; then
-    ACCESSD_DOMAIN="accessd.example.internal"
-  fi
-}
-
-setup_tls_assets() {
-  local mode="$1"
-  mkdir -p "${ACCESSD_TLS_CERT_DIR}"
-  case "${mode}" in
-    self-signed)
-      log "generating self-signed TLS cert for domain ${ACCESSD_DOMAIN}"
-      openssl req -x509 -newkey rsa:4096 -sha256 -nodes \
-        -keyout "${ACCESSD_TLS_KEY_PATH}" \
-        -out "${ACCESSD_TLS_CERT_PATH}" \
-        -days "${ACCESSD_TLS_VALID_DAYS}" \
-        -subj "/CN=${ACCESSD_DOMAIN}/O=${ACCESSD_TLS_ORG}" \
-        -addext "subjectAltName=DNS:${ACCESSD_DOMAIN}"
-      chmod 0600 "${ACCESSD_TLS_KEY_PATH}"
-      chmod 0644 "${ACCESSD_TLS_CERT_PATH}"
-      ACCESSD_PUBLIC_CERT_SOURCE="${ACCESSD_TLS_CERT_PATH}"
-      ;;
-    csr)
-      log "generating TLS private key + CSR for domain ${ACCESSD_DOMAIN}"
-      openssl req -new -newkey rsa:4096 -sha256 -nodes \
-        -keyout "${ACCESSD_TLS_KEY_PATH}" \
-        -out "${ACCESSD_TLS_CSR_PATH}" \
-        -subj "/CN=${ACCESSD_DOMAIN}/O=${ACCESSD_TLS_ORG}" \
-        -addext "subjectAltName=DNS:${ACCESSD_DOMAIN}"
-      chmod 0600 "${ACCESSD_TLS_KEY_PATH}"
-      chmod 0644 "${ACCESSD_TLS_CSR_PATH}"
-      warn "CSR created at ${ACCESSD_TLS_CSR_PATH}; install signed cert at ${ACCESSD_TLS_CERT_PATH} before enabling nginx TLS."
-      ;;
-    existing|skip)
-      return 0
-      ;;
-    *)
-      warn "unknown TLS_SETUP_MODE=${mode}; skipping TLS setup"
-      ;;
-  esac
-}
-
-nginx_tls_ready() {
-  [[ -f "${ACCESSD_TLS_CERT_PATH}" && -f "${ACCESSD_TLS_KEY_PATH}" ]]
-}
-
-assert_safe_web_root() {
-  local root="$1"
-  if [[ -z "${root}" ]]; then
-    echo "[install][error] VM_WWW_DIR cannot be empty" >&2
-    exit 1
-  fi
-  if [[ "${root}" != /* ]]; then
-    echo "[install][error] VM_WWW_DIR must be an absolute path: ${root}" >&2
-    exit 1
-  fi
-  if [[ "${root}" == "/" || "${root}" == "/var" || "${root}" == "/var/www" ]]; then
-    echo "[install][error] refusing to operate on unsafe VM_WWW_DIR=${root}" >&2
-    exit 1
-  fi
-  if [[ "${root}" != /var/www/accessd* ]]; then
-    echo "[install][error] VM_WWW_DIR must stay under /var/www/accessd*: ${root}" >&2
-    exit 1
-  fi
-}
-
-clear_dir_contents_safe() {
-  local root="$1"
-  assert_safe_web_root "${root}"
-  mkdir -p "${root}"
-  find "${root}" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+  local key="$2"
+  sed -i -E "/^${key}=.*/d" "${env_file}"
 }
 
 env_value_from_file() {
@@ -272,32 +142,55 @@ env_value_from_file() {
   printf '%s' "${value}"
 }
 
+prompt_with_default() {
+  local label="$1"
+  local default="$2"
+  if ! has_tty; then
+    printf '%s' "${default}"
+    return 0
+  fi
+  local input
+  read -r -p "${label} [${default}]: " input
+  input="$(trim "${input}")"
+  if [[ -z "${input}" ]]; then
+    printf '%s' "${default}"
+  else
+    printf '%s' "${input}"
+  fi
+}
+
+generate_secret_b64_32() {
+  openssl rand -base64 32 | tr -d '\n'
+}
+
+is_base64_32_bytes() {
+  local value="${1:-}"
+  [[ -n "${value}" ]] || return 1
+  local tmp
+  tmp="$(mktemp)"
+  if ! printf '%s' "${value}" | openssl base64 -d -A -out "${tmp}" 2>/dev/null; then
+    rm -f "${tmp}" || true
+    return 1
+  fi
+  local size
+  size="$(wc -c < "${tmp}" | tr -d '[:space:]')"
+  rm -f "${tmp}" || true
+  [[ "${size}" == "32" ]]
+}
+
 require_non_placeholder_env_value() {
   local env_file="$1"
   local key="$2"
   local value
   if ! value="$(env_value_from_file "${env_file}" "${key}")"; then
-    echo "[install][error] ${key} is required in ${env_file}" >&2
-    exit 1
+    fail "${key} is required in ${env_file}"
   fi
   if [[ -z "${value}" ]]; then
-    echo "[install][error] ${key} is empty in ${env_file}" >&2
-    exit 1
+    fail "${key} is empty in ${env_file}"
   fi
   if [[ "${value}" == *CHANGE_ME* ]]; then
-    echo "[install][error] ${key} in ${env_file} still contains CHANGE_ME placeholder" >&2
-    exit 1
+    fail "${key} in ${env_file} still contains CHANGE_ME placeholder"
   fi
-}
-
-enforce_required_secrets_configured() {
-  local api_env="${VM_ETC_DIR}/accessd.env"
-
-  require_non_placeholder_env_value "${api_env}" "ACCESSD_DB_URL"
-  require_non_placeholder_env_value "${api_env}" "ACCESSD_VAULT_KEY"
-  require_non_placeholder_env_value "${api_env}" "ACCESSD_LAUNCH_TOKEN_SECRET"
-  require_non_placeholder_env_value "${api_env}" "ACCESSD_CONNECTOR_SECRET"
-  require_non_placeholder_env_value "${api_env}" "ACCESSD_DEV_ADMIN_PASSWORD"
 }
 
 ensure_apt_packages() {
@@ -319,6 +212,29 @@ ensure_apt_packages() {
   export DEBIAN_FRONTEND=noninteractive
   apt-get update
   apt-get install -y "${missing[@]}"
+}
+
+assert_safe_web_root() {
+  local root="$1"
+  if [[ -z "${root}" ]]; then
+    fail "VM_WWW_DIR cannot be empty"
+  fi
+  if [[ "${root}" != /* ]]; then
+    fail "VM_WWW_DIR must be an absolute path: ${root}"
+  fi
+  if [[ "${root}" == "/" || "${root}" == "/var" || "${root}" == "/var/www" ]]; then
+    fail "refusing to operate on unsafe VM_WWW_DIR=${root}"
+  fi
+  if [[ "${root}" != /var/www/accessd* ]]; then
+    fail "VM_WWW_DIR must stay under /var/www/accessd*: ${root}"
+  fi
+}
+
+clear_dir_contents_safe() {
+  local root="$1"
+  assert_safe_web_root "${root}"
+  mkdir -p "${root}"
+  find "${root}" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
 }
 
 copy_env_if_missing() {
@@ -363,6 +279,278 @@ merge_env_missing_keys() {
   fi
 }
 
+prompt_for_domain_if_needed() {
+  if [[ -n "${ACCESSD_DOMAIN}" ]]; then
+    return 0
+  fi
+  if has_tty; then
+    read -r -p "AccessD domain (nginx server_name + API/UI origin) [accessd.example.internal]: " ACCESSD_DOMAIN
+    ACCESSD_DOMAIN="$(trim "${ACCESSD_DOMAIN}")"
+  fi
+  if [[ -z "${ACCESSD_DOMAIN}" ]]; then
+    ACCESSD_DOMAIN="accessd.example.internal"
+  fi
+}
+
+apply_domain_to_api_env_if_placeholder() {
+  local env_file="$1"
+  local domain="$2"
+  [[ -f "${env_file}" ]] || return 0
+
+  local keys=(
+    "ACCESSD_CORS_ALLOWED_ORIGINS"
+    "ACCESSD_SSH_PROXY_PUBLIC_HOST"
+    "ACCESSD_PG_PROXY_PUBLIC_HOST"
+    "ACCESSD_MYSQL_PROXY_PUBLIC_HOST"
+    "ACCESSD_MSSQL_PROXY_PUBLIC_HOST"
+    "ACCESSD_REDIS_PROXY_PUBLIC_HOST"
+    "ACCESSD_CONNECTOR_RELEASES_BASE_URL"
+  )
+
+  for key in "${keys[@]}"; do
+    local current
+    current="$(env_value_from_file "${env_file}" "${key}" || true)"
+    if [[ -z "${current}" || "${current}" == *accessd.example.internal* ]]; then
+      case "${key}" in
+        ACCESSD_CORS_ALLOWED_ORIGINS)
+          set_or_replace_env_kv "${env_file}" "${key}" "https://${domain}"
+          ;;
+        ACCESSD_CONNECTOR_RELEASES_BASE_URL)
+          set_or_replace_env_kv "${env_file}" "${key}" "https://${domain}/downloads/connectors"
+          ;;
+        *)
+          set_or_replace_env_kv "${env_file}" "${key}" "${domain}"
+          ;;
+      esac
+    fi
+  done
+}
+
+choose_tls_mode() {
+  local mode="${TLS_SETUP_MODE,,}"
+  case "${mode}" in
+    existing|self-signed|csr|skip)
+      printf '%s' "${mode}"
+      return 0
+      ;;
+    auto|"")
+      if [[ -f "${ACCESSD_TLS_CERT_PATH}" && -f "${ACCESSD_TLS_KEY_PATH}" ]]; then
+        printf 'existing'
+      else
+        printf 'self-signed'
+      fi
+      return 0
+      ;;
+  esac
+
+  if [[ "${mode}" != "prompt" ]]; then
+    warn "unknown TLS_SETUP_MODE=${TLS_SETUP_MODE}; using auto behavior"
+    if [[ -f "${ACCESSD_TLS_CERT_PATH}" && -f "${ACCESSD_TLS_KEY_PATH}" ]]; then
+      printf 'existing'
+    else
+      printf 'self-signed'
+    fi
+    return 0
+  fi
+
+  if ! has_tty; then
+    if [[ -f "${ACCESSD_TLS_CERT_PATH}" && -f "${ACCESSD_TLS_KEY_PATH}" ]]; then
+      printf 'existing'
+    else
+      printf 'self-signed'
+    fi
+    return 0
+  fi
+
+  echo "[install] TLS setup mode" >&2
+  echo "  1) existing cert/key (default)" >&2
+  echo "  2) generate self-signed cert" >&2
+  echo "  3) generate private key + CSR" >&2
+  echo "  4) skip TLS setup" >&2
+  local choice
+  read -r -p "Select mode [1-4]: " choice </dev/tty
+  choice="$(trim "${choice}")"
+  case "${choice}" in
+    2|self-signed) printf 'self-signed' ;;
+    3|csr) printf 'csr' ;;
+    4|skip) printf 'skip' ;;
+    *) printf 'existing' ;;
+  esac
+}
+
+setup_tls_assets() {
+  local mode="$1"
+  mkdir -p "${ACCESSD_TLS_CERT_DIR}"
+
+  case "${mode}" in
+    self-signed)
+      log "generating self-signed TLS cert for domain ${ACCESSD_DOMAIN}"
+      openssl req -x509 -newkey rsa:4096 -sha256 -nodes \
+        -keyout "${ACCESSD_TLS_KEY_PATH}" \
+        -out "${ACCESSD_TLS_CERT_PATH}" \
+        -days "${ACCESSD_TLS_VALID_DAYS}" \
+        -subj "/CN=${ACCESSD_DOMAIN}/O=${ACCESSD_TLS_ORG}" \
+        -addext "subjectAltName=DNS:${ACCESSD_DOMAIN}"
+      chmod 0600 "${ACCESSD_TLS_KEY_PATH}"
+      chmod 0644 "${ACCESSD_TLS_CERT_PATH}"
+      ;;
+    csr)
+      log "generating TLS private key + CSR for domain ${ACCESSD_DOMAIN}"
+      openssl req -new -newkey rsa:4096 -sha256 -nodes \
+        -keyout "${ACCESSD_TLS_KEY_PATH}" \
+        -out "${ACCESSD_TLS_CSR_PATH}" \
+        -subj "/CN=${ACCESSD_DOMAIN}/O=${ACCESSD_TLS_ORG}" \
+        -addext "subjectAltName=DNS:${ACCESSD_DOMAIN}"
+      chmod 0600 "${ACCESSD_TLS_KEY_PATH}"
+      chmod 0644 "${ACCESSD_TLS_CSR_PATH}"
+      warn "CSR created at ${ACCESSD_TLS_CSR_PATH}; install signed cert at ${ACCESSD_TLS_CERT_PATH} before nginx TLS enable."
+      ;;
+    existing|skip)
+      ;;
+    *)
+      warn "unknown TLS mode ${mode}; skipping TLS setup"
+      ;;
+  esac
+}
+
+nginx_tls_ready() {
+  [[ -f "${ACCESSD_TLS_CERT_PATH}" && -f "${ACCESSD_TLS_KEY_PATH}" ]]
+}
+
+configure_nginx_site_for_domain_and_tls() {
+  local site_file="$1"
+  local domain="$2"
+  local cert_path="$3"
+  local key_path="$4"
+  [[ -f "${site_file}" ]] || return 0
+
+  local domain_esc cert_esc key_esc
+  domain_esc="$(escape_sed_replacement "${domain}")"
+  cert_esc="$(escape_sed_replacement "${cert_path}")"
+  key_esc="$(escape_sed_replacement "${key_path}")"
+
+  sed -i -E "s|server_name accessd\\.example\\.internal;|server_name ${domain_esc};|g" "${site_file}"
+  sed -i -E "s|ssl_certificate[[:space:]]+/etc/ssl/accessd/fullchain\\.pem;|ssl_certificate     ${cert_esc};|g" "${site_file}"
+  sed -i -E "s|ssl_certificate_key[[:space:]]+/etc/ssl/accessd/privkey\\.pem;|ssl_certificate_key ${key_esc};|g" "${site_file}"
+}
+
+configure_api_env_interactive() {
+  local env_file="${VM_ETC_DIR}/accessd.env"
+  [[ -f "${env_file}" ]] || return 0
+
+  apply_domain_to_api_env_if_placeholder "${env_file}" "${ACCESSD_DOMAIN}"
+
+  local db_url
+  db_url="$(env_value_from_file "${env_file}" "ACCESSD_DB_URL" || true)"
+  if [[ -z "${db_url}" || "${db_url}" == *CHANGE_ME* ]]; then
+    local use_local="yes"
+    if has_tty; then
+      local choice
+      read -r -p "Use local PostgreSQL on this VM? [Y/n]: " choice
+      choice="$(trim "${choice}")"
+      case "${choice,,}" in
+        n|no) use_local="no" ;;
+      esac
+    fi
+
+    if [[ "${use_local}" == "yes" ]]; then
+      local db_user db_name db_pass
+      db_user="$(prompt_with_default "PostgreSQL username" "accessd")"
+      db_name="$(prompt_with_default "PostgreSQL database name" "accessd")"
+      db_pass="$(generate_secret_b64_32)"
+      if has_tty; then
+        local pass_in
+        read -r -p "PostgreSQL password (leave empty to auto-generate): " pass_in
+        pass_in="$(trim "${pass_in}")"
+        if [[ -n "${pass_in}" ]]; then
+          db_pass="${pass_in}"
+        fi
+      fi
+      set_or_replace_env_kv "${env_file}" "ACCESSD_DB_URL" "postgres://${db_user}:${db_pass}@127.0.0.1:5432/${db_name}?sslmode=disable"
+      log "configured ACCESSD_DB_URL for local postgres"
+    else
+      local remote_url=""
+      if has_tty; then
+        read -r -p "Enter ACCESSD_DB_URL (full postgres URL): " remote_url
+      fi
+      remote_url="$(trim "${remote_url:-}")"
+      [[ -n "${remote_url}" ]] && set_or_replace_env_kv "${env_file}" "ACCESSD_DB_URL" "${remote_url}"
+    fi
+  fi
+
+  local vault_key launch_secret connector_secret admin_password admin_email
+  local admin_username
+  vault_key="$(env_value_from_file "${env_file}" "ACCESSD_VAULT_KEY" || true)"
+  launch_secret="$(env_value_from_file "${env_file}" "ACCESSD_LAUNCH_TOKEN_SECRET" || true)"
+  connector_secret="$(env_value_from_file "${env_file}" "ACCESSD_CONNECTOR_SECRET" || true)"
+  admin_password="$(env_value_from_file "${env_file}" "ACCESSD_DEV_ADMIN_PASSWORD" || true)"
+  admin_email="$(env_value_from_file "${env_file}" "ACCESSD_DEV_ADMIN_EMAIL" || true)"
+  admin_username="$(env_value_from_file "${env_file}" "ACCESSD_DEV_ADMIN_USERNAME" || true)"
+
+  if [[ -z "${vault_key}" || "${vault_key}" == *CHANGE_ME* ]] || ! is_base64_32_bytes "${vault_key}"; then
+    set_or_replace_env_kv "${env_file}" "ACCESSD_VAULT_KEY" "$(generate_secret_b64_32)"
+    log "generated ACCESSD_VAULT_KEY"
+  fi
+  if [[ -z "${launch_secret}" || "${launch_secret}" == *CHANGE_ME* ]]; then
+    set_or_replace_env_kv "${env_file}" "ACCESSD_LAUNCH_TOKEN_SECRET" "$(generate_secret_b64_32)"
+    log "generated ACCESSD_LAUNCH_TOKEN_SECRET"
+  fi
+  if [[ -z "${connector_secret}" || "${connector_secret}" == *CHANGE_ME* ]]; then
+    set_or_replace_env_kv "${env_file}" "ACCESSD_CONNECTOR_SECRET" "$(generate_secret_b64_32)"
+    log "generated ACCESSD_CONNECTOR_SECRET"
+  fi
+
+  if has_tty; then
+    local current_email
+    current_email="${admin_email:-accessd-admin@${ACCESSD_DOMAIN}}"
+    set_or_replace_env_kv "${env_file}" "ACCESSD_DEV_ADMIN_EMAIL" "$(prompt_with_default "Bootstrap admin email" "${current_email}")"
+  elif [[ -z "${admin_email}" || "${admin_email}" == *CHANGE_ME* ]]; then
+    set_or_replace_env_kv "${env_file}" "ACCESSD_DEV_ADMIN_EMAIL" "accessd-admin@${ACCESSD_DOMAIN}"
+  fi
+
+  if [[ -z "${admin_password}" || "${admin_password}" == *CHANGE_ME* ]]; then
+    local generated
+    generated="$(generate_secret_b64_32)"
+    if has_tty; then
+      local admin_in
+      read -r -p "Bootstrap admin password (leave empty to auto-generate): " admin_in
+      admin_in="$(trim "${admin_in}")"
+      if [[ -n "${admin_in}" ]]; then
+        generated="${admin_in}"
+      fi
+    fi
+    set_or_replace_env_kv "${env_file}" "ACCESSD_DEV_ADMIN_PASSWORD" "${generated}"
+    GENERATED_ADMIN_PASSWORD="${generated}"
+    log "configured ACCESSD_DEV_ADMIN_PASSWORD"
+  fi
+
+  BOOTSTRAP_ADMIN_USERNAME="$(env_value_from_file "${env_file}" "ACCESSD_DEV_ADMIN_USERNAME" || true)"
+  if [[ -z "${BOOTSTRAP_ADMIN_USERNAME}" ]]; then
+    BOOTSTRAP_ADMIN_USERNAME="${admin_username:-admin}"
+  fi
+
+  set_or_replace_env_kv "${env_file}" "ACCESSD_ALLOW_UNSAFE_MODE" "false"
+}
+
+configure_connector_env_defaults() {
+  local env_file="${VM_ETC_DIR}/accessd-connector.env"
+  [[ -f "${env_file}" ]] || return 0
+
+  set_or_replace_env_kv "${env_file}" "ACCESSD_CONNECTOR_ALLOWED_ORIGIN" "https://${ACCESSD_DOMAIN}"
+  set_or_replace_env_kv "${env_file}" "ACCESSD_CONNECTOR_BACKEND_VERIFY_URL" "https://${ACCESSD_DOMAIN}/api/connector/token/verify"
+  # Operator bootstrap must not ship shared secret. Backend verify mode is default.
+  remove_env_kv "${env_file}" "ACCESSD_CONNECTOR_SECRET"
+}
+
+enforce_required_secrets_configured() {
+  local api_env="${VM_ETC_DIR}/accessd.env"
+  require_non_placeholder_env_value "${api_env}" "ACCESSD_DB_URL"
+  require_non_placeholder_env_value "${api_env}" "ACCESSD_VAULT_KEY"
+  require_non_placeholder_env_value "${api_env}" "ACCESSD_LAUNCH_TOKEN_SECRET"
+  require_non_placeholder_env_value "${api_env}" "ACCESSD_CONNECTOR_SECRET"
+  require_non_placeholder_env_value "${api_env}" "ACCESSD_DEV_ADMIN_PASSWORD"
+}
+
 sql_escape_single_quotes() {
   local s="$1"
   printf "%s" "${s//\'/\'\'}"
@@ -370,7 +558,6 @@ sql_escape_single_quotes() {
 
 parse_db_url_components() {
   local db_url="$1"
-  # Matches: postgres://user:pass@host:port/db?...
   if [[ "${db_url}" =~ ^postgres(ql)?://([^:/?#]+):([^@/?#]+)@(\[[^]]+\]|[^:/?#]+)(:([0-9]+))?/([^?]+) ]]; then
     DB_URL_USER="${BASH_REMATCH[2]}"
     DB_URL_PASS="${BASH_REMATCH[3]}"
@@ -408,23 +595,37 @@ should_setup_local_postgres() {
     true|1|yes|on) return 0 ;;
     false|0|no|off) return 1 ;;
     auto|"")
-      if [[ -z "${DB_URL_HOST:-}" ]]; then
-        return 1
-      fi
+      [[ -n "${DB_URL_HOST:-}" ]] || return 1
       case "${DB_URL_HOST}" in
         127.0.0.1|localhost|::1) return 0 ;;
         *) return 1 ;;
       esac
       ;;
-    *)
-      return 1
-      ;;
+    *) return 1 ;;
   esac
+}
+
+normalize_local_db_sslmode_if_needed() {
+  local env_file="${VM_ETC_DIR}/accessd.env"
+  if ! read_db_url_from_env_file "${env_file}"; then
+    return 0
+  fi
+  if ! parse_db_url_components "${DB_URL_RAW}"; then
+    return 0
+  fi
+  if ! should_setup_local_postgres; then
+    return 0
+  fi
+  if [[ "${DB_URL_RAW}" == *"sslmode=require"* ]]; then
+    local new_url="${DB_URL_RAW/sslmode=require/sslmode=disable}"
+    set_or_replace_env_kv "${env_file}" "ACCESSD_DB_URL" "${new_url}"
+    log "updated local ACCESSD_DB_URL sslmode=require -> sslmode=disable"
+  fi
 }
 
 setup_local_postgres_if_requested() {
   if ! read_db_url_from_env_file "${VM_ETC_DIR}/accessd.env"; then
-    warn "ACCESSD_DB_URL not found in ${VM_ETC_DIR}/accessd.env; skipping postgres setup"
+    warn "ACCESSD_DB_URL missing; skipping postgres setup"
     return 0
   fi
   if ! parse_db_url_components "${DB_URL_RAW}"; then
@@ -435,12 +636,12 @@ setup_local_postgres_if_requested() {
     log "postgres setup skipped (INSTALL_POSTGRES=${INSTALL_POSTGRES}, db_host=${DB_URL_HOST})"
     return 0
   fi
+
   ensure_apt_packages postgresql
   systemctl enable --now postgresql
 
   if [[ "${DB_URL_PASS}" == *CHANGE_ME* ]]; then
-    warn "DB password still placeholder in ACCESSD_DB_URL; skipping role/db provisioning"
-    return 0
+    fail "DB password still placeholder in ACCESSD_DB_URL"
   fi
 
   local user_esc pass_esc db_esc
@@ -464,22 +665,64 @@ SQL
   if ! sudo -u postgres psql -tAc "SELECT 1 FROM pg_database WHERE datname='${db_esc}'" | grep -q 1; then
     sudo -u postgres createdb -O "${DB_URL_USER}" "${DB_URL_NAME}"
   fi
+
   sudo -u postgres psql -v ON_ERROR_STOP=1 <<SQL
 REVOKE ALL ON DATABASE "${DB_URL_NAME}" FROM public;
 SQL
 }
 
+render_accessd_systemd_unit() {
+  local src="$1"
+  local dst="$2"
+  local wd_esc env_esc pre_esc start_esc rw_esc user_esc group_esc
+  wd_esc="$(escape_sed_replacement "${VM_OPT_DIR}")"
+  env_esc="$(escape_sed_replacement "${VM_ETC_DIR}/accessd.env")"
+  pre_esc="$(escape_sed_replacement "${VM_OPT_DIR}/bin/accessd migrate up")"
+  start_esc="$(escape_sed_replacement "${VM_OPT_DIR}/bin/accessd server")"
+  rw_esc="$(escape_sed_replacement "${VM_STATE_DIR}")"
+  user_esc="$(escape_sed_replacement "${ACCESSD_USER}")"
+  group_esc="$(escape_sed_replacement "${ACCESSD_GROUP}")"
+
+  sed \
+    -e "s|^User=.*$|User=${user_esc}|" \
+    -e "s|^Group=.*$|Group=${group_esc}|" \
+    -e "s|^WorkingDirectory=.*$|WorkingDirectory=${wd_esc}|" \
+    -e "s|^EnvironmentFile=.*$|EnvironmentFile=${env_esc}|" \
+    -e "s|^ExecStartPre=.*$|ExecStartPre=${pre_esc}|" \
+    -e "s|^ExecStart=.*$|ExecStart=${start_esc}|" \
+    -e "s|^ReadWritePaths=.*$|ReadWritePaths=${rw_esc}|" \
+    "${src}" > "${dst}"
+
+  chmod 0644 "${dst}"
+  chown root:root "${dst}"
+}
+
+assert_required_runtime_paths() {
+  local env_file="${VM_ETC_DIR}/accessd.env"
+  local bin_file="${VM_OPT_DIR}/bin/accessd"
+  local mig_dir="${VM_OPT_DIR}/migrations"
+
+  [[ -f "${env_file}" ]] || fail "missing env file: ${env_file}"
+  [[ -x "${bin_file}" ]] || fail "missing executable: ${bin_file}"
+  [[ -d "${mig_dir}" ]] || fail "missing migrations dir: ${mig_dir}"
+}
+
+run_accessd_setup_commands() {
+  local bin="${VM_OPT_DIR}/bin/accessd"
+  local env_file="${VM_ETC_DIR}/accessd.env"
+  log "running accessd migrate up (pre-start)"
+  sudo -u "${ACCESSD_USER}" ACCESSD_CONFIG_FILE="${env_file}" "${bin}" migrate up
+
+  log "running accessd bootstrap (pre-start)"
+  sudo -u "${ACCESSD_USER}" ACCESSD_CONFIG_FILE="${env_file}" "${bin}" bootstrap
+}
+
 publish_operator_tls_cert_if_available() {
   if ! bool_is_true "${PUBLISH_OPERATOR_TLS_CERT}"; then
-    log "operator TLS cert publish skipped (PUBLISH_OPERATOR_TLS_CERT=${PUBLISH_OPERATOR_TLS_CERT})"
     return 0
   fi
   if [[ ! -f "${ACCESSD_PUBLIC_CERT_SOURCE}" ]]; then
-    if [[ "${TLS_MODE:-}" == "csr" ]]; then
-      log "operator TLS cert publish skipped: CSR mode selected and signed cert not installed yet (${ACCESSD_PUBLIC_CERT_SOURCE})"
-      return 0
-    fi
-    warn "operator TLS cert source not found: ${ACCESSD_PUBLIC_CERT_SOURCE}; skipping cert publish"
+    log "operator TLS cert publish skipped: cert not present (${ACCESSD_PUBLIC_CERT_SOURCE})"
     return 0
   fi
 
@@ -494,7 +737,7 @@ publish_operator_tls_cert_if_available() {
   ' "${ACCESSD_PUBLIC_CERT_SOURCE}" > "${cert_out}" || true
 
   if [[ ! -s "${cert_out}" ]]; then
-    warn "failed extracting PEM certificate from ${ACCESSD_PUBLIC_CERT_SOURCE}; skipping cert publish"
+    warn "failed extracting certificate from ${ACCESSD_PUBLIC_CERT_SOURCE}"
     rm -f "${cert_out}" || true
     return 0
   fi
@@ -506,53 +749,65 @@ publish_operator_tls_cert_if_available() {
 
 publish_operator_connector_env_if_available() {
   if ! bool_is_true "${PUBLISH_OPERATOR_CONNECTOR_ENV}"; then
-    log "operator connector env publish skipped (PUBLISH_OPERATOR_CONNECTOR_ENV=${PUBLISH_OPERATOR_CONNECTOR_ENV})"
     return 0
   fi
 
   local source_env="${VM_ETC_DIR}/accessd-connector.env"
-  if [[ ! -f "${source_env}" ]]; then
-    warn "connector env source not found: ${source_env}; skipping operator connector env publish"
-    return 0
-  fi
+  [[ -f "${source_env}" ]] || { warn "connector env source not found: ${source_env}"; return 0; }
 
   local out_dir="${VM_DOWNLOADS_DIR}/bootstrap"
   local out_file="${out_dir}/accessd-connector.env"
   mkdir -p "${out_dir}"
 
-  if bool_is_true "${PUBLISH_OPERATOR_CONNECTOR_SECRET}"; then
-    cp "${source_env}" "${out_file}"
-  else
-    awk '
-      BEGIN { printed_secret_note=0 }
-      /^ACCESSD_CONNECTOR_SECRET=/ {
-        if (printed_secret_note == 0) {
-          print "# ACCESSD_CONNECTOR_SECRET intentionally omitted from bootstrap env."
-          print "# Set this in operator system environment (recommended) or local connector.env."
-          printed_secret_note=1
-        }
-        next
-      }
-      { print }
-    ' "${source_env}" > "${out_file}"
-  fi
+  awk '
+    /^ACCESSD_CONNECTOR_SECRET=/ { next }
+    { print }
+  ' "${source_env}" > "${out_file}"
 
-  if [[ -n "${ACCESSD_DOMAIN}" ]]; then
-    set_or_replace_env_kv "${out_file}" "ACCESSD_CONNECTOR_ALLOWED_ORIGIN" "https://${ACCESSD_DOMAIN}"
-  fi
+  set_or_replace_env_kv "${out_file}" "ACCESSD_CONNECTOR_ALLOWED_ORIGIN" "https://${ACCESSD_DOMAIN}"
+  set_or_replace_env_kv "${out_file}" "ACCESSD_CONNECTOR_BACKEND_VERIFY_URL" "https://${ACCESSD_DOMAIN}/api/connector/token/verify"
 
   chown root:"${WEB_GROUP}" "${out_file}"
   chmod 0640 "${out_file}"
-  log "published operator connector env: ${out_file}"
-  if bool_is_true "${PUBLISH_OPERATOR_CONNECTOR_SECRET}"; then
-    warn "published connector secret in downloadable operator env; ensure VM/network access is restricted to trusted operators."
+  log "published operator connector env (without secret): ${out_file}"
+}
+
+write_bootstrap_notes() {
+  if [[ -n "${GENERATED_ADMIN_PASSWORD}" ]]; then
+    local note_file="${VM_ETC_DIR}/BOOTSTRAP_ADMIN_PASSWORD.txt"
+    {
+      echo "ACCESSD bootstrap admin password"
+      echo "Generated at: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+      echo "Admin email: $(env_value_from_file "${VM_ETC_DIR}/accessd.env" "ACCESSD_DEV_ADMIN_EMAIL" || echo unknown)"
+      echo "Password: ${GENERATED_ADMIN_PASSWORD}"
+      echo "Delete this file after first successful login and password rotation."
+    } > "${note_file}"
+    chmod 0600 "${note_file}"
+    chown root:root "${note_file}"
+    log "wrote generated bootstrap admin password to ${note_file}"
+  fi
+}
+
+start_accessd_service_or_fail() {
+  systemctl daemon-reload
+  systemctl enable accessd
+  if systemctl is-active --quiet accessd; then
+    systemctl restart accessd
+  else
+    systemctl start accessd
+  fi
+
+  if ! systemctl is-active --quiet accessd; then
+    echo "[install][error] accessd failed to start. Last logs:" >&2
+    journalctl -u accessd -n 60 --no-pager >&2 || true
+    exit 1
   fi
 }
 
 log "bundle: ${BUNDLE_DIR}"
 log "connector tag: ${ACCESSD_CONNECTOR_TAG}"
 
-if bool_is_true "${INSTALL_NGINX}"; then
+if should_manage_nginx; then
   ensure_apt_packages nginx curl ca-certificates openssl
 fi
 
@@ -562,6 +817,9 @@ getent group "${ACCESSD_GROUP}" >/dev/null 2>&1 || groupadd --system "${ACCESSD_
 usermod -a -G "${ACCESSD_GROUP}" "${ACCESSD_USER}" >/dev/null 2>&1 || true
 
 mkdir -p "${VM_OPT_DIR}/bin" "${VM_OPT_DIR}/migrations" "${VM_ETC_DIR}" "${VM_WWW_DIR}" "${VM_DOWNLOADS_DIR}/connectors/${ACCESSD_CONNECTOR_TAG}"
+mkdir -p "${VM_STATE_DIR}/ssh"
+chown -R "${ACCESSD_USER}:${ACCESSD_GROUP}" "${VM_STATE_DIR}"
+chmod 0700 "${VM_STATE_DIR}" "${VM_STATE_DIR}/ssh"
 
 log "installing accessd binary + migrations"
 install -o root -g "${ACCESSD_GROUP}" -m 0755 "${BUNDLE_DIR}/bin/accessd" "${VM_OPT_DIR}/bin/accessd"
@@ -585,21 +843,22 @@ find "${VM_DOWNLOADS_DIR}" -type f -exec chmod 0644 {} +
 log "installing env + unit + nginx templates"
 copy_env_if_missing "${BUNDLE_DIR}/deploy/env/accessd.env.example" "${VM_ETC_DIR}/accessd.env" "${ACCESSD_GROUP}"
 copy_env_if_missing "${BUNDLE_DIR}/deploy/env/accessd-connector.env.example" "${VM_ETC_DIR}/accessd-connector.env" "${ACCESSD_GROUP}"
-enforce_required_secrets_configured
-install -o root -g root -m 0644 "${BUNDLE_DIR}/deploy/systemd/accessd.service" "${VM_SYSTEMD_DIR}/accessd.service"
-install -o root -g root -m 0644 "${BUNDLE_DIR}/deploy/systemd/accessd-connector.service" "${VM_SYSTEMD_DIR}/accessd-connector.service"
-if bool_is_true "${INSTALL_NGINX}"; then
+render_accessd_systemd_unit "${BUNDLE_DIR}/deploy/systemd/accessd.service" "${VM_SYSTEMD_DIR}/accessd.service"
+
+if should_manage_nginx; then
   install -o root -g root -m 0644 "${BUNDLE_DIR}/deploy/nginx/accessd.conf.example" "${VM_NGINX_SITES_AVAILABLE_DIR}/${NGINX_SITE_NAME}"
   ln -sfn "${VM_NGINX_SITES_AVAILABLE_DIR}/${NGINX_SITE_NAME}" "${VM_NGINX_SITES_ENABLED_DIR}/${NGINX_SITE_NAME}"
 fi
 
 prompt_for_domain_if_needed
-apply_domain_to_api_env_if_placeholder "${VM_ETC_DIR}/accessd.env" "${ACCESSD_DOMAIN}"
+configure_api_env_interactive
+configure_connector_env_defaults
+enforce_required_secrets_configured
 
 TLS_MODE="$(choose_tls_mode)"
 setup_tls_assets "${TLS_MODE}"
 
-if bool_is_true "${INSTALL_NGINX}"; then
+if should_manage_nginx; then
   configure_nginx_site_for_domain_and_tls \
     "${VM_NGINX_SITES_AVAILABLE_DIR}/${NGINX_SITE_NAME}" \
     "${ACCESSD_DOMAIN}" \
@@ -610,30 +869,36 @@ fi
 publish_operator_tls_cert_if_available
 publish_operator_connector_env_if_available
 
+normalize_local_db_sslmode_if_needed
 setup_local_postgres_if_requested
+assert_required_runtime_paths
+run_accessd_setup_commands
+write_bootstrap_notes
 
 log "reloading systemd + services"
-systemctl daemon-reload
-systemctl enable accessd
-if systemctl is-active --quiet accessd; then
-  systemctl restart accessd
-else
-  systemctl start accessd
-fi
-if bool_is_true "${INSTALL_NGINX}"; then
+start_accessd_service_or_fail
+
+if should_manage_nginx; then
   if nginx_tls_ready; then
-    systemctl enable --now nginx
     nginx -t
+    systemctl enable --now nginx
     systemctl reload nginx
   else
     warn "nginx TLS cert/key not ready at ${ACCESSD_TLS_CERT_PATH} and ${ACCESSD_TLS_KEY_PATH}; skipping nginx start/reload"
-    warn "complete TLS cert provisioning and run: nginx -t && systemctl reload nginx"
+    warn "complete TLS cert provisioning, then run: nginx -t && systemctl reload nginx"
   fi
 fi
 
 echo
 log "completed"
 echo "  - env file: ${VM_ETC_DIR}/accessd.env"
-echo "  - example updates: ${VM_ETC_DIR}/accessd.env.example.new (if env already existed)"
 echo "  - service status: systemctl status accessd --no-pager"
 echo "  - logs: journalctl -u accessd -f"
+echo "  - connector bootstrap env: ${VM_DOWNLOADS_DIR}/bootstrap/accessd-connector.env"
+if [[ -n "${BOOTSTRAP_ADMIN_USERNAME}" ]]; then
+  echo "  - bootstrap admin username: ${BOOTSTRAP_ADMIN_USERNAME}"
+fi
+if [[ -n "${GENERATED_ADMIN_PASSWORD}" ]]; then
+  echo "  - bootstrap admin password note: ${VM_ETC_DIR}/BOOTSTRAP_ADMIN_PASSWORD.txt"
+  echo "  - bootstrap admin password (generated): ${GENERATED_ADMIN_PASSWORD}"
+fi

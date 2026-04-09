@@ -80,11 +80,12 @@ Installer behavior:
 - configures and enables `accessd` service, and enables/reloads nginx
 - reruns are update-safe (binary/UI/templates refreshed, services restarted/reloaded)
 - existing `/etc/accessd/*.env` are preserved; new templates are written as `*.example.new`
+- auto-generates/fixes required secrets and bootstrap admin password when placeholders are present
 
 Useful installer flags:
-- `INSTALL_NGINX=true|false` (default: `true`)
+- `INSTALL_NGINX=auto|true|false` (default: `auto`)
 - `INSTALL_POSTGRES=auto|true|false` (default: `auto`)
-- `TLS_SETUP_MODE=prompt|existing|self-signed|csr|skip` (default: `prompt`)
+- `TLS_SETUP_MODE=auto|prompt|existing|self-signed|csr|skip` (default: `auto`)
 - `ACCESSD_DOMAIN=accessd.example.internal` (used for nginx `server_name` + env placeholders)
 - `ACCESSD_TLS_CERT_DIR=/etc/ssl/accessd` (default cert dir)
 - `ACCESSD_TLS_CERT_PATH=/etc/ssl/accessd/fullchain.pem` (nginx cert path)
@@ -94,10 +95,11 @@ Useful installer flags:
 - `PUBLISH_OPERATOR_TLS_CERT=true|false` (default: `true`; publishes `/downloads/certs/accessd-server.crt` when source cert exists)
 - `ACCESSD_PUBLIC_CERT_SOURCE=/path/to/fullchain.pem` (default: `/etc/ssl/accessd/fullchain.pem`)
 - `PUBLISH_OPERATOR_CONNECTOR_ENV=true|false` (default: `true`; publishes `/downloads/bootstrap/accessd-connector.env`)
-- `PUBLISH_OPERATOR_CONNECTOR_SECRET=true|false` (default: `false`; include `ACCESSD_CONNECTOR_SECRET` in published operator env)
 
 Interactive behavior:
-- With `TLS_SETUP_MODE=prompt`, installer asks for domain and TLS mode.
+- Installer asks for domain when not already configured.
+- With `TLS_SETUP_MODE=auto` (default), installer uses existing cert if present, otherwise generates self-signed cert.
+- With `TLS_SETUP_MODE=prompt`, installer asks for TLS mode.
 - `self-signed` generates cert/key directly (quick lab setup).
 - `csr` generates key + CSR and skips nginx reload until signed cert is installed.
 
@@ -113,22 +115,12 @@ Connector runtime note:
   - Default source URL: `https://<ui-domain>/downloads/bootstrap/accessd-connector.env`
   - Override with `ACCESSD_CONNECTOR_BOOTSTRAP_ENV_URL`
   - Existing local `~/.config/accessd/connector.env` is never overwritten.
-  - Preferred verification model: connector uses `ACCESSD_CONNECTOR_BACKEND_VERIFY_URL` (`/api/connector/token/verify`) so operator machines do not need shared secret distribution.
+- Preferred verification model: connector uses `ACCESSD_CONNECTOR_BACKEND_VERIFY_URL` (`/api/connector/token/verify`) so operator machines do not need shared secret distribution.
+- Published operator bootstrap env intentionally strips `ACCESSD_CONNECTOR_SECRET`.
 
 ## Secrets
 
-All three of these secrets must be generated and populated before first start:
-
-```bash
-# Vault key (AES-256 encryption key for stored credentials)
-openssl rand -base64 32   # → ACCESSD_VAULT_KEY
-
-# Launch token HMAC secret
-openssl rand -base64 32   # → ACCESSD_LAUNCH_TOKEN_SECRET
-
-# Connector HMAC secret (same value in both accessd.env and accessd-connector.env)
-openssl rand -base64 32   # → ACCESSD_CONNECTOR_SECRET
-```
+Installer auto-generates missing `ACCESSD_VAULT_KEY`, `ACCESSD_LAUNCH_TOKEN_SECRET`, `ACCESSD_CONNECTOR_SECRET`, and bootstrap admin password when placeholders are present.
 
 Connector hardening default:
 - `ACCESSD_CONNECTOR_ALLOW_INSECURE_NO_TOKEN=false` (recommended default)
