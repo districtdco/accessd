@@ -26,7 +26,10 @@ SELECT
 	user_search_filter,
 	username_attribute,
 	display_name_attribute,
+	surname_attribute,
 	email_attribute,
+	ssh_key_attribute,
+	avatar_attribute,
 	group_search_base_dn,
 	group_search_filter,
 	group_name_attribute,
@@ -50,7 +53,10 @@ LIMIT 1;`
 	var userFilter string
 	var usernameAttr string
 	var displayNameAttr string
+	var surnameAttr string
 	var emailAttr string
+	var sshKeyAttr string
+	var avatarAttr string
 	var groupBaseDN string
 	var groupFilter string
 	var groupNameAttr string
@@ -72,7 +78,10 @@ LIMIT 1;`
 		&userFilter,
 		&usernameAttr,
 		&displayNameAttr,
+		&surnameAttr,
 		&emailAttr,
+		&sshKeyAttr,
+		&avatarAttr,
 		&groupBaseDN,
 		&groupFilter,
 		&groupNameAttr,
@@ -131,9 +140,21 @@ LIMIT 1;`
 	if resolved.LDAP.DisplayNameAttribute == "" {
 		resolved.LDAP.DisplayNameAttribute = "displayName"
 	}
+	resolved.LDAP.SurnameAttribute = strings.TrimSpace(surnameAttr)
+	if resolved.LDAP.SurnameAttribute == "" {
+		resolved.LDAP.SurnameAttribute = "sn"
+	}
 	resolved.LDAP.EmailAttribute = strings.TrimSpace(emailAttr)
 	if resolved.LDAP.EmailAttribute == "" {
 		resolved.LDAP.EmailAttribute = "mail"
+	}
+	resolved.LDAP.SSHKeyAttribute = strings.TrimSpace(sshKeyAttr)
+	if resolved.LDAP.SSHKeyAttribute == "" {
+		resolved.LDAP.SSHKeyAttribute = "SshPublicKey"
+	}
+	resolved.LDAP.AvatarAttribute = strings.TrimSpace(avatarAttr)
+	if resolved.LDAP.AvatarAttribute == "" {
+		resolved.LDAP.AvatarAttribute = "jpegPhoto"
 	}
 	resolved.LDAP.GroupSearchBaseDN = strings.TrimSpace(groupBaseDN)
 	resolved.LDAP.GroupSearchFilter = strings.TrimSpace(groupFilter)

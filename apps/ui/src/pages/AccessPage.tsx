@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import {
   ConnectorHandoffError,
   connectorTokenForHandoff,
@@ -6,6 +7,7 @@ import {
   getConnectorReleaseMetadata,
   getConnectorVersion,
   getMyAccess,
+  issueConnectorBootstrapToken,
   handoffDBeaverToConnector,
   handoffRedisToConnector,
   handoffSFTPToConnector,
@@ -14,6 +16,7 @@ import {
 } from '../api'
 import type {
   AccessPoint,
+  ConnectorReleaseArtifact,
   ConnectorReleaseMetadata,
   DBeaverLaunchConnection,
   RedisLaunchConnection,
@@ -39,28 +42,63 @@ function displayIdentity(
 }
 
 type PlatformKey = { os: 'darwin' | 'linux' | 'windows'; arch: 'amd64' | 'arm64' }
-const CONNECTOR_AUTOSTART_URL = (import.meta.env.VITE_CONNECTOR_AUTOSTART_URL as string | undefined)?.trim()
+const CONNECTOR_AUTOSTART_BASE_URL = (import.meta.env.VITE_CONNECTOR_AUTOSTART_URL as string | undefined)?.trim()
   || 'accessd-connector://start'
+
+function connectorAutostartURL(): string {
+  const base = CONNECTOR_AUTOSTART_BASE_URL
+  const origin = typeof window !== 'undefined' ? window.location.origin : ''
+  if (!origin) return base
+  const sep = base.includes('?') ? '&' : '?'
+  return `${base}${sep}origin=${encodeURIComponent(origin)}`
+}
+
+async function connectorAutostartURLWithBootstrap(): Promise<string> {
+  const baseURL = connectorAutostartURL()
+  if (typeof window === 'undefined') return baseURL
+  try {
+    const issued = await issueConnectorBootstrapToken(window.location.origin)
+    if (!issued.token) return baseURL
+    const sep = baseURL.includes('?') ? '&' : '?'
+    return `${baseURL}${sep}bootstrap_token=${encodeURIComponent(issued.token)}`
+  } catch {
+    return baseURL
+  }
+}
 
 function detectPlatform(): PlatformKey {
   const ua = navigator.userAgent.toLowerCase()
   const platform = (navigator.platform || '').toLowerCase()
+  const uaData = (navigator as Navigator & {
+    userAgentData?: { architecture?: string; platform?: string }
+  }).userAgentData
+  const uaArch = (uaData?.architecture || '').toLowerCase()
   const isWindows = platform.includes('win') || ua.includes('windows')
   const isMac = platform.includes('mac') || ua.includes('mac os')
   const isLinux = !isWindows && !isMac
-  const isArm = ua.includes('arm64') || ua.includes('aarch64') || ua.includes('arm')
+  const isArm = uaArch.includes('arm') || ua.includes('arm64') || ua.includes('aarch64') || ua.includes('arm')
+  const isExplicitX64 = uaArch.includes('x86') || uaArch.includes('amd64') || ua.includes('x86_64') || ua.includes('amd64')
+  let arch: PlatformKey['arch'] = isArm ? 'arm64' : 'amd64'
+  if (isMac && !isArm && !isExplicitX64) {
+    // Browser UA on Apple Silicon can appear as MacIntel; prefer arm64 when ambiguous.
+    arch = 'arm64'
+  }
   return {
     os: isWindows ? 'windows' : (isMac ? 'darwin' : (isLinux ? 'linux' : 'linux')),
-    arch: isArm ? 'arm64' : 'amd64',
+    arch,
   }
 }
 
 function normalizeSemver(raw: string): [number, number, number] {
   const cleaned = raw.trim().replace(/^v/i, '').split('-')[0]
   const parts = cleaned.split('.')
-  const major = Number(parts[0] || 0)
-  const minor = Number(parts[1] || 0)
-  const patch = Number(parts[2] || 0)
+  const parsePart = (part: string | undefined): number => {
+    const match = (part ?? '').match(/^\d+/)
+    return match ? Number(match[0]) : 0
+  }
+  const major = parsePart(parts[0])
+  const minor = parsePart(parts[1])
+  const patch = parsePart(parts[2])
   return [major, minor, patch]
 }
 
@@ -139,15 +177,44 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-function triggerConnectorAutostart(): boolean {
+function iconDownload() {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+      <path d="M10 2a1 1 0 0 1 1 1v7.586l1.293-1.293a1 1 0 1 1 1.414 1.414l-3 3a1 1 0 0 1-1.414 0l-3-3a1 1 0 1 1 1.414-1.414L9 10.586V3a1 1 0 0 1 1-1Z" />
+      <path d="M3 13a1 1 0 0 1 1 1v1a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1v-1a1 1 0 1 1 2 0v1a3 3 0 0 1-3 3H5a3 3 0 0 1-3-3v-1a1 1 0 0 1 1-1Z" />
+    </svg>
+  )
+}
+
+function iconRefresh() {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+      <path fillRule="evenodd" d="M15.312 11.424a.75.75 0 0 1 1.06.014A7.5 7.5 0 1 1 17.5 10a.75.75 0 0 1-1.5 0A6 6 0 1 0 14.78 13.5a.75.75 0 0 1 .532-2.076Z" clipRule="evenodd" />
+      <path fillRule="evenodd" d="M13.53 9.53a.75.75 0 0 1 1.06 0l2.22 2.22a.75.75 0 0 1 0 1.06l-2.22 2.22a.75.75 0 0 1-1.06-1.06l1.69-1.69-1.69-1.69a.75.75 0 0 1 0-1.06Z" clipRule="evenodd" />
+    </svg>
+  )
+}
+
+function iconLayers() {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+      <path d="M10.362 1.093a1 1 0 0 0-.724 0l-7 2.625a1 1 0 0 0 0 1.874l7 2.625a1 1 0 0 0 .724 0l7-2.625a1 1 0 0 0 0-1.874l-7-2.625Z" />
+      <path d="M3.638 8.618a1 1 0 0 0-1.276.618 1 1 0 0 0 .618 1.276l6.3 2.362a2 2 0 0 0 1.44 0l6.3-2.362a1 1 0 1 0-.658-1.888l-6.3 2.362-6.424-2.368Z" />
+      <path d="M3.638 12.618a1 1 0 0 0-1.276.618 1 1 0 0 0 .618 1.276l6.3 2.362a2 2 0 0 0 1.44 0l6.3-2.362a1 1 0 1 0-.658-1.888l-6.3 2.362-6.424-2.368Z" />
+    </svg>
+  )
+}
+
+async function triggerConnectorAutostart(): Promise<boolean> {
   if (typeof window === 'undefined' || typeof document === 'undefined') {
     return false
   }
   try {
+    const autostartURL = await connectorAutostartURLWithBootstrap()
     const iframe = document.createElement('iframe')
     iframe.style.display = 'none'
     iframe.setAttribute('aria-hidden', 'true')
-    iframe.src = CONNECTOR_AUTOSTART_URL
+    iframe.src = autostartURL
     document.body.appendChild(iframe)
     window.setTimeout(() => {
       try {
@@ -159,8 +226,9 @@ function triggerConnectorAutostart(): boolean {
     return true
   } catch {
     try {
+      const autostartURL = await connectorAutostartURLWithBootstrap()
       const link = document.createElement('a')
-      link.href = CONNECTOR_AUTOSTART_URL
+      link.href = autostartURL
       link.style.display = 'none'
       document.body.appendChild(link)
       link.click()
@@ -194,12 +262,84 @@ async function waitForConnectorVersion(timeoutMs: number, intervalMs = 250): Pro
   return null
 }
 
-function artifactForPlatform(
+function packagePriorityForPlatform(
+  os: PlatformKey['os'],
+  packageType: string,
+): number {
+  if (os === 'darwin') {
+    if (packageType === 'pkg') return 0
+    if (packageType === 'archive') return 1
+  }
+  if (os === 'windows') {
+    if (packageType === 'msi') return 0
+    if (packageType === 'archive') return 1
+  }
+  if (os === 'linux') {
+    if (packageType === 'deb') return 0
+    if (packageType === 'rpm') return 1
+    if (packageType === 'archive') return 2
+  }
+  return 99
+}
+
+function archPriorityForPlatform(
+  platform: PlatformKey,
+  arch: ConnectorReleaseArtifact['arch'],
+): number {
+  if (platform.os === 'darwin') {
+    return arch === 'arm64' ? 0 : 1
+  }
+  return arch === platform.arch ? 0 : 1
+}
+
+function artifactCandidatesForPlatform(
   metadata: ConnectorReleaseMetadata | null,
   platform: PlatformKey,
 ) {
-  return metadata?.artifacts.find((a) => a.os === platform.os && a.arch === platform.arch)
-    ?? metadata?.artifacts.find((a) => a.os === platform.os)
+  const sameArch = metadata?.artifacts.filter((a) => a.os === platform.os && a.arch === platform.arch) ?? []
+  const sameOS = metadata?.artifacts.filter((a) => a.os === platform.os) ?? []
+  const candidates = sameArch.length > 0 ? sameArch : sameOS
+  return candidates
+    .slice()
+    .sort((a, b) => {
+      const packageDelta = packagePriorityForPlatform(platform.os, a.package_type) - packagePriorityForPlatform(platform.os, b.package_type)
+      if (packageDelta !== 0) return packageDelta
+      const archDelta = archPriorityForPlatform(platform, a.arch) - archPriorityForPlatform(platform, b.arch)
+      if (archDelta !== 0) return archDelta
+      if (a.preferred !== b.preferred) return a.preferred ? -1 : 1
+      return a.file_name.localeCompare(b.file_name)
+    })
+}
+
+async function isArtifactAvailable(url: string): Promise<boolean> {
+  const controller = new AbortController()
+  const timeout = window.setTimeout(() => controller.abort(), 1500)
+  try {
+    const resp = await fetch(url, {
+      method: 'HEAD',
+      cache: 'no-store',
+      signal: controller.signal,
+    })
+    return resp.ok
+  } catch {
+    return false
+  } finally {
+    window.clearTimeout(timeout)
+  }
+}
+
+async function artifactForPlatform(
+  metadata: ConnectorReleaseMetadata | null,
+  platform: PlatformKey,
+) {
+  const candidates = artifactCandidatesForPlatform(metadata, platform)
+  if (candidates.length === 0) return undefined
+  for (const candidate of candidates) {
+    if (await isArtifactAvailable(candidate.download_url)) {
+      return candidate
+    }
+  }
+  return candidates[0]
 }
 
 async function preflightConnector(attemptAutostart: boolean): Promise<ConnectorStatus> {
@@ -211,13 +351,13 @@ async function preflightConnector(attemptAutostart: boolean): Promise<ConnectorS
     connectorVersion = await getConnectorVersion()
   } catch {
     if (attemptAutostart) {
-      triggerConnectorAutostart()
+      await triggerConnectorAutostart()
       connectorVersion = await waitForConnectorVersion(12000)
     }
   }
 
   if (!connectorVersion) {
-    const artifact = artifactForPlatform(metadata, platform)
+    const artifact = await artifactForPlatform(metadata, platform)
     const downloadHint = artifact?.download_url ? ` Download: ${artifact.download_url}` : ''
     const docsHint = metadata?.install_docs_url ? ` Install guide: ${metadata.install_docs_url}` : ''
     const startHint = ` ${connectorStartHint(platform)}`
@@ -230,7 +370,7 @@ async function preflightConnector(attemptAutostart: boolean): Promise<ConnectorS
   }
 
   if (metadata && compareSemver(connectorVersion, metadata.minimum_version) < 0) {
-    const artifact = artifactForPlatform(metadata, platform)
+    const artifact = await artifactForPlatform(metadata, platform)
     const downloadHint = artifact?.download_url
       ? ` Download update: ${artifact.download_url}`
       : ''
@@ -250,6 +390,7 @@ async function preflightConnector(attemptAutostart: boolean): Promise<ConnectorS
 }
 
 export function AccessPage() {
+  const navigate = useNavigate()
   const [items, setItems] = useState<AccessPoint[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -257,6 +398,7 @@ export function AccessPage() {
   const [launchMessage, setLaunchMessage] = useState<string | null>(null)
   const [launchMessageKind, setLaunchMessageKind] = useState<'success' | 'error'>('success')
   const [connectorStatus, setConnectorStatus] = useState<ConnectorStatus>({ kind: 'checking' })
+  const platform = detectPlatform()
 
   useEffect(() => {
     let cancelled = false
@@ -292,6 +434,12 @@ export function AccessPage() {
       cancelled = true
     }
   }, [])
+
+  const refreshConnectorStatus = async () => {
+    setConnectorStatus({ kind: 'checking' })
+    const status = await preflightConnector(true)
+    setConnectorStatus(status)
+  }
 
   const launchAsset = async (item: AccessPoint, action: 'shell' | 'sftp' | 'dbeaver' | 'redis') => {
     setLaunchMessage(null)
@@ -439,7 +587,60 @@ export function AccessPage() {
       {connectorStatus.kind === 'checking' && (
         <div className="mb-4"><LoadingState message="Checking AccessD connector status..." /></div>
       )}
-      {(connectorStatus.kind === 'missing' || connectorStatus.kind === 'outdated' || connectorStatus.kind === 'error') && (
+      {(connectorStatus.kind === 'missing' || connectorStatus.kind === 'outdated' || connectorStatus.kind === 'ready') && (
+        <Card className="mb-4">
+          <div className="flex flex-col gap-3 px-4 py-4 sm:flex-row sm:items-center sm:justify-between">
+            <div className="min-w-0">
+              <div className="mb-1 flex items-center gap-2">
+                <Badge
+                  color={
+                    connectorStatus.kind === 'ready'
+                      ? 'green'
+                      : connectorStatus.kind === 'outdated'
+                        ? 'yellow'
+                        : 'red'
+                  }
+                >
+                  {connectorStatus.kind === 'ready'
+                    ? `Connector Online (${connectorStatus.version})`
+                    : connectorStatus.kind === 'outdated'
+                      ? 'Connector Update Needed'
+                      : 'Connector Offline'}
+                </Badge>
+              </div>
+              <p className="text-sm text-gray-600">
+                {connectorStatus.kind === 'ready'
+                  ? `Connector is reachable at local endpoint for ${platformLabel(platform.os)} (${platform.arch}).`
+                  : connectorStatus.message}
+              </p>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              {(connectorStatus.kind === 'missing' || connectorStatus.kind === 'outdated') && connectorStatus.downloadURL && (
+                <Button size="sm" onClick={() => window.open(connectorStatus.downloadURL, '_blank', 'noopener,noreferrer')}>
+                  <span className="mr-1">{iconDownload()}</span>
+                  Download
+                </Button>
+              )}
+              {(connectorStatus.kind === 'missing' || connectorStatus.kind === 'outdated') && (
+                <Button size="sm" variant="secondary" onClick={() => void navigate('/connector/versions')}>
+                  <span className="mr-1">{iconLayers()}</span>
+                  View Versions
+                </Button>
+              )}
+              {(connectorStatus.kind === 'missing' || connectorStatus.kind === 'outdated') && connectorStatus.installDocsURL && (
+                <Button size="sm" variant="ghost" onClick={() => window.open(connectorStatus.installDocsURL, '_blank', 'noopener,noreferrer')}>
+                  Install Guide
+                </Button>
+              )}
+              <Button size="sm" variant="ghost" onClick={() => void refreshConnectorStatus()}>
+                <span className="mr-1">{iconRefresh()}</span>
+                Recheck
+              </Button>
+            </div>
+          </div>
+        </Card>
+      )}
+      {connectorStatus.kind === 'error' && (
         <div className="mb-4">
           <ErrorState message={connectorStatus.message} />
         </div>

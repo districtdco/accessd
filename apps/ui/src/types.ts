@@ -3,6 +3,7 @@ export type User = {
   username: string
   email?: string
   display_name?: string
+  auth_provider?: string
   roles: string[]
 }
 
@@ -103,9 +104,12 @@ export type ConnectorRedisLaunchRequest = ConnectorLaunchRequestEnvelope<RedisLa
 export type ConnectorReleaseArtifact = {
   os: 'darwin' | 'linux' | 'windows'
   arch: 'arm64' | 'amd64'
+  package_type: 'pkg' | 'msi' | 'deb' | 'rpm' | 'archive'
   file_name: string
   archive_type: string
   download_url: string
+  signature_url: string
+  preferred: boolean
 }
 
 export type ConnectorReleaseMetadata = {
@@ -117,8 +121,33 @@ export type ConnectorReleaseMetadata = {
   runtime_model: 'on-demand' | 'background' | 'hybrid'
   install_docs_url: string
   checksum_file_url: string
+  checksum_sig_url: string
   artifacts: ConnectorReleaseArtifact[]
   backward_compatibility: string[]
+}
+
+export type ConnectorReleaseVersion = {
+  version: string
+  tag: string
+  checksum_file_url: string
+  checksum_sig_url: string
+  artifacts: ConnectorReleaseArtifact[]
+}
+
+export type ConnectorReleaseVersionsResponse = {
+  latest_version: string
+  minimum_version: string
+  versions: ConnectorReleaseVersion[]
+}
+
+export type ConnectorBootstrapTokenResponse = {
+  token: string
+  claims: {
+    origin: string
+    backend_verify_url: string
+    exp: number
+    v: string
+  }
 }
 
 export type AdminUser = {
@@ -180,7 +209,10 @@ export type AdminLDAPSettings = {
   sync_user_filter: string
   username_attribute: string
   display_name_attribute: string
+  surname_attribute: string
   email_attribute: string
+  ssh_key_attribute: string
+  avatar_attribute: string
   group_search_base_dn: string
   group_search_filter: string
   group_name_attribute: string

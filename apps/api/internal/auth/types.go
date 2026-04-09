@@ -16,11 +16,12 @@ type LoginResult struct {
 }
 
 type CurrentUser struct {
-	ID          string
-	Username    string
-	Email       string
-	DisplayName string
-	Roles       []string
+	ID           string
+	Username     string
+	Email        string
+	DisplayName  string
+	AuthProvider string
+	Roles        []string
 }
 
 func (u CurrentUser) HasRole(role string) bool {

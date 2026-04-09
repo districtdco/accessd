@@ -16,6 +16,7 @@ import { LoginPage } from './pages/LoginPage'
 import { AccountPage } from './pages/AccountPage'
 import { MySessionsPage } from './pages/MySessionsPage'
 import { SessionDetailPage } from './pages/SessionDetailPage'
+import { ConnectorVersionsPage } from './pages/ConnectorVersionsPage'
 
 function App() {
   return (
@@ -26,6 +27,7 @@ function App() {
         <Route path="/account" element={<ProtectedRoute><AccountPage /></ProtectedRoute>} />
         <Route path="/sessions" element={<ProtectedRoute><MySessionsPage /></ProtectedRoute>} />
         <Route path="/sessions/:sessionID" element={<ProtectedRoute><SessionDetailPage /></ProtectedRoute>} />
+        <Route path="/connector/versions" element={<ProtectedRoute><ConnectorVersionsPage /></ProtectedRoute>} />
         <Route path="/admin/users" element={<AdminRoute><AdminUsersPage /></AdminRoute>} />
         <Route path="/admin/users/:userID" element={<AdminRoute><AdminUserDetailPage /></AdminRoute>} />
         <Route path="/admin/assets" element={<AdminRoute><AdminAssetsPage /></AdminRoute>} />

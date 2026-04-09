@@ -55,80 +55,10 @@ cp -R "${ROOT_DIR}/apps/ui/dist/." "${BUNDLE_DIR}/ui/"
 cp -R "${ROOT_DIR}/apps/api/migrations/." "${BUNDLE_DIR}/migrations/"
 
 echo "[bundle] building connector release artifacts"
+CONNECTOR_DIST_DIR="${ROOT_DIR}/dist/connector/${TAG}"
+"${ROOT_DIR}/scripts/build_connector_release.sh" "${VERSION}"
 mkdir -p "${CONNECTOR_OUT_DIR}"
-built_targets=0
-failed_targets=()
-
-build_connector_target() {
-  local goos="$1"
-  local goarch="$2"
-  local archive_ext="$3"
-  local exe_name="accessd-connector"
-  local bin_name="${exe_name}"
-  if [[ "${goos}" == "windows" ]]; then
-    bin_name="${exe_name}.exe"
-  fi
-  local work_dir="${TMP_DIR}/${goos}-${goarch}"
-  mkdir -p "${work_dir}"
-  local archive_name="accessd-connector-${VERSION}-${goos}-${goarch}.${archive_ext}"
-  local archive_path="${CONNECTOR_OUT_DIR}/${archive_name}"
-
-  if ! (
-    cd "${ROOT_DIR}/apps/connector"
-    CGO_ENABLED=0 GOOS="${goos}" GOARCH="${goarch}" \
-      GOCACHE="${ROOT_DIR}/.gocache" \
-      go build -trimpath \
-      -ldflags "-X main.version=${VERSION} -X main.commit=${COMMIT} -X main.builtAt=${BUILT_AT}" \
-      -o "${work_dir}/${bin_name}" ./cmd/connector
-  ); then
-    echo "[bundle] WARN: connector build failed for ${goos}/${goarch}; skipping"
-    failed_targets+=("${goos}/${goarch}")
-    return 1
-  fi
-
-  if [[ "${goos}" == "windows" ]]; then
-    cp "${ROOT_DIR}/scripts/connector-installers/install-windows.ps1" "${work_dir}/install.ps1"
-  elif [[ "${goos}" == "darwin" ]]; then
-    cp "${ROOT_DIR}/scripts/connector-installers/install-macos.sh" "${work_dir}/install.sh"
-    chmod 0755 "${work_dir}/install.sh"
-  else
-    cp "${ROOT_DIR}/scripts/connector-installers/install-linux.sh" "${work_dir}/install.sh"
-    chmod 0755 "${work_dir}/install.sh"
-  fi
-
-  if [[ "${archive_ext}" == "zip" ]]; then
-    (cd "${work_dir}" && zip -q "${archive_path}" "${bin_name}" "install.ps1")
-  else
-    (cd "${work_dir}" && tar -czf "${archive_path}" "${bin_name}" "install.sh")
-  fi
-  built_targets=$((built_targets + 1))
-  return 0
-}
-
-build_connector_target "darwin" "arm64" "tar.gz" || true
-build_connector_target "darwin" "amd64" "tar.gz" || true
-build_connector_target "linux" "amd64" "tar.gz" || true
-build_connector_target "linux" "arm64" "tar.gz" || true
-build_connector_target "windows" "amd64" "zip" || true
-
-if [[ "${built_targets}" -eq 0 ]]; then
-  echo "[bundle] ERROR: no connector artifacts were built"
-  exit 1
-fi
-
-CONNECTOR_CHECKSUM_FILE="${CONNECTOR_OUT_DIR}/accessd-connector-${VERSION}-checksums.txt"
-rm -f "${CONNECTOR_CHECKSUM_FILE}"
-if command -v sha256sum >/dev/null 2>&1; then
-  for f in "${CONNECTOR_OUT_DIR}"/accessd-connector-"${VERSION}"-*; do
-    [[ -f "${f}" ]] || continue
-    sha256sum "${f}" >> "${CONNECTOR_CHECKSUM_FILE}"
-  done
-else
-  for f in "${CONNECTOR_OUT_DIR}"/accessd-connector-"${VERSION}"-*; do
-    [[ -f "${f}" ]] || continue
-    shasum -a 256 "${f}" >> "${CONNECTOR_CHECKSUM_FILE}"
-  done
-fi
+cp -R "${CONNECTOR_DIST_DIR}/." "${CONNECTOR_OUT_DIR}/"
 
 echo "[bundle] copying deployment templates"
 mkdir -p "${BUNDLE_DIR}/deploy/env" "${BUNDLE_DIR}/deploy/systemd" "${BUNDLE_DIR}/deploy/nginx"
@@ -166,16 +96,6 @@ VM mapping defaults:
 - nginx site dirs: ${VM_NGINX_SITES_AVAILABLE_DIR}, ${VM_NGINX_SITES_ENABLED_DIR}
 - installer helper: deploy/install_on_vm.sh
 EOF
-
-if [[ "${#failed_targets[@]}" -gt 0 ]]; then
-  {
-    echo
-    echo "Connector targets skipped due build failure:"
-    for target in "${failed_targets[@]}"; do
-      echo "- ${target}"
-    done
-  } >> "${BUNDLE_DIR}/MANIFEST.txt"
-fi
 
 echo "[bundle] generating checksums"
 CHECKSUM_FILE="${BUNDLE_DIR}/SHA256SUMS.txt"

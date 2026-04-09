@@ -80,6 +80,7 @@ type Service struct {
 	cfg             Config
 	tokens          *TokenSigner
 	connectorTokens *TokenSigner // Signs connector launch payloads (may be nil if no secret configured)
+	bootstrapTokens *ConnectorBootstrapSigner
 }
 
 type CreateLaunchInput struct {
@@ -322,10 +323,11 @@ func NewService(pool *pgxpool.Pool, cfg Config, logger *slog.Logger) (*Service, 
 	}
 
 	svc := &Service{
-		pool:   pool,
-		cfg:    cfg,
-		tokens: NewTokenSigner(cfg.LaunchTokenSecret),
-		logger: logger.With("component", "sessions"),
+		pool:            pool,
+		cfg:             cfg,
+		tokens:          NewTokenSigner(cfg.LaunchTokenSecret),
+		bootstrapTokens: NewConnectorBootstrapSigner(cfg.LaunchTokenSecret),
+		logger:          logger.With("component", "sessions"),
 	}
 	if len(cfg.ConnectorSecret) > 0 {
 		svc.connectorTokens = NewTokenSigner(cfg.ConnectorSecret)
@@ -479,6 +481,41 @@ func (s *Service) VerifyConnectorToken(token string) (LaunchTokenClaims, error) 
 			return LaunchTokenClaims{}, err
 		}
 		return LaunchTokenClaims{}, ErrUnauthorizedLaunch
+	}
+	return claims, nil
+}
+
+func (s *Service) IssueConnectorBootstrapToken(userID, origin string, ttl time.Duration) (string, ConnectorBootstrapClaims, error) {
+	origin = strings.TrimRight(strings.TrimSpace(origin), "/")
+	if origin == "" {
+		return "", ConnectorBootstrapClaims{}, fmt.Errorf("origin is required")
+	}
+	if ttl <= 0 {
+		ttl = 2 * time.Minute
+	}
+	claims := ConnectorBootstrapClaims{
+		Origin:        origin,
+		BackendVerify: origin + "/api/connector/token/verify",
+		IssuedForUser: strings.TrimSpace(userID),
+		ExpiresAt:     time.Now().Add(ttl).Unix(),
+	}
+	token, err := s.bootstrapTokens.Sign(claims)
+	if err != nil {
+		return "", ConnectorBootstrapClaims{}, err
+	}
+	return token, claims, nil
+}
+
+func (s *Service) VerifyConnectorBootstrapToken(token string) (ConnectorBootstrapClaims, error) {
+	if s.bootstrapTokens == nil {
+		return ConnectorBootstrapClaims{}, fmt.Errorf("bootstrap token verification is not configured")
+	}
+	claims, err := s.bootstrapTokens.Verify(strings.TrimSpace(token))
+	if err != nil {
+		if errors.Is(err, ErrLaunchExpired) {
+			return ConnectorBootstrapClaims{}, err
+		}
+		return ConnectorBootstrapClaims{}, ErrUnauthorizedLaunch
 	}
 	return claims, nil
 }

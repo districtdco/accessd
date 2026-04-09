@@ -185,7 +185,10 @@ type adminLDAPSettingsResponse struct {
 	SyncUserFilter         string `json:"sync_user_filter"`
 	UsernameAttribute      string `json:"username_attribute"`
 	DisplayNameAttribute   string `json:"display_name_attribute"`
+	SurnameAttribute       string `json:"surname_attribute"`
 	EmailAttribute         string `json:"email_attribute"`
+	SSHKeyAttribute        string `json:"ssh_key_attribute"`
+	AvatarAttribute        string `json:"avatar_attribute"`
 	GroupSearchBaseDN      string `json:"group_search_base_dn"`
 	GroupSearchFilter      string `json:"group_search_filter"`
 	GroupNameAttribute     string `json:"group_name_attribute"`
@@ -214,7 +217,10 @@ type upsertLDAPSettingsRequest struct {
 	SyncUserFilter         string `json:"sync_user_filter"`
 	UsernameAttribute      string `json:"username_attribute"`
 	DisplayNameAttribute   string `json:"display_name_attribute"`
+	SurnameAttribute       string `json:"surname_attribute"`
 	EmailAttribute         string `json:"email_attribute"`
+	SSHKeyAttribute        string `json:"ssh_key_attribute"`
+	AvatarAttribute        string `json:"avatar_attribute"`
 	GroupSearchBaseDN      string `json:"group_search_base_dn"`
 	GroupSearchFilter      string `json:"group_search_filter"`
 	GroupNameAttribute     string `json:"group_name_attribute"`
@@ -845,7 +851,10 @@ func (h *AdminHandler) UpsertLDAPSettings(w http.ResponseWriter, r *http.Request
 		SyncUserFilter:         req.SyncUserFilter,
 		UsernameAttribute:      req.UsernameAttribute,
 		DisplayNameAttribute:   req.DisplayNameAttribute,
+		SurnameAttribute:       req.SurnameAttribute,
 		EmailAttribute:         req.EmailAttribute,
+		SSHKeyAttribute:        req.SSHKeyAttribute,
+		AvatarAttribute:        req.AvatarAttribute,
 		GroupSearchBaseDN:      req.GroupSearchBaseDN,
 		GroupSearchFilter:      req.GroupSearchFilter,
 		GroupNameAttribute:     req.GroupNameAttribute,
@@ -882,7 +891,10 @@ func (h *AdminHandler) TestLDAPConnection(w http.ResponseWriter, r *http.Request
 		SyncUserFilter:         req.SyncUserFilter,
 		UsernameAttribute:      req.UsernameAttribute,
 		DisplayNameAttribute:   req.DisplayNameAttribute,
+		SurnameAttribute:       req.SurnameAttribute,
 		EmailAttribute:         req.EmailAttribute,
+		SSHKeyAttribute:        req.SSHKeyAttribute,
+		AvatarAttribute:        req.AvatarAttribute,
 		GroupSearchBaseDN:      req.GroupSearchBaseDN,
 		GroupSearchFilter:      req.GroupSearchFilter,
 		GroupNameAttribute:     req.GroupNameAttribute,
@@ -892,7 +904,7 @@ func (h *AdminHandler) TestLDAPConnection(w http.ResponseWriter, r *http.Request
 		StartTLS:               req.StartTLS,
 		InsecureSkipVerify:     req.InsecureSkipVerify,
 		DeactivateMissingUsers: req.DeactivateMissingUsers,
-	})
+	}, req.KeepExistingPassword, req.KeepExistingCACertPEM)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
@@ -1059,7 +1071,10 @@ func mapLDAPSettingsResponse(settings admin.LDAPSettings) adminLDAPSettingsRespo
 		SyncUserFilter:         settings.SyncUserFilter,
 		UsernameAttribute:      settings.UsernameAttribute,
 		DisplayNameAttribute:   settings.DisplayNameAttribute,
+		SurnameAttribute:       settings.SurnameAttribute,
 		EmailAttribute:         settings.EmailAttribute,
+		SSHKeyAttribute:        settings.SSHKeyAttribute,
+		AvatarAttribute:        settings.AvatarAttribute,
 		GroupSearchBaseDN:      settings.GroupSearchBaseDN,
 		GroupSearchFilter:      settings.GroupSearchFilter,
 		GroupNameAttribute:     settings.GroupNameAttribute,

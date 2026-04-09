@@ -4,12 +4,20 @@
 
 `accessd-connector` is a first-class release artifact. Each release publishes:
 
+- `accessd-connector-<version>-darwin-arm64.pkg` (preferred)
 - `accessd-connector-<version>-darwin-arm64.tar.gz`
+- `accessd-connector-<version>-darwin-amd64.pkg` (preferred)
 - `accessd-connector-<version>-darwin-amd64.tar.gz`
+- `accessd-connector-<version>-linux-amd64.deb` (preferred when tooling available)
+- `accessd-connector-<version>-linux-amd64.rpm` (preferred when tooling available)
 - `accessd-connector-<version>-linux-amd64.tar.gz`
+- `accessd-connector-<version>-linux-arm64.deb` (preferred when tooling available)
+- `accessd-connector-<version>-linux-arm64.rpm` (preferred when tooling available)
 - `accessd-connector-<version>-linux-arm64.tar.gz`
+- `accessd-connector-<version>-windows-amd64.msi` (preferred when tooling available)
 - `accessd-connector-<version>-windows-amd64.zip`
 - `accessd-connector-<version>-checksums.txt`
+- `*.sig` detached signatures (when `CONNECTOR_SIGNING_KEY_ID` is configured)
 
 Create artifacts with:
 
@@ -29,6 +37,7 @@ This includes:
 - minimum compatible connector version
 - per-OS/per-arch download URLs
 - checksum file URL
+- checksum signature URL
 - runtime model (`on-demand`)
 - install docs URL
 
@@ -100,6 +109,12 @@ Each connector release archive now includes an installer:
 - macOS/Linux archives include `install.sh` and `uninstall.sh`
 - Windows archive includes `install.ps1` and `uninstall.ps1`
 
+Package artifact bootstrap behavior:
+
+- macOS `.pkg` runs a postinstall hook that invokes connector bootstrap for the logged-in console user.
+- Linux `.deb` / `.rpm` run post-install bootstrap hooks (best effort, user-context when available).
+- Windows `.msi` runs a post-install custom action that invokes `install.ps1` (best effort).
+
 These installers:
 
 - install `accessd-connector` to a stable user path
@@ -124,8 +139,33 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1
 powershell -ExecutionPolicy Bypass -File .\uninstall.ps1
 ```
 
+### macOS Gatekeeper (Internal Dev Teams)
+
+For internal unsigned builds, macOS may show:
+
+`Apple could not verify "<file>.pkg" is free of malware`.
+
+Use one of these local unblock flows:
+
+```bash
+# Option A: remove quarantine attribute and install
+xattr -dr com.apple.quarantine accessd-connector-<version>-darwin-<arch>.pkg
+sudo installer -pkg accessd-connector-<version>-darwin-<arch>.pkg -target /
+```
+
+- or in Finder: right-click the `.pkg` -> `Open` -> `Open`.
+
+This is acceptable for trusted internal dev distribution only.
+For broader production rollout, use signed and notarized macOS installer artifacts.
+
 Uninstall scripts preserve `~/.accessd-connector` / `%USERPROFILE%\.accessd-connector` by default.
 To remove config too, run with `ACCESSD_CONNECTOR_REMOVE_CONFIG=1`.
+
+Installer verification defaults:
+
+- installers verify unpacked payload integrity when `release-files-sha256.txt` is present
+- to skip verification: `ACCESSD_CONNECTOR_VERIFY_RELEASE=false`
+- to continue despite mismatch/tooling gaps: `ACCESSD_CONNECTOR_ALLOW_UNVERIFIED_RELEASE=true`
 
 UI auto-start then works through `accessd-connector://start` without manual operator steps in normal setups.
 
@@ -156,3 +196,5 @@ When a user launches Shell/SFTP/DBeaver/Redis:
 - Configuration policy:
   - Use `ACCESSD_*` env names.
   - Connector installer can auto-refresh AccessD TLS trust from `/downloads/certs/accessd-server.crt` when enabled.
+  - Existing local connector env is preserved across upgrades; installer only refreshes managed origin/verify keys when they are missing or still placeholder defaults.
+  - Protocol-handler autostart paths do not repeatedly re-import cert trust on each page reload.

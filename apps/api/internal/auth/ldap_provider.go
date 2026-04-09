@@ -214,6 +214,7 @@ func (p *LDAPProvider) lookupUser(ctx context.Context, conn *ldap.Conn, username
 	attrs := []string{}
 	attrs = appendAttribute(attrs, p.cfg.UsernameAttribute)
 	attrs = appendAttribute(attrs, p.cfg.DisplayNameAttribute, "displayName", "cn", "name")
+	attrs = appendAttribute(attrs, p.cfg.SurnameAttribute, "sn")
 	attrs = appendAttribute(attrs, p.cfg.EmailAttribute, "mail", "userPrincipalName")
 
 	filter := p.renderFilter(
@@ -254,15 +255,26 @@ func (p *LDAPProvider) lookupUser(ctx context.Context, conn *ldap.Conn, username
 	}
 
 	entry := result.Entries[0]
+	firstName := firstNonEmptyAttributeValue(entry,
+		p.cfg.DisplayNameAttribute,
+		"displayName",
+		"cn",
+		"name",
+	)
+	lastName := firstNonEmptyAttributeValue(entry,
+		p.cfg.SurnameAttribute,
+		"sn",
+	)
+	displayName := strings.TrimSpace(firstName)
+	if displayName == "" {
+		displayName = strings.TrimSpace(lastName)
+	} else if strings.TrimSpace(lastName) != "" && !strings.EqualFold(strings.TrimSpace(lastName), strings.TrimSpace(firstName)) {
+		displayName = strings.TrimSpace(firstName + " " + lastName)
+	}
 	profile := ldapUserProfile{
-		DN:       entry.DN,
-		Username: strings.TrimSpace(entry.GetAttributeValue(p.cfg.UsernameAttribute)),
-		DisplayName: firstNonEmptyAttributeValue(entry,
-			p.cfg.DisplayNameAttribute,
-			"displayName",
-			"cn",
-			"name",
-		),
+		DN:          entry.DN,
+		Username:    strings.TrimSpace(entry.GetAttributeValue(p.cfg.UsernameAttribute)),
+		DisplayName: displayName,
 		Email: firstNonEmptyAttributeValue(entry,
 			p.cfg.EmailAttribute,
 			"mail",

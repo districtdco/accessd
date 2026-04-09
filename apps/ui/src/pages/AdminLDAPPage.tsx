@@ -35,8 +35,15 @@ const providerModeOptions = [
   { value: 'hybrid', label: 'Hybrid (LDAP + Local fallback)' },
 ]
 
+const securityProtocolOptions = [
+  { value: 'ldap', label: 'LDAP' },
+  { value: 'ldaps', label: 'LDAPS' },
+  { value: 'starttls', label: 'StartTLS' },
+]
+
 type FormState = {
   provider_mode: 'local' | 'ldap' | 'hybrid'
+  security_protocol: 'ldap' | 'ldaps' | 'starttls'
   enabled: boolean
   host: string
   port: string
@@ -50,7 +57,10 @@ type FormState = {
   sync_user_filter: string
   username_attribute: string
   display_name_attribute: string
+  surname_attribute: string
   email_attribute: string
+  ssh_key_attribute: string
+  avatar_attribute: string
   group_search_base_dn: string
   group_search_filter: string
   group_name_attribute: string
@@ -62,9 +72,16 @@ type FormState = {
   deactivate_missing_users: boolean
 }
 
+function deriveSecurityProtocol(settings: AdminLDAPSettings): 'ldap' | 'ldaps' | 'starttls' {
+  if (settings.start_tls) return 'starttls'
+  if (settings.use_tls || settings.url.trim().toLowerCase().startsWith('ldaps://')) return 'ldaps'
+  return 'ldap'
+}
+
 function settingsToForm(settings: AdminLDAPSettings): FormState {
   return {
     provider_mode: settings.provider_mode,
+    security_protocol: deriveSecurityProtocol(settings),
     enabled: settings.enabled,
     host: settings.host,
     port: String(settings.port || 389),
@@ -78,7 +95,10 @@ function settingsToForm(settings: AdminLDAPSettings): FormState {
     sync_user_filter: settings.sync_user_filter,
     username_attribute: settings.username_attribute,
     display_name_attribute: settings.display_name_attribute,
+    surname_attribute: settings.surname_attribute,
     email_attribute: settings.email_attribute,
+    ssh_key_attribute: settings.ssh_key_attribute,
+    avatar_attribute: settings.avatar_attribute,
     group_search_base_dn: settings.group_search_base_dn,
     group_search_filter: settings.group_search_filter,
     group_name_attribute: settings.group_name_attribute,
@@ -92,9 +112,14 @@ function settingsToForm(settings: AdminLDAPSettings): FormState {
 }
 
 function formToRequest(form: FormState) {
+  const securityProtocol = form.security_protocol
+  const useTLS = securityProtocol === 'ldaps'
+  const startTLS = securityProtocol === 'starttls'
   return {
     ...form,
     port: Number(form.port),
+    use_tls: useTLS,
+    start_tls: startTLS,
   }
 }
 
@@ -108,6 +133,7 @@ export function AdminLDAPPage() {
   const [saving, setSaving] = useState(false)
   const [testing, setTesting] = useState(false)
   const [triggeringSync, setTriggeringSync] = useState(false)
+  const [showAdvanced, setShowAdvanced] = useState(false)
   const [syncPage, setSyncPage] = useState(1)
   const [error, setError] = useState<string | null>(null)
   const [message, setMessage] = useState<string | null>(null)
@@ -251,6 +277,7 @@ export function AdminLDAPPage() {
           <CardBody>
             <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
               <Select label="Auth Provider Mode" value={form.provider_mode} onChange={(v) => updateField('provider_mode', v as FormState['provider_mode'])} options={providerModeOptions} />
+              <Select label="Security Protocol" value={form.security_protocol} onChange={(v) => updateField('security_protocol', v as FormState['security_protocol'])} options={securityProtocolOptions} />
               <Checkbox
                 label="Enable LDAP in admin config"
                 checked={form.enabled}
@@ -260,10 +287,9 @@ export function AdminLDAPPage() {
             </div>
 
             <div className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-              <Input label="LDAP URL (optional)" value={form.url} onChange={(v) => updateField('url', v)} placeholder="ldaps://ldap.example.com:636" />
               <Input label="LDAP Host" value={form.host} onChange={(v) => updateField('host', v)} placeholder="ldap.example.com" />
               <Input label="LDAP Port" value={form.port} onChange={(v) => updateField('port', v)} placeholder="389" />
-              <Input label="Base DN" value={form.base_dn} onChange={(v) => updateField('base_dn', v)} placeholder="dc=example,dc=com" />
+              <Input label="User Search Base DN" value={form.base_dn} onChange={(v) => updateField('base_dn', v)} placeholder="dc=example,dc=com" />
               <Input label="Bind DN" value={form.bind_dn} onChange={(v) => updateField('bind_dn', v)} placeholder="cn=svc_ldap,ou=Service,dc=example,dc=com" />
               <Input
                 label={settings?.has_bind_password ? 'Bind Password (optional update)' : 'Bind Password'}
@@ -272,6 +298,8 @@ export function AdminLDAPPage() {
                   updateField('bind_password', v)
                   if (v.trim().length > 0) {
                     updateField('keep_existing_password', false)
+                  } else if (settings?.has_bind_password) {
+                    updateField('keep_existing_password', true)
                   }
                 }}
                 type="password"
@@ -279,51 +307,86 @@ export function AdminLDAPPage() {
               />
             </div>
 
-            <div className="mt-4 grid gap-4 sm:grid-cols-2">
-              <Checkbox label="Use TLS (LDAPS)" checked={form.use_tls} onChange={(v) => updateField('use_tls', v)} />
-              <Checkbox label="Use StartTLS" checked={form.start_tls} onChange={(v) => updateField('start_tls', v)} />
-              <Checkbox
-                label="Skip TLS cert verification"
-                checked={form.insecure_skip_verify}
-                onChange={(v) => updateField('insecure_skip_verify', v)}
-                hint="Use only for controlled lab environments."
-              />
-              <Checkbox
-                label="Deactivate users missing from LDAP on sync"
-                checked={form.deactivate_missing_users}
-                onChange={(v) => updateField('deactivate_missing_users', v)}
-                hint="Users are deactivated (not deleted), preserving session/audit history."
-              />
-            </div>
-
-            <div className="mt-4 grid gap-4">
-              <TextArea
-                label={settings?.has_ca_cert_pem ? 'CA Certificate PEM (optional update)' : 'CA Certificate PEM (optional)'}
-                value={form.ca_cert_pem}
-                onChange={(v) => {
-                  updateField('ca_cert_pem', v)
-                  if (v.trim().length > 0) {
-                    updateField('keep_existing_ca_cert_pem', false)
-                  }
-                }}
-                rows={4}
-                placeholder={settings?.has_ca_cert_pem ? 'Leave blank to keep existing CA certificate' : '-----BEGIN CERTIFICATE----- ...'}
-              />
-            </div>
+            {settings?.has_bind_password && (
+              <div className="mt-2">
+                <Checkbox
+                  label="Clear stored bind password on save"
+                  checked={!form.keep_existing_password && form.bind_password.trim().length === 0}
+                  onChange={(v) => {
+                    if (v) {
+                      updateField('bind_password', '')
+                      updateField('keep_existing_password', false)
+                      return
+                    }
+                    updateField('keep_existing_password', true)
+                  }}
+                />
+              </div>
+            )}
 
             <div className="mt-6 grid gap-4 sm:grid-cols-2">
+              <Input label="User Filter" value={form.user_search_filter} onChange={(v) => updateField('user_search_filter', v)} placeholder="(&(objectClass=user)(sAMAccountName={{username}}))" />
               <Input label="Username Attribute" value={form.username_attribute} onChange={(v) => updateField('username_attribute', v)} placeholder="sAMAccountName" />
-              <Input label="Display Name Attribute" value={form.display_name_attribute} onChange={(v) => updateField('display_name_attribute', v)} placeholder="displayName" />
+              <Input label="First/Display Name Attribute" value={form.display_name_attribute} onChange={(v) => updateField('display_name_attribute', v)} placeholder="cn" />
+              <Input label="Surname Attribute" value={form.surname_attribute} onChange={(v) => updateField('surname_attribute', v)} placeholder="sn" />
               <Input label="Email Attribute" value={form.email_attribute} onChange={(v) => updateField('email_attribute', v)} placeholder="mail" />
-              <Input label="Group Name Attribute" value={form.group_name_attribute} onChange={(v) => updateField('group_name_attribute', v)} placeholder="cn" />
-              <Input label="Group Search Base DN" value={form.group_search_base_dn} onChange={(v) => updateField('group_search_base_dn', v)} placeholder="ou=Groups,dc=example,dc=com" />
             </div>
 
-            <div className="mt-4 grid gap-4">
-              <TextArea label="User Search Filter (auth lookup)" value={form.user_search_filter} onChange={(v) => updateField('user_search_filter', v)} rows={2} />
-              <TextArea label="Sync Search Filter (directory sync)" value={form.sync_user_filter} onChange={(v) => updateField('sync_user_filter', v)} rows={2} />
-              <TextArea label="Group Search Filter" value={form.group_search_filter} onChange={(v) => updateField('group_search_filter', v)} rows={2} />
-              <TextArea label="Group → Role Mapping" value={form.group_role_mapping} onChange={(v) => updateField('group_role_mapping', v)} rows={2} placeholder="CN=Admins,OU=Groups,DC=example,DC=com=admin|auditor" />
+            <div className="mt-6">
+              <Button variant="secondary" onClick={() => setShowAdvanced((v) => !v)}>
+                {showAdvanced ? 'Hide Advanced Settings' : 'Show Advanced Settings'}
+              </Button>
+            </div>
+
+            {showAdvanced && (
+              <div className="mt-4 grid gap-4">
+                <TextArea
+                  label={settings?.has_ca_cert_pem ? 'CA Certificate PEM (optional update)' : 'CA Certificate PEM (optional)'}
+                  value={form.ca_cert_pem}
+                  onChange={(v) => {
+                    updateField('ca_cert_pem', v)
+                    if (v.trim().length > 0) {
+                      updateField('keep_existing_ca_cert_pem', false)
+                    } else if (settings?.has_ca_cert_pem) {
+                      updateField('keep_existing_ca_cert_pem', true)
+                    }
+                  }}
+                  rows={4}
+                  placeholder={settings?.has_ca_cert_pem ? 'Leave blank to keep existing CA certificate' : '-----BEGIN CERTIFICATE----- ...'}
+                />
+                {settings?.has_ca_cert_pem && (
+                  <Checkbox
+                    label="Clear stored CA certificate on save"
+                    checked={!form.keep_existing_ca_cert_pem && form.ca_cert_pem.trim().length === 0}
+                    onChange={(v) => {
+                      if (v) {
+                        updateField('ca_cert_pem', '')
+                        updateField('keep_existing_ca_cert_pem', false)
+                        return
+                      }
+                      updateField('keep_existing_ca_cert_pem', true)
+                    }}
+                  />
+                )}
+                <Checkbox
+                  label="Skip TLS cert verification"
+                  checked={form.insecure_skip_verify}
+                  onChange={(v) => updateField('insecure_skip_verify', v)}
+                  hint="Use only for controlled lab environments."
+                />
+                <Checkbox
+                  label="Deactivate users missing from LDAP on sync"
+                  checked={form.deactivate_missing_users}
+                  onChange={(v) => updateField('deactivate_missing_users', v)}
+                  hint="Users are deactivated (not deleted), preserving session/audit history."
+                />
+              </div>
+            )}
+
+            <div className="mt-4">
+              <p className="text-sm text-gray-600">
+                Test connection uses the same effective bind credentials as sync, including stored secrets when password fields are left blank.
+              </p>
             </div>
 
             {testMessage && <div className="mt-4"><SuccessState message={testMessage} /></div>}
@@ -390,7 +453,7 @@ export function AdminLDAPPage() {
                         <Td>{run.summary.updated}</Td>
                         <Td>{run.summary.reactivated}</Td>
                         <Td>{run.summary.deactivated}</Td>
-                        <Td className="max-w-[280px] truncate">{run.error || '-'}</Td>
+                        <Td className="max-w-[360px] whitespace-normal break-words">{run.error || '-'}</Td>
                       </tr>
                     ))}
                     {pagedSyncRuns.length === 0 && <EmptyRow colSpan={8} message="No sync runs yet." />}

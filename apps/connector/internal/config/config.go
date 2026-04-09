@@ -19,6 +19,9 @@ const (
 
 type Config struct {
 	Addr                 string
+	EnableTLS            bool
+	TLSCertFile          string
+	TLSKeyFile           string
 	AllowedOrigins       []string
 	AllowAnyOrigin       bool
 	AllowRemote          bool
@@ -42,6 +45,9 @@ func Load() Config {
 
 	cfg := Config{
 		Addr:                 strings.TrimSpace(os.Getenv("ACCESSD_CONNECTOR_ADDR")),
+		EnableTLS:            parseBoolEnv("ACCESSD_CONNECTOR_ENABLE_TLS", true),
+		TLSCertFile:          strings.TrimSpace(os.Getenv("ACCESSD_CONNECTOR_TLS_CERT_FILE")),
+		TLSKeyFile:           strings.TrimSpace(os.Getenv("ACCESSD_CONNECTOR_TLS_KEY_FILE")),
 		AllowAnyOrigin:       parseBoolEnv("ACCESSD_CONNECTOR_ALLOW_ANY_ORIGIN", false),
 		AllowRemote:          parseBoolEnv("ACCESSD_CONNECTOR_ALLOW_REMOTE", false),
 		AllowInsecureNoToken: parseBoolEnv("ACCESSD_CONNECTOR_ALLOW_INSECURE_NO_TOKEN", false),
@@ -61,6 +67,17 @@ func Load() Config {
 
 	if cfg.Addr == "" {
 		cfg.Addr = defaultAddr
+	}
+	if cfg.TLSCertFile == "" || cfg.TLSKeyFile == "" {
+		home, err := os.UserHomeDir()
+		if err == nil && home != "" {
+			if cfg.TLSCertFile == "" {
+				cfg.TLSCertFile = home + "/.accessd-connector/tls/localhost.crt"
+			}
+			if cfg.TLSKeyFile == "" {
+				cfg.TLSKeyFile = home + "/.accessd-connector/tls/localhost.key"
+			}
+		}
 	}
 	if cfg.DBeaverTempTTL <= 0 {
 		cfg.DBeaverTempTTL = defaultDBeaverTempTTL

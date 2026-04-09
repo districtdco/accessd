@@ -46,6 +46,7 @@ type ConnectorDistributionConfig struct {
 	MinimumVersion string
 	ReleaseChannel string
 	DownloadBase   string
+	DownloadRoot   string
 }
 
 type VersionInfo struct {
@@ -93,7 +94,10 @@ type LDAPConfig struct {
 	UserSearchFilter     string
 	UsernameAttribute    string
 	DisplayNameAttribute string
+	SurnameAttribute     string
 	EmailAttribute       string
+	SSHKeyAttribute      string
+	AvatarAttribute      string
 	UseTLS               bool
 	StartTLS             bool
 	InsecureSkipVerify   bool
@@ -209,6 +213,7 @@ func Load() (Config, error) {
 		MinimumVersion: getEnv("ACCESSD_CONNECTOR_MIN_VERSION", cfg.App.Version.Version),
 		ReleaseChannel: getEnv("ACCESSD_CONNECTOR_RELEASE_CHANNEL", "stable"),
 		DownloadBase:   strings.TrimRight(getEnv("ACCESSD_CONNECTOR_RELEASES_BASE_URL", "https://accessd.example.internal/downloads/connectors"), "/"),
+		DownloadRoot:   strings.TrimRight(getEnv("ACCESSD_CONNECTOR_RELEASES_FS_ROOT", "/var/www/accessd-downloads/connectors"), "/"),
 	}
 	cfg.Auth = AuthConfig{
 		SessionCookieName: getEnv("ACCESSD_AUTH_COOKIE_NAME", "accessd_session"),
@@ -232,7 +237,10 @@ func Load() (Config, error) {
 			UserSearchFilter:     "(&(objectClass=user)({{username_attr}}={{username}}))",
 			UsernameAttribute:    "sAMAccountName",
 			DisplayNameAttribute: "displayName",
+			SurnameAttribute:     "sn",
 			EmailAttribute:       "mail",
+			SSHKeyAttribute:      "SshPublicKey",
+			AvatarAttribute:      "jpegPhoto",
 			UseTLS:               false,
 			StartTLS:             false,
 			InsecureSkipVerify:   false,
@@ -378,6 +386,9 @@ func Load() (Config, error) {
 	}
 	if strings.TrimSpace(cfg.Connector.DownloadBase) == "" {
 		return Config{}, fmt.Errorf("ACCESSD_CONNECTOR_RELEASES_BASE_URL cannot be empty")
+	}
+	if strings.TrimSpace(cfg.Connector.DownloadRoot) == "" {
+		return Config{}, fmt.Errorf("ACCESSD_CONNECTOR_RELEASES_FS_ROOT cannot be empty")
 	}
 	if strings.TrimSpace(cfg.SSHProxy.ListenAddr) == "" {
 		return Config{}, fmt.Errorf("ACCESSD_SSH_PROXY_ADDR cannot be empty")

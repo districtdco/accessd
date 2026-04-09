@@ -114,7 +114,11 @@ Connector runtime note:
 - Connector installers can auto-bootstrap runtime env on first run:
   - Default source URL: `https://<ui-domain>/downloads/bootstrap/accessd-connector.env`
   - Override with `ACCESSD_CONNECTOR_BOOTSTRAP_ENV_URL`
-  - Existing local `~/.config/accessd/connector.env` is never overwritten.
+  - Existing local `~/.config/accessd/connector.env` is preserved; installer only auto-refreshes managed keys (`ACCESSD_CONNECTOR_ALLOWED_ORIGIN` and `ACCESSD_CONNECTOR_BACKEND_VERIFY_URL`) when they are unset/placeholder values.
+- macOS/Linux/Windows handlers no longer re-run trust import on every protocol autostart; trust bootstrap runs during install/reinstall and is skipped when cert fingerprint is unchanged.
+- For internal macOS dev builds that are unsigned/not notarized, operators can locally unblock package install:
+  - `xattr -dr com.apple.quarantine accessd-connector-<version>-darwin-<arch>.pkg`
+  - `sudo installer -pkg accessd-connector-<version>-darwin-<arch>.pkg -target /`
 - Preferred verification model: connector uses `ACCESSD_CONNECTOR_BACKEND_VERIFY_URL` (`/api/connector/token/verify`) so operator machines do not need shared secret distribution.
 - Published operator bootstrap env intentionally strips `ACCESSD_CONNECTOR_SECRET`.
 

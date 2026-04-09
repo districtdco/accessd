@@ -470,7 +470,7 @@ func (s *Service) ResolveCurrentUser(ctx context.Context, sessionToken string) (
 
 	tokenHash := hashSessionToken(token)
 	const query = `
-SELECT u.id, u.username, COALESCE(u.email, ''), COALESCE(u.display_name, '')
+SELECT u.id, u.username, COALESCE(u.email, ''), COALESCE(u.display_name, ''), COALESCE(u.auth_provider, 'local')
 FROM auth_sessions s
 JOIN users u ON u.id = s.user_id
 WHERE s.session_token_hash = $1
@@ -480,7 +480,7 @@ WHERE s.session_token_hash = $1
 LIMIT 1;`
 
 	var user CurrentUser
-	if err := s.pool.QueryRow(ctx, query, tokenHash[:]).Scan(&user.ID, &user.Username, &user.Email, &user.DisplayName); err != nil {
+	if err := s.pool.QueryRow(ctx, query, tokenHash[:]).Scan(&user.ID, &user.Username, &user.Email, &user.DisplayName, &user.AuthProvider); err != nil {
 		return CurrentUser{}, ErrUnauthorized
 	}
 

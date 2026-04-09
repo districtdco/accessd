@@ -34,6 +34,14 @@ func main() {
 	}
 
 	cfg := config.Load()
+	if len(os.Args) > 1 && strings.EqualFold(strings.TrimSpace(os.Args[1]), "ensure-local-tls") {
+		if err := ensureLocalTLSFiles(cfg.TLSCertFile, cfg.TLSKeyFile); err != nil {
+			fmt.Fprintf(os.Stderr, "failed to prepare local TLS cert: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("%s\n", cfg.TLSCertFile)
+		return
+	}
 	localVerifier := auth.NewVerifier(cfg.ConnectorSecret)
 	remoteVerifier := auth.NewRemoteVerifier(cfg.BackendVerifyURL, cfg.BackendVerifyTimeout)
 	var verifier connectorTokenVerifier
@@ -93,6 +101,8 @@ func main() {
 			"built_at": builtAt,
 			"runtime": map[string]any{
 				"addr":                 cfg.Addr,
+				"enable_tls":           cfg.EnableTLS,
+				"tls_cert_file":        cfg.TLSCertFile,
 				"allow_remote":         cfg.AllowRemote,
 				"allow_any_origin":     cfg.AllowAnyOrigin,
 				"allow_insecure_token": cfg.AllowInsecureNoToken,
@@ -233,7 +243,18 @@ func main() {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
-	log.Printf("accessd-connector listening on %s", cfg.Addr)
+	if cfg.EnableTLS {
+		if err := ensureLocalTLSFiles(cfg.TLSCertFile, cfg.TLSKeyFile); err != nil {
+			log.Fatalf("prepare local tls cert: %v", err)
+		}
+		log.Printf("accessd-connector listening on https://%s", cfg.Addr)
+		if err := server.ListenAndServeTLS(cfg.TLSCertFile, cfg.TLSKeyFile); err != nil && err != http.ErrServerClosed {
+			log.Fatal(err)
+		}
+		return
+	}
+
+	log.Printf("accessd-connector listening on http://%s", cfg.Addr)
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatal(err)
 	}

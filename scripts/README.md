@@ -44,6 +44,20 @@ Dev tooling and helper scripts for local bring-up, seeding, and test flow.
     - Windows: `install.ps1`
   - Installers register `accessd-connector://` protocol handler for UI-triggered auto-start.
   - Installers also auto-detect local client dependencies and can prompt for manual paths when detection fails.
+  - Package artifacts:
+    - Linux `.deb` requires `dpkg-deb`
+    - Windows `.msi` requires `wixl` (from `msitools`)
+  - Release builds now fail if `.deb`/`.msi` cannot be produced. For local/dev partial builds only, set `CONNECTOR_RELEASE_ALLOW_MISSING_PACKAGES=true`.
+
+- `smoke_connector_windows_packaging.sh`
+  - Validates Windows release artifacts from macOS/Linux without a Windows VM.
+  - Checks:
+    - MSI uses embedded cabinet (`#cab1.cab`)
+    - MSI File/sequence tables contain expected bootstrap entries
+    - ZIP includes expected payload files
+    - Windows installer script has self-copy guard for maintenance/repair flows
+  - Usage:
+    - `./scripts/smoke_connector_windows_packaging.sh <version>`
 
 - `dev_seed.sh`
   - Idempotently upserts local test assets/credentials/grants through admin APIs.

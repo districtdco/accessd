@@ -12,6 +12,75 @@ if [[ ! -f "${SOURCE_BIN}" ]]; then
   exit 1
 fi
 
+verify_release_payload_integrity() {
+  local verify_setting="${ACCESSD_CONNECTOR_VERIFY_RELEASE:-true}"
+  local verify_setting_lc
+  verify_setting_lc="$(printf '%s' "${verify_setting}" | tr '[:upper:]' '[:lower:]')"
+  case "${verify_setting_lc}" in
+    0|false|no|off)
+      echo "[accessd-connector] Skipping payload integrity verification (ACCESSD_CONNECTOR_VERIFY_RELEASE=${verify_setting})."
+      return 0
+      ;;
+  esac
+
+  local allow_unverified="${ACCESSD_CONNECTOR_ALLOW_UNVERIFIED_RELEASE:-false}"
+  local allow_unverified_bool="0"
+  local allow_unverified_lc
+  allow_unverified_lc="$(printf '%s' "${allow_unverified}" | tr '[:upper:]' '[:lower:]')"
+  case "${allow_unverified_lc}" in
+    1|true|yes|on) allow_unverified_bool="1" ;;
+  esac
+  local checks_file="${SCRIPT_DIR}/release-files-sha256.txt"
+  if [[ ! -f "${checks_file}" ]]; then
+    checks_file="${SCRIPT_DIR}/../release-files-sha256.txt"
+  fi
+  if [[ ! -f "${checks_file}" ]]; then
+    return 0
+  fi
+
+  if command -v sha256sum >/dev/null 2>&1; then
+    if (cd "$(dirname "${checks_file}")" && sha256sum -c "$(basename "${checks_file}")" >/dev/null 2>&1); then
+      echo "[accessd-connector] Payload integrity check passed."
+      return 0
+    fi
+  elif command -v shasum >/dev/null 2>&1; then
+    local base_dir
+    base_dir="$(dirname "${checks_file}")"
+    while IFS= read -r line; do
+      [[ -n "${line}" ]] || continue
+      local expected file_name actual
+      expected="${line%% *}"
+      file_name="${line##* }"
+      if [[ ! -f "${base_dir}/${file_name}" ]]; then
+        if [[ "${allow_unverified_bool}" != "1" ]]; then
+          echo "[accessd-connector] integrity check failed: missing ${file_name}" >&2
+          exit 1
+        fi
+        echo "[accessd-connector] WARNING: integrity check missing ${file_name}; continuing due ACCESSD_CONNECTOR_ALLOW_UNVERIFIED_RELEASE=${allow_unverified}"
+        return 0
+      fi
+      actual="$(shasum -a 256 "${base_dir}/${file_name}" | awk '{print $1}')"
+      if [[ "${actual}" != "${expected}" ]]; then
+        if [[ "${allow_unverified_bool}" != "1" ]]; then
+          echo "[accessd-connector] integrity check failed for ${file_name}" >&2
+          exit 1
+        fi
+        echo "[accessd-connector] WARNING: integrity check mismatch for ${file_name}; continuing due ACCESSD_CONNECTOR_ALLOW_UNVERIFIED_RELEASE=${allow_unverified}"
+        return 0
+      fi
+    done < "${checks_file}"
+    echo "[accessd-connector] Payload integrity check passed."
+    return 0
+  fi
+
+  if [[ "${allow_unverified_bool}" == "1" ]]; then
+    echo "[accessd-connector] WARNING: no checksum tool found; continuing due ACCESSD_CONNECTOR_ALLOW_UNVERIFIED_RELEASE=${allow_unverified}"
+    return 0
+  fi
+  echo "[accessd-connector] checksum tool missing; install sha256sum or shasum, or set ACCESSD_CONNECTOR_ALLOW_UNVERIFIED_RELEASE=true" >&2
+  exit 1
+}
+
 INSTALL_DIR="${ACCESSD_CONNECTOR_INSTALL_DIR:-${HOME}/.local/bin}"
 CONFIG_DIR="${HOME}/.accessd-connector"
 CONFIG_FILE="${CONFIG_DIR}/config.yaml"
@@ -23,6 +92,8 @@ TARGET_BIN="${INSTALL_DIR}/accessd-connector"
 HANDLER_SCRIPT="${HELPER_DIR}/url-handler-linux.sh"
 TRUST_SCRIPT="${HELPER_DIR}/trust-refresh-linux.sh"
 DESKTOP_FILE="${DESKTOP_DIR}/accessd-connector.desktop"
+
+verify_release_payload_integrity
 
 has_tty() {
   [[ -t 0 && -t 1 ]]
@@ -43,6 +114,102 @@ origin_host() {
   origin="${origin%%/*}"
   origin="${origin%%:*}"
   printf '%s' "${origin}"
+}
+
+env_get_value() {
+  local file="$1"
+  local key="$2"
+  [[ -f "${file}" ]] || return 1
+  awk -v key="${key}" '
+    /^[[:space:]]*#/ { next }
+    index($0, key "=") == 1 {
+      sub(/^[^=]*=/, "", $0)
+      print $0
+      exit 0
+    }
+  ' "${file}"
+}
+
+env_set_value() {
+  local file="$1"
+  local key="$2"
+  local value="$3"
+  local tmp_file="${file}.tmp.$$"
+  awk -v key="${key}" -v value="${value}" '
+    BEGIN { done=0 }
+    {
+      if (!done && $0 !~ /^[[:space:]]*#/ && index($0, key "=") == 1) {
+        print key "=" value
+        done=1
+        next
+      }
+      print
+    }
+    END {
+      if (!done) {
+        print key "=" value
+      }
+    }
+  ' "${file}" > "${tmp_file}"
+  mv "${tmp_file}" "${file}"
+}
+
+derive_verify_url_from_origin() {
+  local origin="$1"
+  origin="$(trim "${origin}")"
+  [[ -n "${origin}" ]] || return 0
+  origin="${origin%/}"
+  printf '%s/api/connector/token/verify' "${origin}"
+}
+
+is_placeholder_value() {
+  local value="$1"
+  value="$(trim "${value}")"
+  [[ -z "${value}" ]] && return 0
+  [[ "${value}" == *"accessd.example.internal"* ]]
+}
+
+refresh_runtime_env_file() {
+  local source_file="${1:-}"
+  [[ -f "${ENV_FILE}" ]] || return 0
+
+  local existing_origin existing_verify source_origin source_verify desired_origin desired_verify
+  existing_origin="$(trim "$(env_get_value "${ENV_FILE}" "ACCESSD_CONNECTOR_ALLOWED_ORIGIN" || true)")"
+  existing_verify="$(trim "$(env_get_value "${ENV_FILE}" "ACCESSD_CONNECTOR_BACKEND_VERIFY_URL" || true)")"
+  source_origin=""
+  source_verify=""
+  if [[ -n "${source_file}" && -f "${source_file}" ]]; then
+    source_origin="$(trim "$(env_get_value "${source_file}" "ACCESSD_CONNECTOR_ALLOWED_ORIGIN" || true)")"
+    source_verify="$(trim "$(env_get_value "${source_file}" "ACCESSD_CONNECTOR_BACKEND_VERIFY_URL" || true)")"
+  fi
+
+  desired_origin="${existing_origin}"
+  if [[ -n "${ACCESSD_CONNECTOR_ALLOWED_ORIGIN:-}" ]]; then
+    desired_origin="$(trim "${ACCESSD_CONNECTOR_ALLOWED_ORIGIN}")"
+  elif is_placeholder_value "${existing_origin}"; then
+    if [[ -n "${source_origin}" ]]; then
+      desired_origin="${source_origin}"
+    fi
+  fi
+  if [[ -n "${desired_origin}" && "${desired_origin}" != "${existing_origin}" ]]; then
+    env_set_value "${ENV_FILE}" "ACCESSD_CONNECTOR_ALLOWED_ORIGIN" "${desired_origin}"
+    echo "[accessd-connector] Updated ACCESSD_CONNECTOR_ALLOWED_ORIGIN in ${ENV_FILE}"
+  fi
+
+  desired_verify="${existing_verify}"
+  if [[ -n "${ACCESSD_CONNECTOR_BACKEND_VERIFY_URL:-}" ]]; then
+    desired_verify="$(trim "${ACCESSD_CONNECTOR_BACKEND_VERIFY_URL}")"
+  elif is_placeholder_value "${existing_verify}"; then
+    if [[ -n "${source_verify}" ]]; then
+      desired_verify="${source_verify}"
+    elif [[ -n "${desired_origin}" ]]; then
+      desired_verify="$(derive_verify_url_from_origin "${desired_origin}")"
+    fi
+  fi
+  if [[ -n "${desired_verify}" && "${desired_verify}" != "${existing_verify}" ]]; then
+    env_set_value "${ENV_FILE}" "ACCESSD_CONNECTOR_BACKEND_VERIFY_URL" "${desired_verify}"
+    echo "[accessd-connector] Updated ACCESSD_CONNECTOR_BACKEND_VERIFY_URL in ${ENV_FILE}"
+  fi
 }
 
 pick_existing_path() {
@@ -167,6 +334,7 @@ write_runtime_env_file() {
   mkdir -p "${ENV_DIR}"
   if [[ -f "${ENV_FILE}" ]]; then
     echo "[accessd-connector] Keeping existing runtime env: ${ENV_FILE}"
+    refresh_runtime_env_file
     return 0
   fi
 
@@ -174,6 +342,9 @@ write_runtime_env_file() {
     echo "# AccessD Connector runtime env (non-sensitive defaults)"
     echo "# Keep secrets out of this file."
     echo "ACCESSD_CONNECTOR_ADDR=127.0.0.1:9494"
+    echo "ACCESSD_CONNECTOR_ENABLE_TLS=true"
+    echo "ACCESSD_CONNECTOR_TLS_CERT_FILE=${HOME}/.accessd-connector/tls/localhost.crt"
+    echo "ACCESSD_CONNECTOR_TLS_KEY_FILE=${HOME}/.accessd-connector/tls/localhost.key"
     echo "ACCESSD_CONNECTOR_ALLOWED_ORIGIN=${default_origin}"
     echo "# Optional backend online token verification endpoint."
     echo "# If unset, connector derives: <allowed_origin>/api/connector/token/verify"
@@ -195,9 +366,6 @@ write_runtime_env_file() {
 
 bootstrap_runtime_env_from_server() {
   mkdir -p "${ENV_DIR}"
-  if [[ -f "${ENV_FILE}" ]]; then
-    return 0
-  fi
 
   local origin="${ACCESSD_CONNECTOR_ALLOWED_ORIGIN:-https://accessd.example.internal}"
   local host
@@ -216,6 +384,11 @@ bootstrap_runtime_env_from_server() {
     return 0
   fi
   if ! grep -q '^ACCESSD_CONNECTOR_ADDR=' "${tmp_env}"; then
+    rm -f "${tmp_env}" || true
+    return 0
+  fi
+  if [[ -f "${ENV_FILE}" ]]; then
+    refresh_runtime_env_file "${tmp_env}"
     rm -f "${tmp_env}" || true
     return 0
   fi
@@ -255,7 +428,8 @@ if [[ -f "${ENV_FILE}" ]]; then
 fi
 
 auto_trust="${ACCESSD_CONNECTOR_AUTO_TRUST_SERVER_CERT:-true}"
-case "${auto_trust,,}" in
+auto_trust_lc="$(printf '%s' "${auto_trust}" | tr '[:upper:]' '[:lower:]')"
+case "${auto_trust_lc}" in
   0|false|no|off)
     exit 0
     ;;
@@ -269,6 +443,7 @@ fi
 cert_url="${ACCESSD_CONNECTOR_TRUST_CERT_URL:-https://${host}/downloads/certs/accessd-server.crt}"
 cert_dir="${HOME}/.accessd-connector/certs"
 cert_file="${cert_dir}/accessd-${host}.crt"
+cert_state="${cert_dir}/accessd-${host}.trusted.sha256"
 mkdir -p "${cert_dir}"
 
 if ! command -v curl >/dev/null 2>&1; then
@@ -278,15 +453,33 @@ if ! curl -fsS -k -L "${cert_url}" -o "${cert_file}"; then
   exit 0
 fi
 
-if command -v update-ca-certificates >/dev/null 2>&1; then
-  target="/usr/local/share/ca-certificates/accessd-${host}.crt"
-  if [[ "$(id -u)" -eq 0 ]]; then
-    cp "${cert_file}" "${target}" && update-ca-certificates >/dev/null 2>&1 || true
+cert_hash=""
+if command -v shasum >/dev/null 2>&1; then
+  cert_hash="$(shasum -a 256 "${cert_file}" | awk '{print $1}')"
+elif command -v sha256sum >/dev/null 2>&1; then
+  cert_hash="$(sha256sum "${cert_file}" | awk '{print $1}')"
+fi
+if [[ -n "${cert_hash}" && -f "${cert_state}" ]]; then
+  existing_hash="$(cat "${cert_state}" 2>/dev/null || true)"
+  if [[ "${existing_hash}" == "${cert_hash}" ]]; then
     exit 0
   fi
-  if command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1; then
-    sudo cp "${cert_file}" "${target}" && sudo update-ca-certificates >/dev/null 2>&1 || true
-    exit 0
+fi
+
+if command -v update-ca-certificates >/dev/null 2>&1; then
+  target="/usr/local/share/ca-certificates/accessd-${host}.crt"
+  trust_ok="0"
+  if [[ "$(id -u)" -eq 0 ]]; then
+    if cp "${cert_file}" "${target}" && update-ca-certificates >/dev/null 2>&1; then
+      trust_ok="1"
+    fi
+  elif command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1; then
+    if sudo cp "${cert_file}" "${target}" && sudo update-ca-certificates >/dev/null 2>&1; then
+      trust_ok="1"
+    fi
+  fi
+  if [[ "${trust_ok}" == "1" && -n "${cert_hash}" ]]; then
+    printf '%s' "${cert_hash}" > "${cert_state}"
   fi
 fi
 TRUST
@@ -299,7 +492,28 @@ trust_accessd_server_cert() {
   fi
 }
 
+trust_local_connector_tls_cert() {
+  if [[ ! -x "${TARGET_BIN}" ]]; then
+    return 0
+  fi
+  local cert_file
+  cert_file="$("${TARGET_BIN}" ensure-local-tls 2>/dev/null || true)"
+  cert_file="$(trim "${cert_file}")"
+  [[ -f "${cert_file}" ]] || return 0
+  if command -v update-ca-certificates >/dev/null 2>&1; then
+    local target="/usr/local/share/ca-certificates/accessd-connector-localhost.crt"
+    if [[ "$(id -u)" -eq 0 ]]; then
+      cp "${cert_file}" "${target}" && update-ca-certificates >/dev/null 2>&1 || true
+    elif command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1; then
+      sudo cp "${cert_file}" "${target}" && sudo update-ca-certificates >/dev/null 2>&1 || true
+    fi
+  fi
+}
+
 is_connector_running() {
+  if curl -fsS -k --max-time 1 "https://127.0.0.1:9494/version" >/dev/null 2>&1; then
+    return 0
+  fi
   if curl -fsS --max-time 1 "http://127.0.0.1:9494/version" >/dev/null 2>&1; then
     return 0
   fi
@@ -330,7 +544,6 @@ start_connector() {
     . "${ENV_FILE}"
     set +a
   fi
-  trust_accessd_server_cert
   nohup "${TARGET_BIN}" >/tmp/accessd-connector.out 2>/tmp/accessd-connector.err < /dev/null &
 }
 
@@ -357,6 +570,127 @@ if [[ ! -x "${CONNECTOR_BIN}" ]]; then
 fi
 
 ENV_FILE="${HOME}/.config/accessd/connector.env"
+trim() {
+  local s="$1"
+  s="${s#${s%%[![:space:]]*}}"
+  s="${s%${s##*[![:space:]]}}"
+  printf '%s' "${s}"
+}
+urldecode() {
+  local data="${1//+/ }"
+  printf '%b' "${data//%/\\x}"
+}
+origin_from_protocol_arg() {
+  local uri="${1:-}"
+  [[ "${uri}" == accessd-connector://* ]] || return 0
+  local query="${uri#*\?}"
+  [[ "${query}" != "${uri}" ]] || return 0
+  local part key value
+  IFS='&' read -r -a parts <<< "${query}"
+  for part in "${parts[@]}"; do
+    key="${part%%=*}"
+    value="${part#*=}"
+    if [[ "${key}" == "origin" ]]; then
+      urldecode "${value}"
+      return 0
+    fi
+  done
+}
+param_from_protocol_arg() {
+  local want_key="$1"
+  local uri="${2:-}"
+  [[ "${uri}" == accessd-connector://* ]] || return 0
+  local query="${uri#*\?}"
+  [[ "${query}" != "${uri}" ]] || return 0
+  local part key value
+  IFS='&' read -r -a parts <<< "${query}"
+  for part in "${parts[@]}"; do
+    key="${part%%=*}"
+    value="${part#*=}"
+    if [[ "${key}" == "${want_key}" ]]; then
+      urldecode "${value}"
+      return 0
+    fi
+  done
+}
+env_get_value() {
+  local key="$1"
+  [[ -f "${ENV_FILE}" ]] || return 1
+  awk -v key="${key}" '
+    /^[[:space:]]*#/ { next }
+    index($0, key "=") == 1 {
+      sub(/^[^=]*=/, "", $0)
+      print $0
+      exit 0
+    }
+  ' "${ENV_FILE}"
+}
+env_set_value() {
+  local key="$1"
+  local value="$2"
+  local tmp_file="${ENV_FILE}.tmp.$$"
+  awk -v key="${key}" -v value="${value}" '
+    BEGIN { done=0 }
+    {
+      if (!done && $0 !~ /^[[:space:]]*#/ && index($0, key "=") == 1) {
+        print key "=" value
+        done=1
+        next
+      }
+      print
+    }
+    END {
+      if (!done) {
+        print key "=" value
+      }
+    }
+  ' "${ENV_FILE}" > "${tmp_file}"
+  mv "${tmp_file}" "${ENV_FILE}"
+}
+maybe_refresh_origin_from_protocol_arg() {
+  [[ -f "${ENV_FILE}" ]] || return 0
+  local incoming_origin current_origin current_verify desired_verify
+  incoming_origin="$(trim "$(origin_from_protocol_arg "${1:-}" || true)")"
+  [[ "${incoming_origin}" == http://* || "${incoming_origin}" == https://* ]] || return 0
+  current_origin="$(trim "$(env_get_value "ACCESSD_CONNECTOR_ALLOWED_ORIGIN" || true)")"
+  if [[ -z "${current_origin}" || "${current_origin}" == *"accessd.example.internal"* ]]; then
+    env_set_value "ACCESSD_CONNECTOR_ALLOWED_ORIGIN" "${incoming_origin}"
+  fi
+  current_verify="$(trim "$(env_get_value "ACCESSD_CONNECTOR_BACKEND_VERIFY_URL" || true)")"
+  if [[ -z "${current_verify}" || "${current_verify}" == *"accessd.example.internal"* ]]; then
+    desired_verify="${incoming_origin%/}/api/connector/token/verify"
+    env_set_value "ACCESSD_CONNECTOR_BACKEND_VERIFY_URL" "${desired_verify}"
+  fi
+}
+maybe_apply_signed_bootstrap() {
+  [[ -f "${ENV_FILE}" ]] || return 0
+  command -v curl >/dev/null 2>&1 || return 0
+  local arg="${1:-}" incoming_origin bootstrap_token verify_endpoint payload origin verify_url
+  incoming_origin="$(trim "$(origin_from_protocol_arg "${arg}" || true)")"
+  bootstrap_token="$(trim "$(param_from_protocol_arg "bootstrap_token" "${arg}" || true)")"
+  [[ -n "${incoming_origin}" && -n "${bootstrap_token}" ]] || return 0
+  [[ "${incoming_origin}" == http://* || "${incoming_origin}" == https://* ]] || return 0
+  verify_endpoint="${incoming_origin%/}/api/connector/bootstrap/verify"
+  payload="$(printf '{"token":"%s"}' "${bootstrap_token}")"
+  local resp
+  resp="$(curl -fsS -k -H "Content-Type: application/json" -X POST -d "${payload}" "${verify_endpoint}" 2>/dev/null || true)"
+  [[ -n "${resp}" ]] || return 0
+  if ! printf '%s' "${resp}" | grep -q '"valid"[[:space:]]*:[[:space:]]*true'; then
+    return 0
+  fi
+  origin="$(printf '%s' "${resp}" | sed -n 's/.*"origin"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)"
+  verify_url="$(printf '%s' "${resp}" | sed -n 's/.*"backend_verify_url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)"
+  origin="$(trim "${origin}")"
+  verify_url="$(trim "${verify_url}")"
+  if [[ "${origin}" == http://* || "${origin}" == https://* ]]; then
+    env_set_value "ACCESSD_CONNECTOR_ALLOWED_ORIGIN" "${origin}"
+  fi
+  if [[ "${verify_url}" == http://* || "${verify_url}" == https://* ]]; then
+    env_set_value "ACCESSD_CONNECTOR_BACKEND_VERIFY_URL" "${verify_url}"
+  fi
+}
+maybe_apply_signed_bootstrap "${1:-}"
+maybe_refresh_origin_from_protocol_arg "${1:-}"
 if [[ -f "${ENV_FILE}" ]]; then
   set -a
   # shellcheck disable=SC1090
@@ -370,11 +704,9 @@ BACKEND_VERIFY_URL="${ACCESSD_CONNECTOR_BACKEND_VERIFY_URL:-}"
 if [[ -z "${ACCESSD_CONNECTOR_SECRET:-}" && -z "${BACKEND_VERIFY_URL}" ]]; then
   echo "[accessd-connector] WARNING: token verification not configured (set ACCESSD_CONNECTOR_BACKEND_VERIFY_URL or ACCESSD_CONNECTOR_SECRET)." >&2
 fi
-if [[ -x "${TRUST_SCRIPT}" ]]; then
-  "${TRUST_SCRIPT}" || true
-fi
 
-if curl -fsS --max-time 1 "http://${CONNECTOR_ADDR}/version" >/dev/null 2>&1; then
+if curl -fsS -k --max-time 1 "https://${CONNECTOR_ADDR}/version" >/dev/null 2>&1 || \
+   curl -fsS --max-time 1 "http://${CONNECTOR_ADDR}/version" >/dev/null 2>&1; then
   exit 0
 fi
 
@@ -424,6 +756,7 @@ if [[ -f "${ENV_FILE}" ]]; then
   set +a
 fi
 trust_accessd_server_cert
+trust_local_connector_tls_cert
 
 if [[ "${WAS_RUNNING}" == "1" ]]; then
   echo "[accessd-connector] Restarting connector after reinstall..."

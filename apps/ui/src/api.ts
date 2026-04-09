@@ -17,8 +17,10 @@ import type {
   AdminUserDetail,
   AdminUsersResponse,
   ConnectorDBeaverLaunchRequest,
+  ConnectorBootstrapTokenResponse,
   ConnectorRedisLaunchRequest,
   ConnectorReleaseMetadata,
+  ConnectorReleaseVersionsResponse,
   ConnectorShellLaunchRequest,
   ConnectorSFTPLaunchRequest,
   LaunchSessionRequest,
@@ -39,8 +41,27 @@ type APIError = {
 }
 
 const API_BASE = '/api'
-const CONNECTOR_BASE = import.meta.env.VITE_CONNECTOR_BASE ?? 'http://127.0.0.1:9494'
+const CONNECTOR_BASE = import.meta.env.VITE_CONNECTOR_BASE ?? 'https://127.0.0.1:9494'
 const CONNECTOR_TOKEN_REQUIRED = parseConnectorTokenRequired(import.meta.env.VITE_CONNECTOR_TOKEN_REQUIRED)
+
+function normalizeConnectorBase(raw: string | undefined): string {
+  return (raw ?? '').trim().replace(/\/+$/, '')
+}
+
+function connectorBaseCandidates(): string[] {
+  const candidates = [
+    normalizeConnectorBase(CONNECTOR_BASE),
+    'https://127.0.0.1:9494',
+    'https://localhost:9494',
+    'http://127.0.0.1:9494',
+    'http://localhost:9494',
+  ].filter((v) => v !== '')
+  return [...new Set(candidates)]
+}
+
+function shouldTryNextConnectorBase(status: number): boolean {
+  return status === 404 || status === 502 || status === 503 || status === 504
+}
 
 export class ConnectorHandoffError extends Error {
   code?: string
@@ -135,6 +156,17 @@ export async function getConnectorReleaseMetadata(): Promise<ConnectorReleaseMet
   return requestJSON('/connector/releases/latest', { method: 'GET' })
 }
 
+export async function getConnectorReleaseVersions(): Promise<ConnectorReleaseVersionsResponse> {
+  return requestJSON('/connector/releases', { method: 'GET' })
+}
+
+export async function issueConnectorBootstrapToken(origin: string): Promise<ConnectorBootstrapTokenResponse> {
+  return requestJSON('/connector/bootstrap/issue', {
+    method: 'POST',
+    body: JSON.stringify({ origin }),
+  })
+}
+
 export async function createSessionLaunch(
   body: LaunchSessionRequest,
 ): Promise<LaunchSessionResponse> {
@@ -158,13 +190,31 @@ async function connectorLaunchRequest<TResponse>(
   path: string,
   body: unknown,
 ): Promise<TResponse> {
-  const response = await fetch(`${CONNECTOR_BASE}${path}`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(body),
-  })
+  let response: Response | null = null
+  let lastError: unknown = null
+
+  for (const base of connectorBaseCandidates()) {
+    try {
+      response = await fetch(`${base}${path}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(body),
+      })
+      if (response.ok || !shouldTryNextConnectorBase(response.status)) {
+        break
+      }
+      response = null
+    } catch (err) {
+      lastError = err
+    }
+  }
+
+  if (!response) {
+    const hint = lastError instanceof Error ? `: ${lastError.message}` : ''
+    throw new Error(`connector handoff failed (network/CORS)${hint}`)
+  }
 
   if (!response.ok) {
     let message = `connector handoff failed (${response.status})`
@@ -192,7 +242,29 @@ async function connectorLaunchRequest<TResponse>(
 }
 
 export async function getConnectorVersion(): Promise<string> {
-  const response = await fetch(`${CONNECTOR_BASE}/version`, { method: 'GET' })
+  let response: Response | null = null
+  let lastError: unknown = null
+
+  for (const base of connectorBaseCandidates()) {
+    try {
+      const resp = await fetch(`${base}/version`, { method: 'GET' })
+      if (resp.ok) {
+        response = resp
+        break
+      }
+      if (!shouldTryNextConnectorBase(resp.status)) {
+        response = resp
+        break
+      }
+    } catch (err) {
+      lastError = err
+    }
+  }
+
+  if (!response) {
+    const hint = lastError instanceof Error ? `: ${lastError.message}` : ''
+    throw new Error(`connector version check failed (network/CORS)${hint}`)
+  }
   if (!response.ok) {
     throw new Error(`connector version check failed (${response.status})`)
   }
@@ -420,7 +492,10 @@ type UpsertLDAPSettingsBody = {
   sync_user_filter: string
   username_attribute: string
   display_name_attribute: string
+  surname_attribute: string
   email_attribute: string
+  ssh_key_attribute: string
+  avatar_attribute: string
   group_search_base_dn: string
   group_search_filter: string
   group_name_attribute: string

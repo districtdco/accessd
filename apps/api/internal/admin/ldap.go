@@ -35,7 +35,10 @@ type LDAPSettings struct {
 	SyncUserFilter         string
 	UsernameAttribute      string
 	DisplayNameAttribute   string
+	SurnameAttribute       string
 	EmailAttribute         string
+	SSHKeyAttribute        string
+	AvatarAttribute        string
 	GroupSearchBaseDN      string
 	GroupSearchFilter      string
 	GroupNameAttribute     string
@@ -100,7 +103,10 @@ func (s *Service) defaultLDAPSettings() LDAPSettings {
 		SyncUserFilter:         defaultLDAPSyncSearchFilter,
 		UsernameAttribute:      "sAMAccountName",
 		DisplayNameAttribute:   "displayName",
+		SurnameAttribute:       "sn",
 		EmailAttribute:         "mail",
+		SSHKeyAttribute:        "SshPublicKey",
+		AvatarAttribute:        "jpegPhoto",
 		GroupSearchBaseDN:      "",
 		GroupSearchFilter:      defaultLDAPGroupSearchFilter,
 		GroupNameAttribute:     "cn",
@@ -113,7 +119,7 @@ func (s *Service) defaultLDAPSettings() LDAPSettings {
 	}
 }
 
-func (s *Service) normalizeLDAPSettings(in LDAPSettings, keepExistingPassword bool) (LDAPSettings, error) {
+func (s *Service) normalizeLDAPSettings(in LDAPSettings) (LDAPSettings, error) {
 	out := in
 	out.ProviderMode = strings.ToLower(strings.TrimSpace(out.ProviderMode))
 	if out.ProviderMode == "" {
@@ -133,7 +139,10 @@ func (s *Service) normalizeLDAPSettings(in LDAPSettings, keepExistingPassword bo
 	out.SyncUserFilter = strings.TrimSpace(out.SyncUserFilter)
 	out.UsernameAttribute = strings.TrimSpace(out.UsernameAttribute)
 	out.DisplayNameAttribute = strings.TrimSpace(out.DisplayNameAttribute)
+	out.SurnameAttribute = strings.TrimSpace(out.SurnameAttribute)
 	out.EmailAttribute = strings.TrimSpace(out.EmailAttribute)
+	out.SSHKeyAttribute = strings.TrimSpace(out.SSHKeyAttribute)
+	out.AvatarAttribute = strings.TrimSpace(out.AvatarAttribute)
 	out.GroupSearchBaseDN = strings.TrimSpace(out.GroupSearchBaseDN)
 	out.GroupSearchFilter = strings.TrimSpace(out.GroupSearchFilter)
 	out.GroupNameAttribute = strings.TrimSpace(out.GroupNameAttribute)
@@ -163,17 +172,23 @@ func (s *Service) normalizeLDAPSettings(in LDAPSettings, keepExistingPassword bo
 	if out.DisplayNameAttribute == "" {
 		out.DisplayNameAttribute = "displayName"
 	}
+	if out.SurnameAttribute == "" {
+		out.SurnameAttribute = "sn"
+	}
 	if out.EmailAttribute == "" {
 		out.EmailAttribute = "mail"
+	}
+	if out.SSHKeyAttribute == "" {
+		out.SSHKeyAttribute = "SshPublicKey"
+	}
+	if out.AvatarAttribute == "" {
+		out.AvatarAttribute = "jpegPhoto"
 	}
 	if out.GroupSearchFilter == "" {
 		out.GroupSearchFilter = defaultLDAPGroupSearchFilter
 	}
 	if out.GroupNameAttribute == "" {
 		out.GroupNameAttribute = "cn"
-	}
-	if keepExistingPassword {
-		out.BindPassword = ""
 	}
 	return out, nil
 }
@@ -194,7 +209,10 @@ func (s *Service) GetLDAPSettings(ctx context.Context) (LDAPSettings, error) {
 	sync_user_filter,
 	username_attribute,
 	display_name_attribute,
+	surname_attribute,
 	email_attribute,
+	ssh_key_attribute,
+	avatar_attribute,
 	group_search_base_dn,
 	group_search_filter,
 	group_name_attribute,
@@ -223,7 +241,10 @@ LIMIT 1;`
 		&row.SyncUserFilter,
 		&row.UsernameAttribute,
 		&row.DisplayNameAttribute,
+		&row.SurnameAttribute,
 		&row.EmailAttribute,
+		&row.SSHKeyAttribute,
+		&row.AvatarAttribute,
 		&row.GroupSearchBaseDN,
 		&row.GroupSearchFilter,
 		&row.GroupNameAttribute,
@@ -254,19 +275,22 @@ LIMIT 1;`
 }
 
 func (s *Service) UpsertLDAPSettings(ctx context.Context, actorUserID string, input LDAPSettings, keepExistingPassword bool, keepExistingCACertPEM bool) (LDAPSettings, error) {
-	normalized, err := s.normalizeLDAPSettings(input, keepExistingPassword)
+	normalized, err := s.normalizeLDAPSettings(input)
 	if err != nil {
 		return LDAPSettings{}, err
 	}
 
-	passwordExpr := "$9"
+	effectiveKeepPassword := keepExistingPassword && strings.TrimSpace(normalized.BindPassword) == ""
+	effectiveKeepCACert := keepExistingCACertPEM && strings.TrimSpace(normalized.CACertPEM) == ""
+
+	passwordExpr := "EXCLUDED.bind_password"
 	passwordArg := normalized.BindPassword
-	if keepExistingPassword {
+	if effectiveKeepPassword {
 		passwordExpr = "COALESCE(NULLIF(ldap_settings.bind_password, ''), '')"
 		passwordArg = ""
 	}
 	caCertExpr := "EXCLUDED.ca_cert_pem"
-	if keepExistingCACertPEM {
+	if effectiveKeepCACert {
 		caCertExpr = "COALESCE(NULLIF(ldap_settings.ca_cert_pem, ''), '')"
 	}
 
@@ -285,7 +309,10 @@ INSERT INTO ldap_settings (
 	sync_user_filter,
 	username_attribute,
 	display_name_attribute,
+	surname_attribute,
 	email_attribute,
+	ssh_key_attribute,
+	avatar_attribute,
 	group_search_base_dn,
 	group_search_filter,
 	group_name_attribute,
@@ -322,7 +349,10 @@ VALUES (
 	$20,
 	$21,
 	$22,
-	NULLIF($23, '')::uuid,
+	$23,
+	$24,
+	$25,
+	NULLIF($26, '')::uuid,
 	NOW()
 )
 ON CONFLICT (id) DO UPDATE SET
@@ -338,7 +368,10 @@ ON CONFLICT (id) DO UPDATE SET
 	sync_user_filter = EXCLUDED.sync_user_filter,
 	username_attribute = EXCLUDED.username_attribute,
 	display_name_attribute = EXCLUDED.display_name_attribute,
+	surname_attribute = EXCLUDED.surname_attribute,
 	email_attribute = EXCLUDED.email_attribute,
+	ssh_key_attribute = EXCLUDED.ssh_key_attribute,
+	avatar_attribute = EXCLUDED.avatar_attribute,
 	group_search_base_dn = EXCLUDED.group_search_base_dn,
 	group_search_filter = EXCLUDED.group_search_filter,
 	group_name_attribute = EXCLUDED.group_name_attribute,
@@ -363,7 +396,10 @@ ON CONFLICT (id) DO UPDATE SET
 		normalized.SyncUserFilter,
 		normalized.UsernameAttribute,
 		normalized.DisplayNameAttribute,
+		normalized.SurnameAttribute,
 		normalized.EmailAttribute,
+		normalized.SSHKeyAttribute,
+		normalized.AvatarAttribute,
 		normalized.GroupSearchBaseDN,
 		normalized.GroupSearchFilter,
 		normalized.GroupNameAttribute,
@@ -397,7 +433,10 @@ SELECT
 	sync_user_filter,
 	username_attribute,
 	display_name_attribute,
+	surname_attribute,
 	email_attribute,
+	ssh_key_attribute,
+	avatar_attribute,
 	group_search_base_dn,
 	group_search_filter,
 	group_name_attribute,
@@ -426,7 +465,10 @@ LIMIT 1;`
 		&row.SyncUserFilter,
 		&row.UsernameAttribute,
 		&row.DisplayNameAttribute,
+		&row.SurnameAttribute,
 		&row.EmailAttribute,
+		&row.SSHKeyAttribute,
+		&row.AvatarAttribute,
 		&row.GroupSearchBaseDN,
 		&row.GroupSearchFilter,
 		&row.GroupNameAttribute,
@@ -448,10 +490,19 @@ LIMIT 1;`
 	return row, nil
 }
 
-func (s *Service) TestLDAPConnection(ctx context.Context, in LDAPSettings) (LDAPTestResult, error) {
-	settings, err := s.normalizeLDAPSettings(in, false)
+func (s *Service) TestLDAPConnection(ctx context.Context, in LDAPSettings, keepExistingPassword bool, keepExistingCACertPEM bool) (LDAPTestResult, error) {
+	settings, err := s.normalizeLDAPSettings(in)
 	if err != nil {
 		return LDAPTestResult{}, err
+	}
+	stored, err := s.resolvedLDAPSettingsForOps(ctx)
+	if err == nil {
+		if keepExistingPassword && strings.TrimSpace(settings.BindPassword) == "" {
+			settings.BindPassword = strings.TrimSpace(stored.BindPassword)
+		}
+		if keepExistingCACertPEM && strings.TrimSpace(settings.CACertPEM) == "" {
+			settings.CACertPEM = strings.TrimSpace(stored.CACertPEM)
+		}
 	}
 	conn, server, err := dialLDAP(settings)
 	if err != nil {
@@ -491,10 +542,11 @@ func (s *Service) TriggerLDAPSync(ctx context.Context, actorUserID string) (LDAP
 
 	summary, syncErr := s.syncLDAPUsers(ctx, settings)
 	if syncErr != nil {
-		if failErr := s.finishLDAPSyncRun(ctx, runID, "failed", summary, syncErr.Error()); failErr != nil {
+		formattedErr := formatLDAPSyncError(syncErr)
+		if failErr := s.finishLDAPSyncRun(ctx, runID, "failed", summary, formattedErr); failErr != nil {
 			return LDAPSyncRun{}, fmt.Errorf("ldap sync failed (%v) and failed to mark run (%v)", syncErr, failErr)
 		}
-		return LDAPSyncRun{}, syncErr
+		return LDAPSyncRun{}, errors.New(formattedErr)
 	}
 	if err := s.finishLDAPSyncRun(ctx, runID, "success", summary, ""); err != nil {
 		return LDAPSyncRun{}, err
@@ -577,16 +629,16 @@ WHERE id = $1;`
 func (s *Service) syncLDAPUsers(ctx context.Context, settings LDAPSettings) (LDAPSyncSummary, error) {
 	conn, _, err := dialLDAP(settings)
 	if err != nil {
-		return LDAPSyncSummary{}, fmt.Errorf("connect ldap: %w", err)
+		return LDAPSyncSummary{}, fmt.Errorf("connect failure: %w", err)
 	}
 	defer conn.Close()
 	if err := bindLDAPServiceAccount(conn, settings); err != nil {
-		return LDAPSyncSummary{}, err
+		return LDAPSyncSummary{}, fmt.Errorf("bind failure: %w", err)
 	}
 
 	entries, err := searchLDAPUsers(conn, settings)
 	if err != nil {
-		return LDAPSyncSummary{}, err
+		return LDAPSyncSummary{}, fmt.Errorf("search failure: %w", err)
 	}
 	if len(entries) == 0 {
 		return LDAPSyncSummary{Warnings: []string{"LDAP sync returned zero users; no local users were modified"}}, fmt.Errorf("ldap sync returned zero users")
@@ -604,7 +656,7 @@ func (s *Service) syncLDAPUsers(ctx context.Context, settings LDAPSettings) (LDA
 		names = append(names, entry.Username)
 		change, err := s.upsertLDAPUserTx(ctx, tx, entry)
 		if err != nil {
-			return summary, err
+			return summary, fmt.Errorf("mapping failure: %w", err)
 		}
 		switch change {
 		case "created":
@@ -624,7 +676,7 @@ func (s *Service) syncLDAPUsers(ctx context.Context, settings LDAPSettings) (LDA
 	if settings.DeactivateMissingUsers {
 		deactivated, err := s.deactivateMissingLDAPUsersTx(ctx, tx, names)
 		if err != nil {
-			return summary, err
+			return summary, fmt.Errorf("deactivate failure: %w", err)
 		}
 		summary.Deactivated = deactivated
 	}
@@ -793,6 +845,7 @@ func bindLDAPServiceAccount(conn *ldap.Conn, settings LDAPSettings) error {
 func searchLDAPUsers(conn *ldap.Conn, settings LDAPSettings) ([]ldapUserEntry, error) {
 	attrs := []string{settings.UsernameAttribute}
 	attrs = appendAttribute(attrs, settings.DisplayNameAttribute, "displayName", "cn", "name")
+	attrs = appendAttribute(attrs, settings.SurnameAttribute, "sn")
 	attrs = appendAttribute(attrs, settings.EmailAttribute, "mail", "userPrincipalName")
 	filter := strings.TrimSpace(settings.SyncUserFilter)
 	if filter == "" {
@@ -826,14 +879,25 @@ func searchLDAPUsers(conn *ldap.Conn, settings LDAPSettings) ([]ldapUserEntry, e
 			continue
 		}
 		seen[key] = struct{}{}
+		firstName := firstNonEmptyAttributeValue(entry,
+			settings.DisplayNameAttribute,
+			"displayName",
+			"cn",
+			"name",
+		)
+		lastName := firstNonEmptyAttributeValue(entry,
+			settings.SurnameAttribute,
+			"sn",
+		)
+		displayName := strings.TrimSpace(firstName)
+		if displayName == "" {
+			displayName = strings.TrimSpace(lastName)
+		} else if strings.TrimSpace(lastName) != "" && !strings.EqualFold(strings.TrimSpace(lastName), strings.TrimSpace(firstName)) {
+			displayName = strings.TrimSpace(firstName + " " + lastName)
+		}
 		users = append(users, ldapUserEntry{
-			Username: username,
-			DisplayName: firstNonEmptyAttributeValue(entry,
-				settings.DisplayNameAttribute,
-				"displayName",
-				"cn",
-				"name",
-			),
+			Username:    username,
+			DisplayName: displayName,
 			Email: firstNonEmptyAttributeValue(entry,
 				settings.EmailAttribute,
 				"mail",
@@ -879,6 +943,21 @@ func firstNonEmptyAttributeValue(entry *ldap.Entry, candidates ...string) string
 		}
 	}
 	return ""
+}
+
+func formatLDAPSyncError(err error) string {
+	msg := strings.TrimSpace(err.Error())
+	if msg == "" {
+		return "sync failure: unknown error"
+	}
+	if strings.HasPrefix(msg, "connect failure:") ||
+		strings.HasPrefix(msg, "bind failure:") ||
+		strings.HasPrefix(msg, "search failure:") ||
+		strings.HasPrefix(msg, "mapping failure:") ||
+		strings.HasPrefix(msg, "deactivate failure:") {
+		return msg
+	}
+	return "sync failure: " + msg
 }
 
 func NormalizeRemoteIP(addr string) string {

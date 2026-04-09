@@ -24,7 +24,7 @@ if [[ -z "${ACCESSD_CONNECTOR_TAG}" ]]; then
     echo "[install] no connectors/v* directory found under ${BUNDLE_DIR}/connectors"
     exit 1
   fi
-  IFS=$'\n' sorted_dirs=($(printf '%s\n' "${connector_dirs[@]}" | sort))
+  IFS=$'\n' sorted_dirs=($(printf '%s\n' "${connector_dirs[@]}" | sort -V))
   unset IFS
   ACCESSD_CONNECTOR_TAG="$(basename "${sorted_dirs[-1]}")"
 fi
@@ -81,6 +81,14 @@ bool_is_true() {
     1|true|yes|on) return 0 ;;
     *) return 1 ;;
   esac
+}
+
+version_greater_than() {
+  local left="$1"
+  local right="$2"
+  local greatest
+  greatest="$(printf '%s\n%s\n' "${left}" "${right}" | sort -V | tail -n 1)"
+  [[ "${greatest}" == "${left}" && "${left}" != "${right}" ]]
 }
 
 should_manage_nginx() {
@@ -283,6 +291,63 @@ prompt_for_domain_if_needed() {
   if [[ -n "${ACCESSD_DOMAIN}" ]]; then
     return 0
   fi
+
+  local inferred_domain=""
+  local source_val=""
+  local first_origin=""
+  local nginx_site_file="${VM_NGINX_SITES_AVAILABLE_DIR}/${NGINX_SITE_NAME}"
+
+  extract_host_from_value() {
+    local raw="$1"
+    raw="$(trim "${raw}")"
+    [[ -n "${raw}" ]] || return 1
+    raw="${raw%%,*}"
+    raw="$(trim "${raw}")"
+    raw="${raw#http://}"
+    raw="${raw#https://}"
+    raw="${raw%%/*}"
+    raw="${raw%%:*}"
+    raw="$(trim "${raw}")"
+    [[ -n "${raw}" ]] || return 1
+    [[ "${raw}" == "localhost" || "${raw}" == "127.0.0.1" || "${raw}" == "accessd.example.internal" ]] && return 1
+    printf '%s' "${raw}"
+    return 0
+  }
+
+  if [[ -z "${inferred_domain}" && -f "${VM_ETC_DIR}/accessd.env" ]]; then
+    source_val="$(env_value_from_file "${VM_ETC_DIR}/accessd.env" "ACCESSD_CORS_ALLOWED_ORIGINS" || true)"
+    if inferred_domain="$(extract_host_from_value "${source_val}" 2>/dev/null)"; then :; else inferred_domain=""; fi
+  fi
+  if [[ -z "${inferred_domain}" && -f "${VM_ETC_DIR}/accessd.env" ]]; then
+    source_val="$(env_value_from_file "${VM_ETC_DIR}/accessd.env" "ACCESSD_CONNECTOR_RELEASES_BASE_URL" || true)"
+    if inferred_domain="$(extract_host_from_value "${source_val}" 2>/dev/null)"; then :; else inferred_domain=""; fi
+  fi
+  if [[ -z "${inferred_domain}" && -f "${VM_ETC_DIR}/accessd-connector.env" ]]; then
+    source_val="$(env_value_from_file "${VM_ETC_DIR}/accessd-connector.env" "ACCESSD_CONNECTOR_ALLOWED_ORIGIN" || true)"
+    if inferred_domain="$(extract_host_from_value "${source_val}" 2>/dev/null)"; then :; else inferred_domain=""; fi
+  fi
+  if [[ -z "${inferred_domain}" && -f "${nginx_site_file}" ]]; then
+    first_origin="$(awk '/^[[:space:]]*server_name[[:space:]]+/{
+      for (i=2; i<=NF; i++) {
+        gsub(/;/, "", $i)
+        if ($i != "_" && $i != "localhost" && $i != "127.0.0.1" && $i != "accessd.example.internal" && $i != "") {
+          print $i
+          exit
+        }
+      }
+    }' "${nginx_site_file}" | head -n 1 || true)"
+    first_origin="$(trim "${first_origin}")"
+    if [[ -n "${first_origin}" ]]; then
+      inferred_domain="${first_origin}"
+    fi
+  fi
+
+  if [[ -n "${inferred_domain}" ]]; then
+    ACCESSD_DOMAIN="${inferred_domain}"
+    log "reusing existing AccessD domain: ${ACCESSD_DOMAIN}"
+    return 0
+  fi
+
   if has_tty; then
     read -r -p "AccessD domain (nginx server_name + API/UI origin) [accessd.example.internal]: " ACCESSD_DOMAIN
     ACCESSD_DOMAIN="$(trim "${ACCESSD_DOMAIN}")"
@@ -540,6 +605,49 @@ configure_connector_env_defaults() {
   set_or_replace_env_kv "${env_file}" "ACCESSD_CONNECTOR_BACKEND_VERIFY_URL" "https://${ACCESSD_DOMAIN}/api/connector/token/verify"
   # Operator bootstrap must not ship shared secret. Backend verify mode is default.
   remove_env_kv "${env_file}" "ACCESSD_CONNECTOR_SECRET"
+}
+
+sync_connector_release_metadata() {
+  local env_file="${VM_ETC_DIR}/accessd.env"
+  [[ -f "${env_file}" ]] || return 0
+
+  local deployed_version="${ACCESSD_CONNECTOR_TAG#v}"
+  if [[ -z "${deployed_version}" ]]; then
+    return 0
+  fi
+
+  local latest_version="${deployed_version}"
+  local connectors_root="${VM_DOWNLOADS_DIR}/connectors"
+  local existing_tag existing_version
+  shopt -s nullglob
+  local existing_dirs=("${connectors_root}"/v*)
+  shopt -u nullglob
+  if [[ "${#existing_dirs[@]}" -gt 0 ]]; then
+    IFS=$'\n' sorted_existing=($(printf '%s\n' "${existing_dirs[@]}" | sort -V))
+    unset IFS
+    existing_tag="$(basename "${sorted_existing[-1]}")"
+    existing_version="${existing_tag#v}"
+    if [[ -n "${existing_version}" ]]; then
+      latest_version="${existing_version}"
+    fi
+  fi
+
+  set_or_replace_env_kv "${env_file}" "ACCESSD_CONNECTOR_RELEASES_BASE_URL" "https://${ACCESSD_DOMAIN}/downloads/connectors"
+  set_or_replace_env_kv "${env_file}" "ACCESSD_CONNECTOR_RELEASES_FS_ROOT" "${VM_DOWNLOADS_DIR}/connectors"
+  set_or_replace_env_kv "${env_file}" "ACCESSD_CONNECTOR_LATEST_VERSION" "${latest_version}"
+
+  # Preserve operator-chosen minimum when present; default to latest on first install.
+  local existing_min
+  existing_min="$(env_value_from_file "${env_file}" "ACCESSD_CONNECTOR_MIN_VERSION" || true)"
+  existing_min="$(trim "${existing_min}")"
+  if [[ -z "${existing_min}" || "${existing_min}" == *CHANGE_ME* ]]; then
+    set_or_replace_env_kv "${env_file}" "ACCESSD_CONNECTOR_MIN_VERSION" "${latest_version}"
+    return 0
+  fi
+  # Guardrail: minimum cannot exceed latest.
+  if version_greater_than "${existing_min}" "${latest_version}"; then
+    set_or_replace_env_kv "${env_file}" "ACCESSD_CONNECTOR_MIN_VERSION" "${latest_version}"
+  fi
 }
 
 enforce_required_secrets_configured() {
@@ -835,6 +943,7 @@ find "${VM_WWW_DIR}" -type d -exec chmod 0755 {} +
 find "${VM_WWW_DIR}" -type f -exec chmod 0644 {} +
 
 log "publishing connector artifacts"
+find "${VM_DOWNLOADS_DIR}/connectors/${ACCESSD_CONNECTOR_TAG}" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
 cp -R "${BUNDLE_DIR}/connectors/${ACCESSD_CONNECTOR_TAG}/." "${VM_DOWNLOADS_DIR}/connectors/${ACCESSD_CONNECTOR_TAG}/"
 chown -R root:"${WEB_GROUP}" "${VM_DOWNLOADS_DIR}"
 find "${VM_DOWNLOADS_DIR}" -type d -exec chmod 0755 {} +
@@ -852,6 +961,7 @@ fi
 
 prompt_for_domain_if_needed
 configure_api_env_interactive
+sync_connector_release_metadata
 configure_connector_env_defaults
 enforce_required_secrets_configured
 

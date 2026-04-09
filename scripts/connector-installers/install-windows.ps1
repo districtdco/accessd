@@ -1,11 +1,77 @@
 $ErrorActionPreference = 'Stop'
 
 function Test-Interactive {
+  $nonInteractive = $env:ACCESSD_CONNECTOR_INSTALLER_NONINTERACTIVE
+  if (-not [string]::IsNullOrWhiteSpace($nonInteractive) -and $nonInteractive -match '^(?i:true|1|yes|on)$') {
+    return $false
+  }
   try {
     return [Environment]::UserInteractive
   } catch {
     return $false
   }
+}
+
+function Test-ReleasePayloadIntegrity {
+  param([string]$ScriptDir)
+
+  $verifyRaw = $env:ACCESSD_CONNECTOR_VERIFY_RELEASE
+  if (-not [string]::IsNullOrWhiteSpace($verifyRaw) -and $verifyRaw -match '^(?i:false|0|no|off)$') {
+    Write-Host "[accessd-connector] Skipping payload integrity verification (ACCESSD_CONNECTOR_VERIFY_RELEASE=$verifyRaw)."
+    return
+  }
+
+  $allowRaw = $env:ACCESSD_CONNECTOR_ALLOW_UNVERIFIED_RELEASE
+  $allowUnverified = -not [string]::IsNullOrWhiteSpace($allowRaw) -and $allowRaw -match '^(?i:true|1|yes|on)$'
+
+  $checksFile = Join-Path $ScriptDir 'release-files-sha256.txt'
+  if (-not (Test-Path $checksFile)) {
+    $checksFile = Join-Path (Split-Path -Parent $ScriptDir) 'release-files-sha256.txt'
+  }
+  if (-not (Test-Path $checksFile)) {
+    return
+  }
+
+  $baseDir = Split-Path -Parent $checksFile
+  $failures = New-Object System.Collections.Generic.List[string]
+  foreach ($line in Get-Content -Path $checksFile) {
+    $trimmed = $line.Trim()
+    if ([string]::IsNullOrWhiteSpace($trimmed)) { continue }
+    $parts = $trimmed -split '\s+', 2
+    if ($parts.Count -lt 2) { continue }
+    $expected = $parts[0].Trim().ToLowerInvariant()
+    $fileName = $parts[1].Trim()
+    $target = Join-Path $baseDir $fileName
+    if (-not (Test-Path $target)) {
+      $failures.Add("missing file: $fileName")
+      continue
+    }
+    try {
+      $actual = (Get-FileHash -Algorithm SHA256 -Path $target).Hash.ToLowerInvariant()
+    } catch {
+      $failures.Add("failed hash read: $fileName")
+      continue
+    }
+    if ($actual -ne $expected) {
+      $failures.Add("checksum mismatch: $fileName")
+    }
+  }
+
+  if ($failures.Count -eq 0) {
+    Write-Host '[accessd-connector] Payload integrity check passed.'
+    return
+  }
+
+  if ($allowUnverified) {
+    Write-Host "[accessd-connector] WARNING: payload integrity issues detected but continuing due ACCESSD_CONNECTOR_ALLOW_UNVERIFIED_RELEASE=$allowRaw"
+    foreach ($item in $failures) {
+      Write-Host "[accessd-connector] WARNING: $item"
+    }
+    return
+  }
+
+  $msg = ($failures -join '; ')
+  throw "[accessd-connector] payload integrity verification failed: $msg. Set ACCESSD_CONNECTOR_ALLOW_UNVERIFIED_RELEASE=true to bypass."
 }
 
 function Resolve-CandidatePath {
@@ -110,6 +176,7 @@ function Write-RuntimeEnvFile {
   New-Item -ItemType Directory -Force -Path $envDir | Out-Null
   if (Test-Path $EnvFile) {
     Write-Host "[accessd-connector] Keeping existing runtime env: $EnvFile"
+    Refresh-RuntimeEnvFile -EnvFile $EnvFile
     return
   }
 
@@ -123,6 +190,9 @@ function Write-RuntimeEnvFile {
     '# AccessD Connector runtime env (non-sensitive defaults)'
     '# Keep secrets out of this file.'
     'ACCESSD_CONNECTOR_ADDR=127.0.0.1:9494'
+    'ACCESSD_CONNECTOR_ENABLE_TLS=true'
+    'ACCESSD_CONNECTOR_TLS_CERT_FILE=$HOME/.accessd-connector/tls/localhost.crt'
+    'ACCESSD_CONNECTOR_TLS_KEY_FILE=$HOME/.accessd-connector/tls/localhost.key'
     "ACCESSD_CONNECTOR_ALLOWED_ORIGIN=$defaultOrigin"
     '# Optional backend online token verification endpoint.'
     '# If unset, connector derives: <allowed_origin>/api/connector/token/verify'
@@ -140,6 +210,106 @@ function Write-RuntimeEnvFile {
   )
   Set-Content -Path $EnvFile -Value $lines -Encoding UTF8
   Write-Host "[accessd-connector] Wrote runtime env: $EnvFile"
+}
+
+function Get-EnvMapFromFile {
+  param([string]$Path)
+  $map = @{}
+  if (-not (Test-Path $Path)) { return $map }
+  foreach ($line in Get-Content -Path $Path) {
+    $trimmed = $line.Trim()
+    if ([string]::IsNullOrWhiteSpace($trimmed) -or $trimmed.StartsWith('#')) { continue }
+    if ($trimmed -notmatch '^[A-Za-z_][A-Za-z0-9_]*=') { continue }
+    $parts = $trimmed.Split('=', 2)
+    if ($parts.Count -ne 2) { continue }
+    $map[$parts[0].Trim()] = $parts[1].Trim()
+  }
+  return $map
+}
+
+function Set-EnvValueInFile {
+  param(
+    [string]$Path,
+    [string]$Key,
+    [string]$Value
+  )
+  $lines = @()
+  if (Test-Path $Path) {
+    $lines = Get-Content -Path $Path
+  }
+  $updated = $false
+  for ($i = 0; $i -lt $lines.Count; $i += 1) {
+    $trimmed = $lines[$i].Trim()
+    if ($trimmed.StartsWith('#')) { continue }
+    if ($trimmed -match ("^{0}=" -f [Regex]::Escape($Key))) {
+      $lines[$i] = "$Key=$Value"
+      $updated = $true
+      break
+    }
+  }
+  if (-not $updated) {
+    $lines += "$Key=$Value"
+  }
+  Set-Content -Path $Path -Value $lines -Encoding UTF8
+}
+
+function Test-PlaceholderValue {
+  param([string]$Value)
+  if ([string]::IsNullOrWhiteSpace($Value)) { return $true }
+  return $Value -like '*accessd.example.internal*'
+}
+
+function Get-DerivedBackendVerifyURL {
+  param([string]$Origin)
+  if ([string]::IsNullOrWhiteSpace($Origin)) { return $null }
+  $trimmed = $Origin.Trim().TrimEnd('/')
+  return "$trimmed/api/connector/token/verify"
+}
+
+function Refresh-RuntimeEnvFile {
+  param(
+    [string]$EnvFile,
+    [string]$SourceFile
+  )
+  if (-not (Test-Path $EnvFile)) { return }
+  $current = Get-EnvMapFromFile -Path $EnvFile
+  $source = @{}
+  if (-not [string]::IsNullOrWhiteSpace($SourceFile) -and (Test-Path $SourceFile)) {
+    $source = Get-EnvMapFromFile -Path $SourceFile
+  }
+
+  $existingOrigin = if ($current.ContainsKey('ACCESSD_CONNECTOR_ALLOWED_ORIGIN')) { "$($current['ACCESSD_CONNECTOR_ALLOWED_ORIGIN'])".Trim() } else { '' }
+  $existingVerify = if ($current.ContainsKey('ACCESSD_CONNECTOR_BACKEND_VERIFY_URL')) { "$($current['ACCESSD_CONNECTOR_BACKEND_VERIFY_URL'])".Trim() } else { '' }
+  $sourceOrigin = if ($source.ContainsKey('ACCESSD_CONNECTOR_ALLOWED_ORIGIN')) { "$($source['ACCESSD_CONNECTOR_ALLOWED_ORIGIN'])".Trim() } else { '' }
+  $sourceVerify = if ($source.ContainsKey('ACCESSD_CONNECTOR_BACKEND_VERIFY_URL')) { "$($source['ACCESSD_CONNECTOR_BACKEND_VERIFY_URL'])".Trim() } else { '' }
+
+  $desiredOrigin = $existingOrigin
+  if (-not [string]::IsNullOrWhiteSpace($env:ACCESSD_CONNECTOR_ALLOWED_ORIGIN)) {
+    $desiredOrigin = $env:ACCESSD_CONNECTOR_ALLOWED_ORIGIN.Trim()
+  } elseif (Test-PlaceholderValue -Value $existingOrigin) {
+    if (-not [string]::IsNullOrWhiteSpace($sourceOrigin)) {
+      $desiredOrigin = $sourceOrigin
+    }
+  }
+  if (-not [string]::IsNullOrWhiteSpace($desiredOrigin) -and $desiredOrigin -ne $existingOrigin) {
+    Set-EnvValueInFile -Path $EnvFile -Key 'ACCESSD_CONNECTOR_ALLOWED_ORIGIN' -Value $desiredOrigin
+    Write-Host "[accessd-connector] Updated ACCESSD_CONNECTOR_ALLOWED_ORIGIN in $EnvFile"
+  }
+
+  $desiredVerify = $existingVerify
+  if (-not [string]::IsNullOrWhiteSpace($env:ACCESSD_CONNECTOR_BACKEND_VERIFY_URL)) {
+    $desiredVerify = $env:ACCESSD_CONNECTOR_BACKEND_VERIFY_URL.Trim()
+  } elseif (Test-PlaceholderValue -Value $existingVerify) {
+    if (-not [string]::IsNullOrWhiteSpace($sourceVerify)) {
+      $desiredVerify = $sourceVerify
+    } elseif (-not [string]::IsNullOrWhiteSpace($desiredOrigin)) {
+      $desiredVerify = Get-DerivedBackendVerifyURL -Origin $desiredOrigin
+    }
+  }
+  if (-not [string]::IsNullOrWhiteSpace($desiredVerify) -and $desiredVerify -ne $existingVerify) {
+    Set-EnvValueInFile -Path $EnvFile -Key 'ACCESSD_CONNECTOR_BACKEND_VERIFY_URL' -Value $desiredVerify
+    Write-Host "[accessd-connector] Updated ACCESSD_CONNECTOR_BACKEND_VERIFY_URL in $EnvFile"
+  }
 }
 
 function Download-EnvFileInsecure {
@@ -163,7 +333,6 @@ function Download-EnvFileInsecure {
 function Bootstrap-RuntimeEnvFile {
   param([string]$EnvFile)
 
-  if (Test-Path $EnvFile) { return }
   $origin = if ([string]::IsNullOrWhiteSpace($env:ACCESSD_CONNECTOR_ALLOWED_ORIGIN)) { 'https://accessd.example.internal' } else { $env:ACCESSD_CONNECTOR_ALLOWED_ORIGIN }
   $host = Get-OriginHost -Origin $origin
   if ([string]::IsNullOrWhiteSpace($host) -or $host -eq 'accessd.example.internal') { return }
@@ -183,6 +352,11 @@ function Bootstrap-RuntimeEnvFile {
     return
   }
   if (-not (Select-String -Path $tmp -Pattern '^ACCESSD_CONNECTOR_ADDR=' -Quiet)) {
+    Remove-Item -Force $tmp -ErrorAction SilentlyContinue
+    return
+  }
+  if (Test-Path $EnvFile) {
+    Refresh-RuntimeEnvFile -EnvFile $EnvFile -SourceFile $tmp
     Remove-Item -Force $tmp -ErrorAction SilentlyContinue
     return
   }
@@ -240,6 +414,7 @@ function Trust-AccessDServerCert {
   $certDir = Join-Path $configDir 'certs'
   New-Item -ItemType Directory -Force -Path $certDir | Out-Null
   $certFile = Join-Path $certDir ("accessd-{0}.cer" -f $host)
+  $stateFile = Join-Path $certDir ("accessd-{0}.trusted.sha256" -f $host)
 
   $saved = Save-RemoteServerCert -Host $host -OutFile $certFile
   if (-not $saved) {
@@ -247,16 +422,54 @@ function Trust-AccessDServerCert {
     return
   }
 
+  $certHash = $null
+  try {
+    $certHash = (Get-FileHash -Algorithm SHA256 -Path $certFile).Hash.ToLowerInvariant()
+  } catch {
+    $certHash = $null
+  }
+  if ($certHash -and (Test-Path $stateFile)) {
+    try {
+      $existingHash = (Get-Content -Path $stateFile -Raw).Trim().ToLowerInvariant()
+      if ($existingHash -eq $certHash) {
+        return
+      }
+    } catch {
+    }
+  }
+
   try {
     Import-Certificate -FilePath $certFile -CertStoreLocation 'Cert:\CurrentUser\Root' | Out-Null
     Write-Host "[accessd-connector] Installed server cert into CurrentUser Root trust store: $certFile"
+    if ($certHash) {
+      Set-Content -Path $stateFile -Value $certHash -Encoding ASCII
+    }
   } catch {
     Write-Host "[accessd-connector] WARNING: failed to import cert into CurrentUser Root: $($_.Exception.Message)"
     Write-Host "[accessd-connector] Saved cert at: $certFile"
   }
 }
 
+function Trust-LocalConnectorTLSCert {
+  param([string]$ConnectorBinary)
+  if (-not (Test-Path $ConnectorBinary)) { return }
+  $certFile = $null
+  try {
+    $certFile = (& $ConnectorBinary ensure-local-tls 2>$null | Select-Object -First 1)
+  } catch {
+    return
+  }
+  if ([string]::IsNullOrWhiteSpace($certFile)) { return }
+  $certPath = "$certFile".Trim()
+  if (-not (Test-Path $certPath)) { return }
+  try {
+    Import-Certificate -FilePath $certPath -CertStoreLocation 'Cert:\CurrentUser\Root' | Out-Null
+  } catch {
+  }
+}
+
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+Test-ReleasePayloadIntegrity -ScriptDir $scriptDir
 $sourceBin = Join-Path $scriptDir 'accessd-connector.exe'
 if (-not (Test-Path $sourceBin)) {
   $sourceBin = Join-Path (Split-Path -Parent $scriptDir) 'accessd-connector.exe'
@@ -289,7 +502,13 @@ try {
 } catch {
 }
 
-Copy-Item -Force $sourceBin $targetBin
+$sourceResolved = [System.IO.Path]::GetFullPath($sourceBin)
+$targetResolved = [System.IO.Path]::GetFullPath($targetBin)
+if ($sourceResolved -ieq $targetResolved) {
+  Write-Host "[accessd-connector] Source and target binary paths are identical; skipping copy."
+} else {
+  Copy-Item -Force $sourceBin $targetBin
+}
 
 @"
 `$ErrorActionPreference = 'SilentlyContinue'
@@ -343,6 +562,103 @@ Import-Certificate -FilePath `$certFile -CertStoreLocation 'Cert:\CurrentUser\Ro
 @"
 `$ErrorActionPreference = 'SilentlyContinue'
 $envFile = Join-Path `$env:USERPROFILE '.config\accessd\connector.env'
+function Get-OriginFromProtocolArg {
+  param([string]`$Arg)
+  if ([string]::IsNullOrWhiteSpace(`$Arg)) { return `$null }
+  if (-not `$Arg.StartsWith('accessd-connector://')) { return `$null }
+  try {
+    `$uri = [Uri]`$Arg
+  } catch {
+    return `$null
+  }
+  `$query = `$uri.Query
+  if ([string]::IsNullOrWhiteSpace(`$query)) { return `$null }
+  `$trimmed = `$query.TrimStart('?')
+  foreach (`$part in `$trimmed.Split('&')) {
+    if ([string]::IsNullOrWhiteSpace(`$part)) { continue }
+    `$kv = `$part.Split('=', 2)
+    if (`$kv.Count -ne 2) { continue }
+    if (`$kv[0] -ne 'origin') { continue }
+    try {
+      `$decoded = [Uri]::UnescapeDataString(`$kv[1])
+    } catch {
+      `$decoded = `$kv[1]
+    }
+    if (`$decoded -like 'http://*' -or `$decoded -like 'https://*') {
+      return `$decoded.TrimEnd('/')
+    }
+    return `$null
+  }
+  return `$null
+}
+function Get-QueryParamFromProtocolArg {
+  param([string]`$Arg, [string]`$Name)
+  if ([string]::IsNullOrWhiteSpace(`$Arg) -or [string]::IsNullOrWhiteSpace(`$Name)) { return `$null }
+  if (-not `$Arg.StartsWith('accessd-connector://')) { return `$null }
+  try { `$uri = [Uri]`$Arg } catch { return `$null }
+  `$query = `$uri.Query
+  if ([string]::IsNullOrWhiteSpace(`$query)) { return `$null }
+  `$trimmed = `$query.TrimStart('?')
+  foreach (`$part in `$trimmed.Split('&')) {
+    if ([string]::IsNullOrWhiteSpace(`$part)) { continue }
+    `$kv = `$part.Split('=', 2)
+    if (`$kv.Count -ne 2) { continue }
+    if (`$kv[0] -ne `$Name) { continue }
+    try { return [Uri]::UnescapeDataString(`$kv[1]) } catch { return `$kv[1] }
+  }
+  return `$null
+}
+function Set-EnvValueInFile {
+  param([string]`$Path, [string]`$Key, [string]`$Value)
+  `$lines = @()
+  if (Test-Path `$Path) { `$lines = Get-Content -Path `$Path }
+  `$updated = `$false
+  for (`$i = 0; `$i -lt `$lines.Count; `$i += 1) {
+    `$trimmed = `$lines[`$i].Trim()
+    if (`$trimmed.StartsWith('#')) { continue }
+    if (`$trimmed -match ("^{0}=" -f [Regex]::Escape(`$Key))) {
+      `$lines[`$i] = "`$Key=`$Value"
+      `$updated = `$true
+      break
+    }
+  }
+  if (-not `$updated) { `$lines += "`$Key=`$Value" }
+  Set-Content -Path `$Path -Value `$lines -Encoding UTF8
+}
+`$incomingOrigin = Get-OriginFromProtocolArg -Arg (`$args | Select-Object -First 1)
+`$bootstrapToken = Get-QueryParamFromProtocolArg -Arg (`$args | Select-Object -First 1) -Name 'bootstrap_token'
+if (-not [string]::IsNullOrWhiteSpace(`$incomingOrigin) -and (Test-Path `$envFile)) {
+  `$existingOrigin = ''
+  `$existingVerify = ''
+  Get-Content `$envFile | ForEach-Object {
+    `$line = (`$_.Trim())
+    if ([string]::IsNullOrWhiteSpace(`$line) -or `$line.StartsWith('#')) { return }
+    if (`$line -like 'ACCESSD_CONNECTOR_ALLOWED_ORIGIN=*') { `$existingOrigin = `$line.Split('=', 2)[1].Trim() }
+    if (`$line -like 'ACCESSD_CONNECTOR_BACKEND_VERIFY_URL=*') { `$existingVerify = `$line.Split('=', 2)[1].Trim() }
+  }
+  if ([string]::IsNullOrWhiteSpace(`$existingOrigin) -or `$existingOrigin -like '*accessd.example.internal*') {
+    Set-EnvValueInFile -Path `$envFile -Key 'ACCESSD_CONNECTOR_ALLOWED_ORIGIN' -Value `$incomingOrigin
+  }
+  if ([string]::IsNullOrWhiteSpace(`$existingVerify) -or `$existingVerify -like '*accessd.example.internal*') {
+    Set-EnvValueInFile -Path `$envFile -Key 'ACCESSD_CONNECTOR_BACKEND_VERIFY_URL' -Value ("{0}/api/connector/token/verify" -f `$incomingOrigin)
+  }
+}
+if (-not [string]::IsNullOrWhiteSpace(`$incomingOrigin) -and -not [string]::IsNullOrWhiteSpace(`$bootstrapToken) -and (Test-Path `$envFile)) {
+  `$verifyEndpoint = ("{0}/api/connector/bootstrap/verify" -f `$incomingOrigin.TrimEnd('/'))
+  try {
+    `$body = @{ token = `$bootstrapToken } | ConvertTo-Json -Compress
+    `$resp = Invoke-RestMethod -Method Post -Uri `$verifyEndpoint -ContentType 'application/json' -Body `$body -ErrorAction Stop
+    if (`$resp.valid -eq `$true -and `$resp.claims) {
+      if (`$resp.claims.origin) {
+        Set-EnvValueInFile -Path `$envFile -Key 'ACCESSD_CONNECTOR_ALLOWED_ORIGIN' -Value ([string]`$resp.claims.origin)
+      }
+      if (`$resp.claims.backend_verify_url) {
+        Set-EnvValueInFile -Path `$envFile -Key 'ACCESSD_CONNECTOR_BACKEND_VERIFY_URL' -Value ([string]`$resp.claims.backend_verify_url)
+      }
+    }
+  } catch {
+  }
+}
 if (Test-Path `$envFile) {
   Get-Content `$envFile | ForEach-Object {
     `$line = (`$_.Trim())
@@ -360,8 +676,9 @@ if (Test-Path `$envFile) {
 if ([string]::IsNullOrWhiteSpace(`$env:ACCESSD_CONNECTOR_SECRET) -and [string]::IsNullOrWhiteSpace(`$env:ACCESSD_CONNECTOR_BACKEND_VERIFY_URL)) {
   Write-Host '[accessd-connector] WARNING: token verification not configured (set ACCESSD_CONNECTOR_BACKEND_VERIFY_URL or ACCESSD_CONNECTOR_SECRET).'
 }
-if (Test-Path `$trustScript) { powershell.exe -NoProfile -ExecutionPolicy Bypass -File `$trustScript | Out-Null }
 try {
+  [System.Net.ServicePointManager]::ServerCertificateValidationCallback = { `$true }
+  try { Invoke-WebRequest -UseBasicParsing -Uri ("https://{0}/version" -f `$connectorAddr) -TimeoutSec 1 | Out-Null; exit 0 } catch {}
   Invoke-WebRequest -UseBasicParsing -Uri ("http://{0}/version" -f `$connectorAddr) -TimeoutSec 1 | Out-Null
   exit 0
 } catch {
@@ -438,6 +755,7 @@ if (Test-Path $runtimeEnvFile) {
   }
 }
 Trust-AccessDServerCert -RuntimeEnvFile $runtimeEnvFile
+Trust-LocalConnectorTLSCert -ConnectorBinary $targetBin
 
 if ($wasRunning) {
   Write-Host '[accessd-connector] Restarting connector after reinstall...'

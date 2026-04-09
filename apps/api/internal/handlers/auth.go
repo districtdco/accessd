@@ -19,11 +19,12 @@ type loginRequest struct {
 }
 
 type userResponse struct {
-	ID          string   `json:"id"`
-	Username    string   `json:"username"`
-	Email       string   `json:"email,omitempty"`
-	DisplayName string   `json:"display_name,omitempty"`
-	Roles       []string `json:"roles"`
+	ID           string   `json:"id"`
+	Username     string   `json:"username"`
+	Email        string   `json:"email,omitempty"`
+	DisplayName  string   `json:"display_name,omitempty"`
+	AuthProvider string   `json:"auth_provider"`
+	Roles        []string `json:"roles"`
 }
 
 type loginResponse struct {
@@ -100,11 +101,12 @@ func (h *AuthHandler) Me(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, userResponse{
-		ID:          currentUser.ID,
-		Username:    currentUser.Username,
-		Email:       currentUser.Email,
-		DisplayName: currentUser.DisplayName,
-		Roles:       currentUser.Roles,
+		ID:           currentUser.ID,
+		Username:     currentUser.Username,
+		Email:        currentUser.Email,
+		DisplayName:  currentUser.DisplayName,
+		AuthProvider: currentUser.AuthProvider,
+		Roles:        currentUser.Roles,
 	})
 }
 
@@ -168,10 +170,11 @@ func (h *AuthHandler) AdminPing(w http.ResponseWriter, _ *http.Request) {
 
 func mapUser(user auth.User) userResponse {
 	return userResponse{
-		ID:          user.ID,
-		Username:    user.Username,
-		Email:       user.Email,
-		DisplayName: user.DisplayName,
-		Roles:       user.Roles,
+		ID:           user.ID,
+		Username:     user.Username,
+		Email:        user.Email,
+		DisplayName:  user.DisplayName,
+		AuthProvider: "local",
+		Roles:        user.Roles,
 	}
 }

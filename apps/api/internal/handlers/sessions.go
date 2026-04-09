@@ -47,6 +47,14 @@ type connectorTokenVerifyRequest struct {
 	SessionID      string `json:"session_id,omitempty"`
 }
 
+type connectorBootstrapIssueRequest struct {
+	Origin string `json:"origin,omitempty"`
+}
+
+type connectorBootstrapVerifyRequest struct {
+	Token string `json:"token"`
+}
+
 type sessionEventRequest struct {
 	EventType string         `json:"event_type"`
 	Metadata  map[string]any `json:"metadata,omitempty"`
@@ -680,6 +688,74 @@ func (h *SessionsHandler) VerifyConnectorToken(w http.ResponseWriter, r *http.Re
 			"act": claims.Action,
 			"exp": claims.ExpiresAt,
 			"v":   claims.Version,
+		},
+	})
+}
+
+func (h *SessionsHandler) IssueConnectorBootstrapToken(w http.ResponseWriter, r *http.Request) {
+	currentUser, ok := auth.CurrentUserFromContext(r.Context())
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+
+	var req connectorBootstrapIssueRequest
+	_ = json.NewDecoder(r.Body).Decode(&req)
+	origin := strings.TrimSpace(req.Origin)
+	if origin == "" {
+		origin = strings.TrimSpace(r.Header.Get("Origin"))
+	}
+	if origin == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "origin is required"})
+		return
+	}
+
+	token, claims, err := h.sessionsService.IssueConnectorBootstrapToken(currentUser.ID, origin, 2*time.Minute)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"token": token,
+		"claims": map[string]any{
+			"origin":             claims.Origin,
+			"backend_verify_url": claims.BackendVerify,
+			"exp":                claims.ExpiresAt,
+			"v":                  claims.Version,
+		},
+	})
+}
+
+func (h *SessionsHandler) VerifyConnectorBootstrapToken(w http.ResponseWriter, r *http.Request) {
+	var req connectorBootstrapVerifyRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json body"})
+		return
+	}
+	token := strings.TrimSpace(req.Token)
+	if token == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "token is required"})
+		return
+	}
+
+	claims, err := h.sessionsService.VerifyConnectorBootstrapToken(token)
+	if err != nil {
+		if errors.Is(err, sessions.ErrLaunchExpired) {
+			writeJSON(w, http.StatusForbidden, map[string]any{"valid": false, "error": "bootstrap token expired"})
+			return
+		}
+		writeJSON(w, http.StatusForbidden, map[string]any{"valid": false, "error": "bootstrap token invalid"})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"valid": true,
+		"claims": map[string]any{
+			"origin":             claims.Origin,
+			"backend_verify_url": claims.BackendVerify,
+			"exp":                claims.ExpiresAt,
+			"v":                  claims.Version,
 		},
 	})
 }
