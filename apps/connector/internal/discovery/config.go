@@ -5,12 +5,13 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
 // ConnectorConfig represents the optional config file for app path overrides
-// and terminal preferences. Loaded from ~/.pam-connector/config.yaml or
-// PAM_CONNECTOR_CONFIG_FILE.
+// and terminal preferences. Loaded from ~/.accessd-connector/config.yaml or
+// ACCESSD_CONNECTOR_CONFIG_FILE.
 type ConnectorConfig struct {
 	Apps     map[string]string `yaml:"apps"`
 	Terminal TerminalConfig    `yaml:"terminal"`
@@ -60,20 +61,20 @@ func (c *ConnectorConfig) LoadedFrom() string {
 }
 
 // LoadConfig loads the connector config file. It checks:
-// 1. PAM_CONNECTOR_CONFIG_FILE env var
-// 2. Default OS-specific path (~/.pam-connector/config.yaml)
+// 1. ACCESSD_CONNECTOR_CONFIG_FILE env var
+// 2. Default OS-specific path (~/.accessd-connector/config.yaml)
 //
 // Returns nil (not an error) if no config file exists. Returns an error only
 // if the file exists but cannot be parsed.
 func LoadConfig() (*ConnectorConfig, error) {
 	// 1. Explicit env override
-	if envPath := strings.TrimSpace(os.Getenv("PAM_CONNECTOR_CONFIG_FILE")); envPath != "" {
+	if envPath := strings.TrimSpace(os.Getenv("ACCESSD_CONNECTOR_CONFIG_FILE")); envPath != "" {
 		cfg, err := loadConfigFromFile(envPath)
 		if err != nil {
-			return nil, fmt.Errorf("PAM_CONNECTOR_CONFIG_FILE=%s: %w", envPath, err)
+			return nil, fmt.Errorf("ACCESSD_CONNECTOR_CONFIG_FILE=%s: %w", envPath, err)
 		}
 		if cfg != nil {
-			log.Printf("discovery: loaded config from %s (via PAM_CONNECTOR_CONFIG_FILE)", envPath)
+			log.Printf("discovery: loaded config from %s (via ACCESSD_CONNECTOR_CONFIG_FILE)", envPath)
 		}
 		return cfg, nil
 	}
@@ -95,6 +96,41 @@ func LoadConfig() (*ConnectorConfig, error) {
 		log.Printf("discovery: loaded config from %s", defaultPath)
 	}
 	return cfg, nil
+}
+
+// EnsureDefaultConfigFile creates a starter config file at the default path
+// if it does not exist. It does not overwrite existing files.
+func EnsureDefaultConfigFile() (string, bool, error) {
+	path := DefaultConfigPath()
+	if strings.TrimSpace(path) == "" {
+		return "", false, nil
+	}
+	if _, err := os.Stat(path); err == nil {
+		return path, false, nil
+	} else if !os.IsNotExist(err) {
+		return path, false, err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return path, false, fmt.Errorf("create config directory: %w", err)
+	}
+	content := strings.TrimSpace(`# AccessD Connector config
+# Auto-generated on first connector startup.
+# You can override app paths and terminal preference here.
+#
+# apps:
+#   dbeaver: "/Applications/DBeaver.app"
+#   filezilla: "/Applications/FileZilla.app"
+#   redis_cli: "/usr/local/bin/redis-cli"
+#
+# terminal:
+#   macos: "terminal"   # terminal|iterm
+#   linux: "auto"       # auto|gnome-terminal|konsole|xfce4-terminal|xterm
+#   windows: "cmd"      # cmd|powershell|wt
+`) + "\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		return path, false, fmt.Errorf("write default config: %w", err)
+	}
+	return path, true, nil
 }
 
 // loadConfigFromFile reads and parses a config file. Returns nil,nil if file

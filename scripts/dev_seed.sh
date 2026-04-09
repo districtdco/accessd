@@ -12,21 +12,21 @@ require_cmd curl
 require_cmd jq
 
 API_BASE_URL="${API_BASE_URL:-http://127.0.0.1:8080}"
-ADMIN_USERNAME="${PAM_DEV_ADMIN_USERNAME:-admin}"
-ADMIN_PASSWORD="${PAM_DEV_ADMIN_PASSWORD:-admin123}"
+ADMIN_USERNAME="${ACCESSD_DEV_ADMIN_USERNAME:-${PAM_DEV_ADMIN_USERNAME:-admin}}"
+ADMIN_PASSWORD="${ACCESSD_DEV_ADMIN_PASSWORD:-${PAM_DEV_ADMIN_PASSWORD:-admin123}}"
 
-SSH_TARGET_HOST="${PAM_SEED_SSH_HOST:-127.0.0.1}"
-SSH_TARGET_PORT="${PAM_SEED_SSH_PORT:-22222}"
-PG_TARGET_HOST="${PAM_SEED_PG_HOST:-127.0.0.1}"
-PG_TARGET_PORT="${PAM_SEED_PG_PORT:-15432}"
-MYSQL_TARGET_HOST="${PAM_SEED_MYSQL_HOST:-127.0.0.1}"
-MYSQL_TARGET_PORT="${PAM_SEED_MYSQL_PORT:-13306}"
-MSSQL_TARGET_HOST="${PAM_SEED_MSSQL_HOST:-127.0.0.1}"
-MSSQL_TARGET_PORT="${PAM_SEED_MSSQL_PORT:-11433}"
-REDIS_TARGET_HOST="${PAM_SEED_REDIS_HOST:-127.0.0.1}"
-REDIS_TARGET_PORT="${PAM_SEED_REDIS_PORT:-16379}"
+SSH_TARGET_HOST="${ACCESSD_SEED_SSH_HOST:-${PAM_SEED_SSH_HOST:-127.0.0.1}}"
+SSH_TARGET_PORT="${ACCESSD_SEED_SSH_PORT:-${PAM_SEED_SSH_PORT:-22222}}"
+PG_TARGET_HOST="${ACCESSD_SEED_PG_HOST:-${PAM_SEED_PG_HOST:-127.0.0.1}}"
+PG_TARGET_PORT="${ACCESSD_SEED_PG_PORT:-${PAM_SEED_PG_PORT:-15432}}"
+MYSQL_TARGET_HOST="${ACCESSD_SEED_MYSQL_HOST:-${PAM_SEED_MYSQL_HOST:-127.0.0.1}}"
+MYSQL_TARGET_PORT="${ACCESSD_SEED_MYSQL_PORT:-${PAM_SEED_MYSQL_PORT:-13306}}"
+MSSQL_TARGET_HOST="${ACCESSD_SEED_MSSQL_HOST:-${PAM_SEED_MSSQL_HOST:-127.0.0.1}}"
+MSSQL_TARGET_PORT="${ACCESSD_SEED_MSSQL_PORT:-${PAM_SEED_MSSQL_PORT:-11433}}"
+REDIS_TARGET_HOST="${ACCESSD_SEED_REDIS_HOST:-${PAM_SEED_REDIS_HOST:-127.0.0.1}}"
+REDIS_TARGET_PORT="${ACCESSD_SEED_REDIS_PORT:-${PAM_SEED_REDIS_PORT:-16379}}"
 
-COOKIE_JAR="$(mktemp -t pam-dev-seed-cookie.XXXXXX)"
+COOKIE_JAR="$(mktemp -t accessd-dev-seed-cookie.XXXXXX)"
 trap 'rm -f "$COOKIE_JAR"' EXIT
 
 login_payload="$(jq -n --arg u "$ADMIN_USERNAME" --arg p "$ADMIN_PASSWORD" '{username:$u,password:$p}')"
@@ -45,13 +45,18 @@ echo "[dev_seed] admin user id: $admin_user_id"
 
 upsert_asset() {
   local name="$1"
-  local asset_type="$2"
-  local host="$3"
-  local port="$4"
-  local metadata_json="$5"
+  local legacy_name="${2:-}"
+  local asset_type="$3"
+  local host="$4"
+  local port="$5"
+  local metadata_json="$6"
 
   local existing_id
-  existing_id="$(curl -fsS -b "$COOKIE_JAR" "$API_BASE_URL/admin/assets" | jq -r --arg n "$name" '.items[] | select(.name==$n) | .id' | head -n 1)"
+  if [[ -n "$legacy_name" ]]; then
+    existing_id="$(curl -fsS -b "$COOKIE_JAR" "$API_BASE_URL/admin/assets" | jq -r --arg n "$name" --arg l "$legacy_name" '.items[] | select(.name==$n or .name==$l) | .id' | head -n 1)"
+  else
+    existing_id="$(curl -fsS -b "$COOKIE_JAR" "$API_BASE_URL/admin/assets" | jq -r --arg n "$name" '.items[] | select(.name==$n) | .id' | head -n 1)"
+  fi
 
   local body
   body="$(jq -n --arg name "$name" --arg asset_type "$asset_type" --arg host "$host" --argjson port "$port" --argjson metadata "$metadata_json" '{name:$name,asset_type:$asset_type,host:$host,port:$port,metadata:$metadata}')"
@@ -90,11 +95,11 @@ grant_user_action() {
 }
 
 echo "[dev_seed] upserting local test assets"
-linux_id="$(upsert_asset "pam-local-linux" "linux_vm" "$SSH_TARGET_HOST" "$SSH_TARGET_PORT" '{"env":"local","os":"docker","path":"/home/pam"}')"
-pg_id="$(upsert_asset "pam-local-postgres" "database" "$PG_TARGET_HOST" "$PG_TARGET_PORT" '{"engine":"postgres","database":"app","ssl_mode":"disable","env":"local"}')"
-mysql_id="$(upsert_asset "pam-local-mysql" "database" "$MYSQL_TARGET_HOST" "$MYSQL_TARGET_PORT" '{"engine":"mysql","database":"appdb","ssl_mode":"disable","env":"local"}')"
-mssql_id="$(upsert_asset "pam-local-mssql" "database" "$MSSQL_TARGET_HOST" "$MSSQL_TARGET_PORT" '{"engine":"mssql","database":"appdb","ssl_mode":"disable","env":"local"}')"
-redis_id="$(upsert_asset "pam-local-redis" "redis" "$REDIS_TARGET_HOST" "$REDIS_TARGET_PORT" '{"engine":"redis","database":0,"tls":false,"env":"local"}')"
+linux_id="$(upsert_asset "accessd-local-linux" "pam-local-linux" "linux_vm" "$SSH_TARGET_HOST" "$SSH_TARGET_PORT" '{"env":"local","os":"docker","path":"/home/accessd"}')"
+pg_id="$(upsert_asset "accessd-local-postgres" "pam-local-postgres" "database" "$PG_TARGET_HOST" "$PG_TARGET_PORT" '{"engine":"postgres","database":"app","ssl_mode":"disable","env":"local"}')"
+mysql_id="$(upsert_asset "accessd-local-mysql" "pam-local-mysql" "database" "$MYSQL_TARGET_HOST" "$MYSQL_TARGET_PORT" '{"engine":"mysql","database":"appdb","ssl_mode":"disable","env":"local"}')"
+mssql_id="$(upsert_asset "accessd-local-mssql" "pam-local-mssql" "database" "$MSSQL_TARGET_HOST" "$MSSQL_TARGET_PORT" '{"engine":"mssql","database":"appdb","ssl_mode":"disable","env":"local"}')"
+redis_id="$(upsert_asset "accessd-local-redis" "pam-local-redis" "redis" "$REDIS_TARGET_HOST" "$REDIS_TARGET_PORT" '{"engine":"redis","database":0,"tls":false,"env":"local"}')"
 
 echo "[dev_seed] upserting local test credentials"
 upsert_credential "$linux_id" "password" "pam" "pam_dev_password" '{"seed":"dev_seed.sh"}'
@@ -113,8 +118,8 @@ grant_user_action "$admin_user_id" "$redis_id" "redis"
 
 echo
 echo "[dev_seed] complete. seeded assets:"
-echo "  - pam-local-linux      ($linux_id)"
-echo "  - pam-local-postgres   ($pg_id)"
-echo "  - pam-local-mysql      ($mysql_id)"
-echo "  - pam-local-mssql      ($mssql_id)"
-echo "  - pam-local-redis      ($redis_id)"
+echo "  - accessd-local-linux      ($linux_id)"
+echo "  - accessd-local-postgres   ($pg_id)"
+echo "  - accessd-local-mysql      ($mysql_id)"
+echo "  - accessd-local-mssql      ($mssql_id)"
+echo "  - accessd-local-redis      ($redis_id)"

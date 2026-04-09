@@ -3,8 +3,8 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CONNECTOR_DIR="$ROOT_DIR/apps/connector"
-CONNECTOR_BIN="$ROOT_DIR/bin/pam-connector"
-CONNECTOR_BIN_REL="./bin/pam-connector"
+CONNECTOR_BIN="$ROOT_DIR/bin/accessd-connector"
+CONNECTOR_BIN_REL="./bin/accessd-connector"
 
 if ! command -v go >/dev/null 2>&1; then
   echo "go is required" >&2
@@ -27,17 +27,17 @@ if [[ "$needs_build" -eq 1 ]]; then
   )
 fi
 
-export PAM_CONNECTOR_ADDR="${PAM_CONNECTOR_ADDR:-127.0.0.1:9494}"
-export PAM_CONNECTOR_ALLOWED_ORIGIN="${PAM_CONNECTOR_ALLOWED_ORIGIN:-http://127.0.0.1:3000,http://localhost:3000}"
-export PAM_CONNECTOR_ALLOW_ANY_ORIGIN="${PAM_CONNECTOR_ALLOW_ANY_ORIGIN:-false}"
-export PAM_CONNECTOR_ALLOW_REMOTE="${PAM_CONNECTOR_ALLOW_REMOTE:-false}"
-export PAM_CONNECTOR_SECRET="${PAM_CONNECTOR_SECRET:-pam-dev-connector-secret}"
+export ACCESSD_CONNECTOR_ADDR="${ACCESSD_CONNECTOR_ADDR:-${PAM_CONNECTOR_ADDR:-127.0.0.1:9494}}"
+export ACCESSD_CONNECTOR_ALLOWED_ORIGIN="${ACCESSD_CONNECTOR_ALLOWED_ORIGIN:-${PAM_CONNECTOR_ALLOWED_ORIGIN:-http://127.0.0.1:3000,http://localhost:3000}}"
+export ACCESSD_CONNECTOR_ALLOW_ANY_ORIGIN="${ACCESSD_CONNECTOR_ALLOW_ANY_ORIGIN:-${PAM_CONNECTOR_ALLOW_ANY_ORIGIN:-false}}"
+export ACCESSD_CONNECTOR_ALLOW_REMOTE="${ACCESSD_CONNECTOR_ALLOW_REMOTE:-${PAM_CONNECTOR_ALLOW_REMOTE:-false}}"
+export ACCESSD_CONNECTOR_SECRET="${ACCESSD_CONNECTOR_SECRET:-${PAM_CONNECTOR_SECRET:-accessd-dev-connector-secret}}"
 
 cd "$CONNECTOR_DIR"
 
-echo "[dev_connector] connector address: $PAM_CONNECTOR_ADDR"
-echo "[dev_connector] token verification: $( [[ -n "$PAM_CONNECTOR_SECRET" ]] && echo enabled || echo disabled )"
-echo "[dev_connector] trust boundary: loopback-only unless PAM_CONNECTOR_ALLOW_REMOTE=true"
+echo "[dev_connector] connector address: $ACCESSD_CONNECTOR_ADDR"
+echo "[dev_connector] token verification: $( [[ -n "$ACCESSD_CONNECTOR_SECRET" ]] && echo enabled || echo disabled )"
+echo "[dev_connector] trust boundary: loopback-only unless ACCESSD_CONNECTOR_ALLOW_REMOTE=true"
 echo "[dev_connector] binary=$CONNECTOR_BIN"
 
 exec "$CONNECTOR_BIN"

@@ -32,7 +32,7 @@ func main() {
 		logger.Error("load config", "error", err)
 		os.Exit(1)
 	}
-	logger.Info("starting pam-api",
+	logger.Info("starting accessd",
 		"env", cfg.App.Env,
 		"http_addr", cfg.App.HTTPAddr,
 		"cors_allowed_origins", strings.Join(cfg.App.CORSAllowedOrigins, ","),
@@ -270,22 +270,22 @@ func runMigrate(ctx context.Context, a *app.App, args []string) error {
 
 func printUsage() {
 	fmt.Println("usage:")
-	fmt.Println("  pam-api server")
-	fmt.Println("  pam-api migrate up")
-	fmt.Println("  pam-api migrate status")
-	fmt.Println("  pam-api bootstrap")
+	fmt.Println("  accessd server")
+	fmt.Println("  accessd migrate up")
+	fmt.Println("  accessd migrate status")
+	fmt.Println("  accessd bootstrap")
 	fmt.Println()
 	fmt.Println("default command is: server")
 }
 
 func setVersionEnvDefaults() {
-	if strings.TrimSpace(os.Getenv("PAM_VERSION")) == "" {
-		_ = os.Setenv("PAM_VERSION", version)
+	if strings.TrimSpace(os.Getenv("ACCESSD_VERSION")) == "" {
+		_ = os.Setenv("ACCESSD_VERSION", version)
 	}
-	if strings.TrimSpace(os.Getenv("PAM_COMMIT")) == "" {
-		_ = os.Setenv("PAM_COMMIT", commit)
+	if strings.TrimSpace(os.Getenv("ACCESSD_COMMIT")) == "" {
+		_ = os.Setenv("ACCESSD_COMMIT", commit)
 	}
-	if strings.TrimSpace(os.Getenv("PAM_BUILT_AT")) == "" {
-		_ = os.Setenv("PAM_BUILT_AT", builtAt)
+	if strings.TrimSpace(os.Getenv("ACCESSD_BUILT_AT")) == "" {
+		_ = os.Setenv("ACCESSD_BUILT_AT", builtAt)
 	}
 }

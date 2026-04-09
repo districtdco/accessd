@@ -3,17 +3,19 @@ package launch
 import (
 	"bytes"
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"net"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 
 	"golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/knownhosts"
 	"golang.org/x/term"
 )
 
@@ -26,6 +28,8 @@ type ShellBridgeArgs struct {
 	AssetName        string
 	TargetHost       string
 	TokenFile        string
+	HostKeyMode      string
+	KnownHostsFile   string
 }
 
 func RunShellBridgeCommand(ctx context.Context, argv []string) error {
@@ -36,10 +40,12 @@ func RunShellBridgeCommand(ctx context.Context, argv []string) error {
 	fs.IntVar(&args.Port, "port", 0, "ssh port")
 	fs.StringVar(&args.Username, "username", "", "ssh username")
 	fs.StringVar(&args.UpstreamUsername, "upstream-username", "", "upstream target username")
-	fs.StringVar(&args.SessionID, "session-id", "", "pam session id")
-	fs.StringVar(&args.AssetName, "asset-name", "", "pam asset name")
+	fs.StringVar(&args.SessionID, "session-id", "", "accessd session id")
+	fs.StringVar(&args.AssetName, "asset-name", "", "accessd asset name")
 	fs.StringVar(&args.TargetHost, "target-host", "", "target asset host/ip")
 	fs.StringVar(&args.TokenFile, "token-file", "", "path to launch token file")
+	fs.StringVar(&args.HostKeyMode, "hostkey-mode", defaultBridgeHostKeyMode(), "proxy host key policy: strict|accept-new|accept-replace")
+	fs.StringVar(&args.KnownHostsFile, "known-hosts-file", defaultBridgeKnownHostsFile(), "path to proxy known_hosts file")
 	if err := fs.Parse(argv); err != nil {
 		return err
 	}
@@ -50,17 +56,20 @@ func runShellBridge(ctx context.Context, args ShellBridgeArgs) error {
 	if strings.TrimSpace(args.Host) == "" || args.Port <= 0 || strings.TrimSpace(args.Username) == "" || strings.TrimSpace(args.TokenFile) == "" {
 		return fmt.Errorf("missing required bridge-shell arguments")
 	}
-	fmt.Fprintf(os.Stderr, "pam: connecting to %s:%d as %s (session %s, asset %s)\n",
+	fmt.Fprintf(os.Stderr, "accessd: connecting to %s:%d as %s (session %s, asset %s)\n",
 		args.Host, args.Port, args.Username, args.SessionID, args.AssetName)
 
 	// Resolve host key BEFORE entering raw mode so errors are readable.
 	endpoint := net.JoinHostPort(args.Host, strconv.Itoa(args.Port))
-	fmt.Fprintf(os.Stderr, "pam: resolving ssh proxy host key at %s\n", endpoint)
+	fmt.Fprintf(os.Stderr, "accessd: resolving ssh proxy host key at %s\n", endpoint)
 	expectedHostKey, err := fetchSSHHostKey(ctx, args.Host, args.Port)
 	if err != nil {
-		return fmt.Errorf("resolve pam ssh proxy host key: %w", err)
+		return fmt.Errorf("resolve accessd ssh proxy host key: %w", err)
 	}
-	fmt.Fprintf(os.Stderr, "pam: host key resolved, preparing terminal\n")
+	if err := applyBridgeHostKeyPolicy(args.Host, args.Port, expectedHostKey, args.HostKeyMode, args.KnownHostsFile); err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "accessd: host key resolved, preparing terminal\n")
 
 	fd := int(os.Stdin.Fd())
 	if !term.IsTerminal(fd) {
@@ -76,7 +85,7 @@ func runShellBridge(ctx context.Context, args ShellBridgeArgs) error {
 
 	displayName := shellDisplayIdentity(args)
 	if displayName != "" {
-		// Set terminal title to real upstream identity while PAM remains transport broker.
+		// Set terminal title to real upstream identity while AccessD remains transport broker.
 		fmt.Fprintf(os.Stdout, "\033]0;%s\007", displayName)
 	}
 
@@ -92,7 +101,7 @@ func runShellBridge(ctx context.Context, args ShellBridgeArgs) error {
 		return fmt.Errorf("launch token file was empty")
 	}
 
-	fmt.Fprintf(os.Stderr, "pam: launch token loaded (type=launch, length=%d)\n", len(token))
+	fmt.Fprintf(os.Stderr, "accessd: launch token loaded (type=launch, length=%d)\n", len(token))
 
 	sshCfg := &ssh.ClientConfig{
 		User: args.Username,
@@ -118,13 +127,13 @@ func runShellBridge(ctx context.Context, args ShellBridgeArgs) error {
 			return nil
 		},
 	}
-	fmt.Fprintf(os.Stderr, "pam: dialing ssh proxy %s (auth=keyboard-interactive, user=%s)\n", endpoint, args.Username)
+	fmt.Fprintf(os.Stderr, "accessd: dialing ssh proxy %s (auth=keyboard-interactive, user=%s)\n", endpoint, args.Username)
 	client, err := dialSSHWithContext(ctx, endpoint, sshCfg)
 	if err != nil {
 		return fmt.Errorf("ssh auth failed at %s (user=%s, token_type=launch, token_len=%d): %w", endpoint, args.Username, len(token), err)
 	}
 	defer client.Close()
-	fmt.Fprintf(os.Stderr, "pam: authenticated, opening session channel\n")
+	fmt.Fprintf(os.Stderr, "accessd: authenticated, opening session channel\n")
 
 	session, err := client.NewSession()
 	if err != nil {
@@ -154,20 +163,110 @@ func runShellBridge(ctx context.Context, args ShellBridgeArgs) error {
 		fmt.Fprintf(os.Stdout, "\r\n%s\r\n\r\n", banner)
 	}
 
-	winch := make(chan os.Signal, 1)
-	signal.Notify(winch, syscall.SIGWINCH)
-	defer signal.Stop(winch)
-	go func() {
-		for range winch {
-			w, h, e := term.GetSize(fd)
-			if e == nil && w > 0 && h > 0 {
-				_ = session.WindowChange(h, w)
+	if sig := shellWindowChangeSignal(); sig != nil {
+		winch := make(chan os.Signal, 1)
+		signal.Notify(winch, sig)
+		defer signal.Stop(winch)
+		go func() {
+			for range winch {
+				w, h, e := term.GetSize(fd)
+				if e == nil && w > 0 && h > 0 {
+					_ = session.WindowChange(h, w)
+				}
 			}
-		}
-	}()
-	winch <- syscall.SIGWINCH
+		}()
+		winch <- sig
+	}
 
 	return session.Wait()
+}
+
+func applyBridgeHostKeyPolicy(host string, port int, key ssh.PublicKey, modeRaw, knownHostsFileRaw string) error {
+	mode := normalizeBridgeHostKeyMode(modeRaw)
+	path := strings.TrimSpace(knownHostsFileRaw)
+	if path == "" {
+		path = defaultBridgeKnownHostsFile()
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return fmt.Errorf("create known_hosts directory: %w", err)
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDONLY, 0o600)
+	if err != nil {
+		return fmt.Errorf("ensure known_hosts file: %w", err)
+	}
+	_ = f.Close()
+
+	callback, err := knownhosts.New(path)
+	if err != nil {
+		return fmt.Errorf("build known_hosts callback: %w", err)
+	}
+	pattern := knownHostsPattern(host, port)
+	remoteAddr, _ := net.ResolveTCPAddr("tcp", net.JoinHostPort(strings.TrimSpace(host), strconv.Itoa(port)))
+	if verifyErr := callback(pattern, remoteAddr, key); verifyErr != nil {
+		var keyErr *knownhosts.KeyError
+		if !errors.As(verifyErr, &keyErr) {
+			return fmt.Errorf("verify proxy host key: %w", verifyErr)
+		}
+		unknown := len(keyErr.Want) == 0
+		switch mode {
+		case "strict":
+			if unknown {
+				return fmt.Errorf("proxy host key is not trusted yet; rerun with --hostkey-mode accept-new or accept-replace")
+			}
+			return fmt.Errorf("proxy host key changed; rerun with --hostkey-mode accept-replace")
+		case "accept-new":
+			if !unknown {
+				return fmt.Errorf("proxy host key changed; rerun with --hostkey-mode accept-replace")
+			}
+		case "accept-replace":
+		default:
+			return fmt.Errorf("unsupported --hostkey-mode %q", mode)
+		}
+		line := knownhosts.Line([]string{pattern}, key)
+		if err := upsertKnownHostLine(path, []string{pattern}, line); err != nil {
+			return fmt.Errorf("update proxy known_hosts: %w", err)
+		}
+		event := "accepted"
+		if !unknown {
+			event = "replaced"
+		}
+		fmt.Fprintf(os.Stderr, "accessd: %s proxy host key in %s (fingerprint %s)\n", event, path, ssh.FingerprintSHA256(key))
+	}
+	return nil
+}
+
+func normalizeBridgeHostKeyMode(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "", "accept-replace", "replace", "auto":
+		return "accept-replace"
+	case "accept-new", "strict":
+		return strings.ToLower(strings.TrimSpace(raw))
+	default:
+		return strings.ToLower(strings.TrimSpace(raw))
+	}
+}
+
+func defaultBridgeHostKeyMode() string {
+	return normalizeBridgeHostKeyMode(os.Getenv("ACCESSD_CONNECTOR_PROXY_HOSTKEY_MODE"))
+}
+
+func defaultBridgeKnownHostsFile() string {
+	if configured := strings.TrimSpace(os.Getenv("ACCESSD_CONNECTOR_PROXY_KNOWN_HOSTS_PATH")); configured != "" {
+		return configured
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || strings.TrimSpace(home) == "" {
+		return ".accessd-connector/proxy_known_hosts"
+	}
+	return filepath.Join(home, ".accessd-connector", "proxy_known_hosts")
+}
+
+func knownHostsPattern(host string, port int) string {
+	clean := strings.TrimSpace(host)
+	if port == 22 {
+		return clean
+	}
+	return "[" + clean + "]:" + strconv.Itoa(port)
 }
 
 func shellDisplayIdentity(args ShellBridgeArgs) string {
@@ -204,9 +303,9 @@ func shellSessionBanner(args ShellBridgeArgs) string {
 		return ""
 	}
 	if host != "" && !strings.EqualFold(host, asset) {
-		return fmt.Sprintf("Connected to %s (%s) as %s via PAM", asset, host, user)
+		return fmt.Sprintf("Connected to %s (%s) as %s via AccessD", asset, host, user)
 	}
-	return fmt.Sprintf("Connected to %s as %s via PAM", asset, user)
+	return fmt.Sprintf("Connected to %s as %s via AccessD", asset, user)
 }
 
 func dialSSHWithContext(ctx context.Context, endpoint string, cfg *ssh.ClientConfig) (*ssh.Client, error) {

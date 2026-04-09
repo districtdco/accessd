@@ -315,7 +315,7 @@ func (s *Service) runProxyFlow(reg SessionRegistration, client net.Conn) error {
 		if !clientAuthenticated {
 			if cmd != "AUTH" {
 				s.logger.Warn("redis client attempted command before auth", "session_id", reg.SessionID, "command", cmd)
-				if _, wErr := client.Write([]byte("-NOAUTH Authentication required by PAM proxy\r\n")); wErr != nil {
+				if _, wErr := client.Write([]byte("-NOAUTH Authentication required by AccessD proxy\r\n")); wErr != nil {
 					return wErr
 				}
 				continue
@@ -330,7 +330,7 @@ func (s *Service) runProxyFlow(reg SessionRegistration, client net.Conn) error {
 			}
 			if !s.validateClientToken(reg, token) {
 				s.logger.Warn("redis proxy auth failed", "session_id", reg.SessionID)
-				if _, wErr := client.Write([]byte("-ERR invalid PAM launch token\r\n")); wErr != nil {
+				if _, wErr := client.Write([]byte("-ERR invalid AccessD launch token\r\n")); wErr != nil {
 					return wErr
 				}
 				continue

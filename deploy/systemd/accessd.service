@@ -1,0 +1,75 @@
+[Unit]
+Description=AccessD — Infrastructure Access Gateway
+Documentation=https://github.com/districtd/accessd
+After=network-online.target
+Wants=network-online.target
+# If PostgreSQL runs on the same host, add:
+# After=postgresql.service
+# Requires=postgresql.service
+
+[Service]
+Type=simple
+User=accessd
+Group=accessd
+
+# Binary deployment layout: /opt/accessd/bin/accessd, migrations at /opt/accessd/migrations/
+WorkingDirectory=/opt/accessd
+EnvironmentFile=/etc/accessd/accessd.env
+
+# Run migrations as a pre-start gate. Startup is blocked and will fail fast if
+# migrations cannot be applied. The 'server' command also runs them internally,
+# but having this separate step surfaces migration failures clearly in systemd.
+ExecStartPre=/opt/accessd/bin/accessd migrate up
+
+ExecStart=/opt/accessd/bin/accessd server
+
+Restart=on-failure
+RestartSec=5s
+TimeoutStartSec=90s
+TimeoutStopSec=30s
+
+# ── Filesystem hardening ──────────────────────────────────────────────────────
+# ProtectSystem=strict makes the entire fs read-only; ReadWritePaths carves out
+# the specific directories the service legitimately needs to write.
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+# /var/lib/accessd holds the SSH proxy host key and upstream known-hosts file.
+ReadWritePaths=/var/lib/accessd
+
+# ── Privilege hardening ───────────────────────────────────────────────────────
+NoNewPrivileges=true
+# Drop all Linux capabilities. AccessD binds to ports >1024 so no CAP_NET_BIND_SERVICE
+# is needed. Leave empty unless a specific capability is required.
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+# ── Syscall filtering ─────────────────────────────────────────────────────────
+# @system-service allows the set of syscalls appropriate for a long-running
+# server process. EPERM is returned for any blocked call.
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+SystemCallArchitectures=native
+
+# ── Process isolation ─────────────────────────────────────────────────────────
+LockPersonality=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+RemoveIPC=true
+
+# ── Kernel protection ─────────────────────────────────────────────────────────
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectClock=true
+ProtectControlGroups=true
+ProtectProc=invisible
+
+# ── File creation hardening ───────────────────────────────────────────────────
+# Files created by the service (SSH host key, known-hosts) default to owner-only.
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

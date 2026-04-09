@@ -29,7 +29,7 @@ Default script values (override with env vars if needed):
 - UI bind: `http://127.0.0.1:3000`
 - Connector bind: `127.0.0.1:9494`
 - Dev admin login: `admin` / `admin123`
-- Shared connector secret (API + connector): `pam-dev-connector-secret`
+- Shared connector secret (API + connector): `accessd-dev-connector-secret`
 
 Target test services started by `dev_up.sh --with-targets`:
 
@@ -91,10 +91,10 @@ make build-connector-bin
 
 Use seeded assets from `dev_seed.sh`.
 
-### SSH (`pam-local-linux` + `shell`)
+### SSH (`accessd-local-linux` + `shell`)
 
 - Launch from Access page using `Shell`.
-- Expect connector to open terminal and run `ssh` to PAM proxy.
+- Expect connector to open terminal and run `ssh` to AccessD proxy.
 - At prompt, paste launch token shown in terminal banner.
 - If terminal/PuTTY is missing or misconfigured, launch should fail immediately with explicit connector error details.
 - Verify:
@@ -103,10 +103,10 @@ Use seeded assets from `dev_seed.sh`.
   - replay endpoint/UI section loads (`/sessions/:id`, shell replay panel)
   - audit has launch + login/session events
 
-### SFTP (`pam-local-linux` + `sftp`)
+### SFTP (`accessd-local-linux` + `sftp`)
 
 - Launch from Access page using `SFTP`.
-- Expect connector to open FileZilla/WinSCP against PAM SFTP relay.
+- Expect connector to open FileZilla/WinSCP against AccessD SFTP relay.
 - If FileZilla/WinSCP path is invalid, launch should fail immediately (not remain pending).
 - Perform upload/download/rename/delete on a test file.
 - Verify:
@@ -114,10 +114,10 @@ Use seeded assets from `dev_seed.sh`.
   - session detail file-operation timeline populated
   - audit shows `file_operation` events with path metadata
 
-### PostgreSQL (`pam-local-postgres` + `dbeaver`)
+### PostgreSQL (`accessd-local-postgres` + `dbeaver`)
 
 - Launch from Access page using `DBeaver`.
-- Expect connector to open DBeaver with PAM session-scoped endpoint.
+- Expect connector to open DBeaver with AccessD session-scoped endpoint.
 - If DBeaver is not installed or configured path is invalid, launch should fail immediately.
 - Run a simple query (example: `select 1;`).
 - Verify:
@@ -125,13 +125,13 @@ Use seeded assets from `dev_seed.sh`.
   - session detail DB timeline populated (`db_query` events where available)
   - admin audit includes launch/session lifecycle events
 
-### MySQL (`pam-local-mysql` + `dbeaver`)
+### MySQL (`accessd-local-mysql` + `dbeaver`)
 
 - Launch `DBeaver` from Access page.
 - Run a simple query (example: `select 1;`).
 - Verify same checks as PostgreSQL flow.
 
-### MSSQL (`pam-local-mssql` + `dbeaver`)
+### MSSQL (`accessd-local-mssql` + `dbeaver`)
 
 - Launch `DBeaver` from Access page.
 - Attempt query against target.
@@ -139,10 +139,10 @@ Use seeded assets from `dev_seed.sh`.
   - session creation and launch lifecycle always work
   - full connectivity depends on TLS mode requirements (see known limitations)
 
-### Redis (`pam-local-redis` + `redis`)
+### Redis (`accessd-local-redis` + `redis`)
 
 - Launch `Redis CLI` from Access page.
-- Expect connector to open terminal and run `redis-cli` via PAM proxy.
+- Expect connector to open terminal and run `redis-cli` via AccessD proxy.
 - If `redis-cli` is missing, launch should fail immediately.
 - Run sample commands (`PING`, `SET`, `GET`).
 - Verify:
@@ -156,7 +156,7 @@ For each protocol flow, verify all of the following:
 
 - session record exists (`/sessions`, `/sessions/:id`)
 - session lifecycle transitions are visible (requested/succeeded/ended or failed)
-- if connector reports launch success but no proxy/client connection occurs, session should transition from `pending` to `failed` after launch materialization timeout (`PAM_LAUNCH_MATERIALIZE_TIMEOUT`, default `45s`)
+- if connector reports launch success but no proxy/client connection occurs, session should transition from `pending` to `failed` after launch materialization timeout (`ACCESSD_LAUNCH_MATERIALIZE_TIMEOUT`, default `45s`)
 - timeline/transcript section is populated where supported
 - corresponding audit events appear in `/admin/audit/events`
 - no secrets appear in UI payloads, logs, or API responses
@@ -179,9 +179,9 @@ Full guided check:
   - Local impact: tests can proceed only when TLS tunnel mode is not required.
   - Staging/production impact: blocker for environments requiring strict MSSQL TLS tunnel behavior.
 
-- Redis client-leg TLS to PAM Redis proxy is not implemented.
+- Redis client-leg TLS to AccessD Redis proxy is not implemented.
   - Local impact: works over loopback/plaintext in current local trust model.
-  - Production impact: blocker where TLS is required from client to PAM proxy endpoint.
+  - Production impact: blocker where TLS is required from client to AccessD proxy endpoint.
 
 - API listener TLS is intentionally edge-terminated (reverse proxy / load balancer), not app-native TLS.
   - Local impact: none (HTTP local dev is expected).

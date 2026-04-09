@@ -13,6 +13,10 @@ vendor/
 apps/api/bin/
 apps/connector/bin/
 bin/
+dist/
+deploy/artifacts/
+apps/api/server
+apps/ui/tsconfig.tsbuildinfo
 
 # Node / UI
 apps/ui/node_modules/
@@ -49,8 +53,11 @@ recordings/
 # Temporary files
 tmp/
 *.tmp
-bin/pam-api
-bin/pam-connector
+apps/api/.gotmp/
+apps/connector/.gotmp/
+apps/connector/.gocache/
+apps/api/.accessd_ssh_proxy_host_key
+apps/api/.accessd_upstream_known_hosts
 apps/api/.pam_ssh_proxy_host_key
 apps/api/.pam_upstream_known_hosts
 apps/connector/connector

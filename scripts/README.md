@@ -9,12 +9,12 @@ Dev tooling and helper scripts for local bring-up, seeding, and test flow.
 
 - `dev_up.sh`
   - Starts local docker dependencies.
-  - Default services: PAM postgres + LDAP.
+  - Default services: AccessD postgres + LDAP.
   - Optional target stack: `--with-targets` (SSH/SFTP, PostgreSQL, MySQL, Redis) and `--with-mssql`.
 
 - `dev_api.sh`
   - Runs API with practical local defaults.
-  - Builds and reuses `./bin/pam-api` (rebuilds when source is newer).
+  - Builds and reuses `./bin/accessd` (rebuilds when source is newer).
   - Modes:
     - default: `server`
     - `--migrate-only`
@@ -25,16 +25,34 @@ Dev tooling and helper scripts for local bring-up, seeding, and test flow.
 
 - `dev_connector.sh`
   - Runs connector with loopback-default trust settings and shared dev connector secret.
-  - Builds and reuses `./bin/pam-connector` (rebuilds when source is newer).
+  - Builds and reuses `./bin/accessd-connector` (rebuilds when source is newer).
+
+- `build_deploy_bundle.sh`
+  - Builds a deployment-ready artifact bundle under `deploy/artifacts/accessd-<version>/`.
+  - Includes:
+    - API binary (`bin/accessd`, default target `linux/amd64`)
+    - UI static build (`ui/`)
+    - connector release archives + checksums (`connectors/v<version>/`)
+    - deployment templates (`deploy/env`, `deploy/systemd`, `deploy/nginx`)
+  - Also creates `deploy/artifacts/accessd-<version>.tar.gz` for easy transfer to a VM.
+  - Bundle includes `deploy/install_on_vm.sh` for path-mapped install into `/opt`, `/etc`, `/var/www`, and nginx connector download directory.
+
+- `build_connector_release.sh`
+  - Builds cross-platform connector archives under `dist/connector/v<version>/`.
+  - Each archive now includes platform installer:
+    - macOS/Linux: `install.sh`
+    - Windows: `install.ps1`
+  - Installers register `accessd-connector://` protocol handler for UI-triggered auto-start.
+  - Installers also auto-detect local client dependencies and can prompt for manual paths when detection fails.
 
 - `dev_seed.sh`
   - Idempotently upserts local test assets/credentials/grants through admin APIs.
   - Seeds:
-    - `pam-local-linux` (shell + sftp)
-    - `pam-local-postgres` (dbeaver)
-    - `pam-local-mysql` (dbeaver)
-    - `pam-local-mssql` (dbeaver)
-    - `pam-local-redis` (redis)
+    - `accessd-local-linux` (shell + sftp)
+    - `accessd-local-postgres` (dbeaver)
+    - `accessd-local-mysql` (dbeaver)
+    - `accessd-local-mssql` (dbeaver)
+    - `accessd-local-redis` (redis)
 
 - `test_api_smoke_extended.sh`
   - API-level launch matrix smoke for all seeded flows.
@@ -64,6 +82,7 @@ Dev tooling and helper scripts for local bring-up, seeding, and test flow.
 ./scripts/dev_seed.sh
 ./scripts/dev_connector.sh
 ./scripts/dev_ui.sh
+./scripts/build_deploy_bundle.sh 0.2.0
 
 # In another shell:
 ./scripts/test_matrix.sh
@@ -72,10 +91,10 @@ Dev tooling and helper scripts for local bring-up, seeding, and test flow.
 Optional environment overrides:
 
 - `API_BASE_URL` (default: `http://127.0.0.1:8080`)
-- `PAM_SMOKE_USERNAME` (default: `admin`)
-- `PAM_SMOKE_PASSWORD` (default: `admin123`)
-- `PAM_SMOKE_ACTION` (default: `shell`)
-- `PAM_SMOKE_ASSET_ID` (optional explicit asset id)
+- `ACCESSD_SMOKE_USERNAME` (default: `admin`)
+- `ACCESSD_SMOKE_PASSWORD` (default: `admin123`)
+- `ACCESSD_SMOKE_ACTION` (default: `shell`)
+- `ACCESSD_SMOKE_ASSET_ID` (optional explicit asset id)
 
 ## macOS Local Runtime Note
 
@@ -83,8 +102,8 @@ On some macOS hosts, direct runtime execution of transient Go temp binaries (for
 
 Local dev scripts use repo-local binaries under `./bin` as the supported workaround:
 
-- `./bin/pam-api`
-- `./bin/pam-connector`
+- `./bin/accessd`
+- `./bin/accessd-connector`
 
 You can also build them explicitly:
 

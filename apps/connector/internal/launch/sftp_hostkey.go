@@ -24,7 +24,7 @@ func fetchSSHHostKey(ctx context.Context, host string, port int) (ssh.PublicKey,
 		once     sync.Once
 	)
 	cfg := &ssh.ClientConfig{
-		User:            "pam",
+		User:            "accessd",
 		Auth:            []ssh.AuthMethod{ssh.Password("invalid")},
 		HostKeyCallback: func(_ string, _ net.Addr, key ssh.PublicKey) error { once.Do(func() { captured = key }); return nil },
 	}
@@ -54,6 +54,7 @@ func ensureFileZillaKnownHost(host string, port int, key ssh.PublicKey) error {
 	if port != 22 {
 		pattern = "[" + cleanHost + "]:" + strconv.Itoa(port)
 	}
+	aliases := fileZillaKnownHostAliases(cleanHost, port)
 	line := knownhosts.Line([]string{pattern}, key)
 
 	paths := []string{
@@ -64,7 +65,7 @@ func ensureFileZillaKnownHost(host string, port int, key ssh.PublicKey) error {
 	}
 	var firstErr error
 	for _, p := range paths {
-		if err := upsertKnownHostLine(p, pattern, line); err != nil {
+		if err := upsertKnownHostLine(p, aliases, line); err != nil {
 			if firstErr == nil {
 				firstErr = err
 			}
@@ -78,7 +79,7 @@ func ensureFileZillaKnownHost(host string, port int, key ssh.PublicKey) error {
 	return fmt.Errorf("failed to write FileZilla known_hosts")
 }
 
-func upsertKnownHostLine(path, pattern, line string) error {
+func upsertKnownHostLine(path string, patterns []string, line string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
@@ -91,16 +92,32 @@ func upsertKnownHostLine(path, pattern, line string) error {
 	lines := strings.Split(existing, "\n")
 	out := make([]string, 0, len(lines)+1)
 	replaced := false
+	patternSet := map[string]struct{}{}
+	for _, p := range patterns {
+		trimmed := strings.TrimSpace(p)
+		if trimmed != "" {
+			patternSet[trimmed] = struct{}{}
+		}
+	}
+	if len(patternSet) == 0 {
+		return fmt.Errorf("known_hosts patterns cannot be empty")
+	}
 	for _, current := range lines {
 		trimmed := strings.TrimSpace(current)
 		if trimmed == "" {
 			continue
 		}
-		if strings.HasPrefix(trimmed, pattern+" ") {
-			if !replaced {
-				out = append(out, line)
-				replaced = true
+		for p := range patternSet {
+			if strings.HasPrefix(trimmed, p+" ") {
+				if !replaced {
+					out = append(out, line)
+					replaced = true
+				}
+				trimmed = ""
+				break
 			}
+		}
+		if trimmed == "" {
 			continue
 		}
 		out = append(out, trimmed)
@@ -110,6 +127,19 @@ func upsertKnownHostLine(path, pattern, line string) error {
 	}
 	content := strings.Join(out, "\n") + "\n"
 	return os.WriteFile(path, []byte(content), 0o600)
+}
+
+func fileZillaKnownHostAliases(host string, port int) []string {
+	clean := strings.TrimSpace(host)
+	if clean == "" {
+		return nil
+	}
+	aliases := []string{clean}
+	if port > 0 {
+		aliases = append(aliases, net.JoinHostPort(clean, strconv.Itoa(port)))
+		aliases = append(aliases, "["+clean+"]:"+strconv.Itoa(port))
+	}
+	return aliases
 }
 
 func winSCPHostKeyParam(key ssh.PublicKey) string {

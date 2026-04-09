@@ -85,7 +85,7 @@ type Config struct {
 	MaxSessionAge  time.Duration
 }
 
-// SessionRegistration binds a MySQL proxy listener to a PAM session.
+// SessionRegistration binds a MySQL proxy listener to an AccessD session.
 type SessionRegistration struct {
 	SessionID string
 	UserID    string
@@ -374,7 +374,7 @@ func (s *Service) runProxyFlow(reg SessionRegistration, client net.Conn) error {
 // ---------------------------------------------------------------------------
 
 // connectAndAuthUpstream dials the real MySQL server and completes the full
-// handshake/auth exchange using PAM-managed credentials.
+// handshake/auth exchange using AccessD-managed credentials.
 func (s *Service) connectAndAuthUpstream(reg SessionRegistration) (net.Conn, error) {
 	raw, err := net.DialTimeout("tcp",
 		net.JoinHostPort(reg.UpstreamHost, strconv.Itoa(reg.UpstreamPort)),
@@ -1163,7 +1163,7 @@ func buildServerHandshake(salt []byte, supportSSL bool) []byte {
 	var buf bytes.Buffer
 
 	buf.WriteByte(10) // protocol version
-	buf.WriteString("5.7.99-pam-mysql-proxy")
+	buf.WriteString("5.7.99-accessd-mysql-proxy")
 	buf.WriteByte(0) // null-terminated
 
 	// Connection ID (4 bytes, arbitrary).
@@ -1481,7 +1481,7 @@ func buildProxyTLSConfig(publicHost string) (*tls.Config, error) {
 	template := &x509.Certificate{
 		SerialNumber: big.NewInt(now.UnixNano()),
 		Subject: pkix.Name{
-			CommonName: "pam-mysql-proxy",
+			CommonName: "accessd-mysql-proxy",
 		},
 		NotBefore:             now.Add(-time.Hour),
 		NotAfter:              now.Add(365 * 24 * time.Hour),

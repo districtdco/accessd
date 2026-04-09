@@ -3,6 +3,8 @@ package integration
 import (
 	"net/http"
 	"testing"
+
+	"golang.org/x/crypto/bcrypt"
 )
 
 func TestAuthLogin_InvalidCredentials(t *testing.T) {
@@ -126,5 +128,80 @@ func TestAuthLogin_MultipleUsersIndependent(t *testing.T) {
 	opPayload := h.responseJSON(t, opMe)
 	if asString(opPayload["username"]) != h.seed.operatorName {
 		t.Fatalf("expected operator username, got %s", asString(opPayload["username"]))
+	}
+}
+
+func TestAuthChangePassword_Success(t *testing.T) {
+	h := newTestHarness(t)
+	cookie := h.login(h.seed.operatorName, h.seed.operatorPass)
+
+	resp := h.requestJSON(http.MethodPut, "/auth/password", map[string]any{
+		"current_password": h.seed.operatorPass,
+		"new_password":     "operator1234",
+	}, cookie)
+	if resp.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d: %s", resp.Code, resp.Body.String())
+	}
+
+	const hashQuery = `SELECT COALESCE(password_hash, '') FROM users WHERE id = $1 LIMIT 1;`
+	var storedHash string
+	if err := h.pool.QueryRow(h.ctx, hashQuery, h.seed.operatorID).Scan(&storedHash); err != nil {
+		t.Fatalf("load stored hash: %v", err)
+	}
+	if storedHash == "" {
+		t.Fatal("expected non-empty password hash")
+	}
+	if err := bcrypt.CompareHashAndPassword([]byte(storedHash), []byte("operator1234")); err != nil {
+		t.Fatalf("new password hash mismatch: %v", err)
+	}
+	if err := bcrypt.CompareHashAndPassword([]byte(storedHash), []byte(h.seed.operatorPass)); err == nil {
+		t.Fatal("old password should not match updated hash")
+	}
+
+	oldLogin := h.requestJSON(http.MethodPost, "/auth/login", map[string]any{
+		"username": h.seed.operatorName,
+		"password": h.seed.operatorPass,
+	}, nil)
+	if oldLogin.Code != http.StatusUnauthorized {
+		t.Fatalf("expected old password login to fail with 401, got %d: %s", oldLogin.Code, oldLogin.Body.String())
+	}
+
+	newLogin := h.requestJSON(http.MethodPost, "/auth/login", map[string]any{
+		"username": h.seed.operatorName,
+		"password": "operator1234",
+	}, nil)
+	if newLogin.Code != http.StatusOK {
+		t.Fatalf("expected new password login to succeed with 200, got %d: %s", newLogin.Code, newLogin.Body.String())
+	}
+}
+
+func TestAuthChangePassword_InvalidCurrentPassword(t *testing.T) {
+	h := newTestHarness(t)
+	cookie := h.login(h.seed.operatorName, h.seed.operatorPass)
+
+	resp := h.requestJSON(http.MethodPut, "/auth/password", map[string]any{
+		"current_password": "wrong-current",
+		"new_password":     "operator1234",
+	}, cookie)
+	if resp.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d: %s", resp.Code, resp.Body.String())
+	}
+}
+
+func TestAuthChangePassword_RejectsLDAPManagedUser(t *testing.T) {
+	h := newTestHarness(t)
+	cookie := h.login(h.seed.operatorName, h.seed.operatorPass)
+
+	const setLDAP = `UPDATE users SET auth_provider = 'ldap', password_hash = NULL WHERE id = $1;`
+	if _, err := h.pool.Exec(h.ctx, setLDAP, h.seed.operatorID); err != nil {
+		t.Fatalf("set ldap provider for user: %v", err)
+	}
+
+	resp := h.requestJSON(http.MethodPut, "/auth/password", map[string]any{
+		"current_password": h.seed.operatorPass,
+		"new_password":     "operator1234",
+	}, cookie)
+	if resp.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d: %s", resp.Code, resp.Body.String())
 	}
 }

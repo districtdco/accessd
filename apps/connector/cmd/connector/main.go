@@ -8,6 +8,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -17,21 +18,30 @@ import (
 	"github.com/districtd/pam/connector/internal/launch"
 )
 
+var (
+	version = "0.1.0-dev"
+	commit  = "dev"
+	builtAt = "unknown"
+)
+
 func main() {
 	if len(os.Args) > 1 && strings.EqualFold(strings.TrimSpace(os.Args[1]), "bridge-shell") {
 		if err := launch.RunShellBridgeCommand(context.Background(), os.Args[2:]); err != nil {
-			fmt.Fprintf(os.Stderr, "PAM shell launch failed: %v\n", err)
+			fmt.Fprintf(os.Stderr, "AccessD shell launch failed: %v\n", err)
 			os.Exit(1)
 		}
 		return
 	}
 
 	cfg := config.Load()
+	if strings.TrimSpace(cfg.ConnectorSecret) == "" && !cfg.AllowInsecureNoToken {
+		log.Fatal("ACCESSD_CONNECTOR_SECRET is required (set ACCESSD_CONNECTOR_ALLOW_INSECURE_NO_TOKEN=true only for temporary local development)")
+	}
 	verifier := auth.NewVerifier(cfg.ConnectorSecret)
 	if verifier != nil {
 		log.Printf("connector token verification enabled")
 	} else {
-		log.Printf("WARNING: PAM_CONNECTOR_SECRET not set; connector token verification disabled")
+		log.Printf("WARNING: connector token verification disabled by ACCESSD_CONNECTOR_ALLOW_INSECURE_NO_TOKEN=true")
 	}
 	launcher := launch.Launcher{
 		DBeaverTempTTL: cfg.DBeaverTempTTL,
@@ -43,16 +53,24 @@ func main() {
 		log.Printf("stale dbeaver temp cleanup removed %d directories", removed)
 	}
 	if cfg.AllowRemote {
-		log.Printf("WARNING: PAM_CONNECTOR_ALLOW_REMOTE=true exposes connector launch endpoints beyond localhost")
+		log.Printf("WARNING: ACCESSD_CONNECTOR_ALLOW_REMOTE=true exposes connector launch endpoints beyond localhost")
 	}
 	if cfg.AllowAnyOrigin {
-		log.Printf("WARNING: PAM_CONNECTOR_ALLOW_ANY_ORIGIN=true allows any browser origin to call connector endpoints")
+		log.Printf("WARNING: ACCESSD_CONNECTOR_ALLOW_ANY_ORIGIN=true allows any browser origin to call connector endpoints")
 	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{
 			"status": "ok",
+		})
+	})
+	mux.HandleFunc("GET /version", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]string{
+			"service":  "accessd-connector",
+			"version":  version,
+			"commit":   commit,
+			"built_at": builtAt,
 		})
 	})
 
@@ -177,7 +195,7 @@ func main() {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
-	log.Printf("pam-connector listening on %s", cfg.Addr)
+	log.Printf("accessd-connector listening on %s", cfg.Addr)
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatal(err)
 	}
@@ -198,6 +216,11 @@ func withCORS(allowedOrigins []string, allowAnyOrigin bool, next http.Handler) h
 		allowOrigin := ""
 		if allowAnyOrigin {
 			allowOrigin = "*"
+		} else if isLoopbackOrigin(requestOrigin) {
+			// Always allow loopback browser origins (localhost/127.0.0.1).
+			// Connector is already loopback-bound by default, so this keeps
+			// local dev ports (e.g. :5173) and local HTTPS origins seamless.
+			allowOrigin = requestOrigin
 		} else if requestOrigin != "" {
 			for _, allowed := range allowedOrigins {
 				if requestOrigin == allowed {
@@ -226,6 +249,29 @@ func withCORS(allowedOrigins []string, allowAnyOrigin bool, next http.Handler) h
 	})
 }
 
+func isLoopbackOrigin(origin string) bool {
+	origin = strings.TrimSpace(origin)
+	if origin == "" {
+		return false
+	}
+	u, err := url.Parse(origin)
+	if err != nil {
+		return false
+	}
+	if !strings.EqualFold(u.Scheme, "http") && !strings.EqualFold(u.Scheme, "https") {
+		return false
+	}
+	host := strings.TrimSpace(u.Hostname())
+	if host == "" {
+		return false
+	}
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
 func withLocalhostOnly(allowRemote bool, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if allowRemote {
@@ -233,7 +279,7 @@ func withLocalhostOnly(allowRemote bool, next http.Handler) http.Handler {
 			return
 		}
 		if !isLoopbackRequest(r.RemoteAddr) {
-			http.Error(w, "connector only accepts local requests; set PAM_CONNECTOR_ALLOW_REMOTE=true to override", http.StatusForbidden)
+			http.Error(w, "connector only accepts local requests; set ACCESSD_CONNECTOR_ALLOW_REMOTE=true to override", http.StatusForbidden)
 			return
 		}
 		next.ServeHTTP(w, r)
@@ -275,7 +321,7 @@ func (r *statusRecorder) WriteHeader(status int) {
 }
 
 // verifyConnectorToken checks the HMAC-signed connector token if a verifier is configured.
-// When no verifier is present (secret not set), verification is skipped (backwards-compatible).
+// When no verifier is present, verification is skipped (explicit insecure mode only).
 func verifyConnectorToken(v *auth.Verifier, token, sessionID string) error {
 	if v == nil {
 		return nil // verification disabled

@@ -15,6 +15,8 @@ const (
 	AuditLoginFailedUserNotFound   = "login_failed_user_not_found"
 	AuditLoginFailedLDAPError      = "login_failed_ldap_error"
 	AuditLoginFailedRateLimited    = "login_failed_rate_limited"
+	AuditPasswordChangeSuccess     = "password_change_success"
+	AuditPasswordChangeFailed      = "password_change_failed"
 )
 
 type AuditEvent struct {

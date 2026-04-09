@@ -1,17 +1,17 @@
-# apps/connector — PAM Desktop Launcher
+# apps/connector — AccessD Connector
 
 Thin local connector process for brokered launch flows: shell, SFTP, DBeaver, and Redis CLI.
 
 ## What the connector does NOT do
 
-- Enforce PAM policy (backend remains trust boundary)
-- Call PAM auth APIs directly in this slice
+- Enforce AccessD policy (backend remains trust boundary)
+- Call AccessD auth APIs directly in this slice
 - Store tokens or credentials persistently
 - Replay or deeply inspect client-side file activity in this step
 
 ## Connector Trust Model
 
-When `PAM_CONNECTOR_SECRET` is set (same value on both API and connector):
+When `ACCESSD_CONNECTOR_SECRET` is set (same value on both API and connector):
 - Every launch request must include a `connector_token` field signed by the backend
 - The connector verifies the HMAC signature, checks session_id matches, and rejects expired tokens
 - Unsigned or invalid requests are rejected with HTTP 403
@@ -39,7 +39,7 @@ Expected request shape:
   "launch": {
     "proxy_host": "127.0.0.1",
     "proxy_port": 2222,
-    "username": "pam",
+    "username": "accessd",
     "token": "short-lived-launch-token",
     "expires_at": "2026-04-06T14:30:00Z"
   }
@@ -98,7 +98,7 @@ SFTP request shape:
   "launch": {
     "host": "127.0.0.1",
     "port": 2222,
-    "username": "pam",
+    "username": "accessd",
     "password": "short-lived-launch-token",
     "path": "/home/ubuntu",
     "expires_at": "2026-04-06T14:30:00Z"
@@ -112,47 +112,57 @@ SFTP request shape:
 - Linux: tries `x-terminal-emulator`, `gnome-terminal`, `konsole`, then `xfce4-terminal`, each running connector-managed `bridge-shell` session
 - Windows: launches PuTTY (`putty -ssh <username>@<proxy_host> -P <proxy_port>`)
 - DBeaver launch behavior:
-  - macOS: `PAM_CONNECTOR_DBEAVER_PATH` (if set), else `open -a DBeaver`, then common app bundle paths, then `dbeaver`
-  - Linux: `PAM_CONNECTOR_DBEAVER_PATH` (if set), else `dbeaver`, then `dbeaver-ce`
-  - Windows: `PAM_CONNECTOR_DBEAVER_PATH` (if set), else `cmd /C start "" dbeaver -con <spec>`, then `dbeaver.exe`
+  - macOS: `ACCESSD_CONNECTOR_DBEAVER_PATH` (if set), else `open -a DBeaver`, then common app bundle paths, then `dbeaver`
+  - Linux: `ACCESSD_CONNECTOR_DBEAVER_PATH` (if set), else `dbeaver`, then `dbeaver-ce`
+  - Windows: `ACCESSD_CONNECTOR_DBEAVER_PATH` (if set), else `cmd /C start "" dbeaver -con <spec>`, then `dbeaver.exe`
 - SFTP launch behavior:
-  - macOS/Linux: `PAM_CONNECTOR_FILEZILLA_PATH` (if set), else FileZilla in PATH/common macOS app paths
-  - Windows: `PAM_CONNECTOR_WINSCP_PATH` (if set), else WinSCP in PATH/common install paths
+  - macOS/Linux: `ACCESSD_CONNECTOR_FILEZILLA_PATH` (if set), else FileZilla in PATH/common macOS app paths
+  - Windows: `ACCESSD_CONNECTOR_WINSCP_PATH` (if set), else WinSCP in PATH/common install paths
 - Redis launch behavior:
-  - macOS/Linux/Windows: `PAM_CONNECTOR_REDIS_CLI_PATH` (if set), else `redis-cli` from PATH/common install paths, then launch inside a local terminal
+  - macOS/Linux/Windows: `ACCESSD_CONNECTOR_REDIS_CLI_PATH` (if set), else `redis-cli` from PATH/common install paths, then launch inside a local terminal
 
 Connector shell launch now uses a non-interactive bridge mode on macOS/Linux that reads the short-lived launch token from secure temp material and authenticates automatically. No manual token paste is required.
 Windows shell launch continues through PuTTY with `-pw` token injection.
 
-For DBeaver, connector creates a temporary local manifest file under OS temp directory (`pam-dbeaver-launch-*`) and launches DBeaver using CLI connection spec with `connect=true` and `savePassword=false` for immediate session usability without persistent credential storage.
-The connector auto-cleans temp launch directories after a TTL (`PAM_CONNECTOR_DBEAVER_TEMP_TTL`, default `15m`) and performs stale cleanup on startup. The manifest intentionally omits plaintext DB password; it records non-sensitive launch metadata only.
+For DBeaver, connector creates a temporary local manifest file under OS temp directory (`accessd-dbeaver-launch-*`) and launches DBeaver using CLI connection spec with `connect=true` and `savePassword=false` for immediate session usability without persistent credential storage.
+The connector auto-cleans temp launch directories after a TTL (`ACCESSD_CONNECTOR_DBEAVER_TEMP_TTL`, default `15m`) and performs stale cleanup on startup. The manifest intentionally omits plaintext DB password; it records non-sensitive launch metadata only.
 Connector launch diagnostics also redact sensitive values (for example `password=` fields, SFTP URL passwords, and `REDISCLI_AUTH`) before returning operator-visible error details.
 Launch requests now fail fast with structured codes for common local issues (`*_not_installed`, `invalid_configured_path`, `terminal_not_installed`, `terminal_launch_failed`, etc.) instead of optimistic acceptance.
 
-For Redis in this slice, connector launches local `redis-cli` in a new terminal window against a PAM session-scoped Redis proxy endpoint. `REDISCLI_AUTH` is set to the short-lived PAM launch token; upstream Redis credentials stay managed server-side.
-Redis TLS note: connector command builders support `redis-cli --tls` when launch payload includes `redis_tls=true`; in the current PAM slice the API issues non-TLS client-leg Redis proxy endpoints, so connector launches are typically plaintext on loopback/session endpoints. Upstream Redis TLS is handled by the PAM proxy-to-target leg when enabled on the asset.
-For SFTP in this slice, connector launches FileZilla/WinSCP against the PAM SFTP relay endpoint (session token is passed as SFTP password in launch payload), pre-resolves proxy host key trust material, and then auto-connects without interactive host-key confirmation prompts. File-operation telemetry is captured server-side by the PAM relay.
+For Redis in this slice, connector launches local `redis-cli` in a new terminal window against a AccessD session-scoped Redis proxy endpoint. `REDISCLI_AUTH` is set to the short-lived AccessD launch token; upstream Redis credentials stay managed server-side.
+Redis TLS note: connector command builders support `redis-cli --tls` when launch payload includes `redis_tls=true`; in the current AccessD slice the API issues non-TLS client-leg Redis proxy endpoints, so connector launches are typically plaintext on loopback/session endpoints. Upstream Redis TLS is handled by the AccessD proxy-to-target leg when enabled on the asset. For environments with self-signed TLS on the client leg, `ACCESSD_CONNECTOR_REDIS_TLS_AUTO_INSECURE=true` can automatically append `--insecure` for local redis-cli launch.
+For SFTP in this slice, connector launches FileZilla/WinSCP against the AccessD SFTP relay endpoint (session token is passed as SFTP password in launch payload), pre-resolves proxy host key trust material, and then auto-connects without interactive host-key confirmation prompts. File-operation telemetry is captured server-side by the AccessD relay.
 
 ## Configuration (env)
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `PAM_CONNECTOR_ADDR` | `127.0.0.1:9494` | Connector bind address |
-| `PAM_CONNECTOR_ALLOWED_ORIGIN` | `http://127.0.0.1:3000,http://localhost:3000` | CORS allowlist (comma-separated origins) |
-| `PAM_CONNECTOR_ALLOW_ANY_ORIGIN` | `false` | If `true`, sets `Access-Control-Allow-Origin: *` (unsafe) |
-| `PAM_CONNECTOR_ALLOW_REMOTE` | `false` | If `true`, allows non-loopback HTTP callers (unsafe) |
-| `PAM_CONNECTOR_PUTTY_PATH` | `putty` | PuTTY executable/path on Windows |
-| `PAM_CONNECTOR_WINSCP_PATH` | `winscp` | WinSCP executable/path on Windows |
-| `PAM_CONNECTOR_FILEZILLA_PATH` | `filezilla` | FileZilla executable/path on macOS/Linux |
-| `PAM_CONNECTOR_DBEAVER_PATH` | *(auto-discovery)* | DBeaver app/binary path override |
-| `PAM_CONNECTOR_REDIS_CLI_PATH` | *(auto-discovery)* | `redis-cli` path override |
-| `PAM_CONNECTOR_DBEAVER_TEMP_TTL` | `15m` | TTL for DBeaver temp launch material cleanup |
-| `PAM_CONNECTOR_SECRET` | *(empty)* | Shared HMAC secret for verifying backend-signed launch payloads. Must match `PAM_CONNECTOR_SECRET` on the API. When empty, verification is disabled. |
+| `ACCESSD_CONNECTOR_ADDR` | `127.0.0.1:9494` | Connector bind address |
+| `ACCESSD_CONNECTOR_ALLOWED_ORIGIN` | `http://127.0.0.1:3000,http://localhost:3000` | CORS allowlist (comma-separated origins) |
+| `ACCESSD_CONNECTOR_ALLOW_ANY_ORIGIN` | `false` | If `true`, sets `Access-Control-Allow-Origin: *` (unsafe) |
+| `ACCESSD_CONNECTOR_ALLOW_REMOTE` | `false` | If `true`, allows non-loopback HTTP callers (unsafe) |
+| `ACCESSD_CONNECTOR_PUTTY_PATH` | `putty` | PuTTY executable/path on Windows |
+| `ACCESSD_CONNECTOR_WINSCP_PATH` | `winscp` | WinSCP executable/path on Windows |
+| `ACCESSD_CONNECTOR_FILEZILLA_PATH` | `filezilla` | FileZilla executable/path on macOS/Linux |
+| `ACCESSD_CONNECTOR_DBEAVER_PATH` | *(auto-discovery)* | DBeaver app/binary path override |
+| `ACCESSD_CONNECTOR_REDIS_CLI_PATH` | *(auto-discovery)* | `redis-cli` path override |
+| `ACCESSD_CONNECTOR_DBEAVER_TEMP_TTL` | `15m` | TTL for DBeaver temp launch material cleanup |
+| `ACCESSD_CONNECTOR_PROXY_HOSTKEY_MODE` | `accept-replace` | Shell-bridge proxy host-key policy (`strict`, `accept-new`, `accept-replace`) |
+| `ACCESSD_CONNECTOR_PROXY_KNOWN_HOSTS_PATH` | `~/.accessd-connector/proxy_known_hosts` | Local known_hosts path for shell-bridge proxy key trust |
+| `ACCESSD_CONNECTOR_REDIS_TLS_AUTO_INSECURE` | `false` | Auto-add `redis-cli --insecure` when `redis_tls=true` and payload does not already request insecure |
+| `ACCESSD_CONNECTOR_SECRET` | *(empty)* | Shared HMAC secret for verifying backend-signed launch payloads. Must match `ACCESSD_CONNECTOR_SECRET` on the API. When empty, verification is disabled. |
+
+Runtime notes:
+
+- Connector launch does not require build-time environment variables. Build flags (`version`, `commit`, `builtAt`) are optional metadata only.
+- On first startup, connector auto-creates `~/.accessd-connector/config.yaml` (unless overridden by `ACCESSD_CONNECTOR_CONFIG_FILE`) with commented examples for app path and terminal overrides.
+- Most operator machines can run with zero env configuration. Set env only when overriding defaults (port/origins/path overrides/security hardening).
+- If local dependencies are missing (for example DBeaver/FileZilla/redis-cli/OpenSSH/PuTTY), launches return structured actionable errors; the UI surfaces install guidance.
 
 Security notes:
 
 - Keep connector bound to loopback (`127.0.0.1`) in normal operator workflows.
-- `PAM_CONNECTOR_ALLOW_REMOTE=true` and `PAM_CONNECTOR_ALLOW_ANY_ORIGIN=true` are development/debug escape hatches and materially weaken connector trust boundaries.
+- `ACCESSD_CONNECTOR_ALLOW_REMOTE=true` and `ACCESSD_CONNECTOR_ALLOW_ANY_ORIGIN=true` are development/debug escape hatches and materially weaken connector trust boundaries.
 
 ## Structure
 
@@ -178,7 +188,7 @@ go run ./cmd/connector
 make build-connector
 
 # Cross-compile
-GOOS=darwin GOARCH=arm64 go build -o bin/pam-connector-darwin-arm64 ./cmd/connector
-GOOS=linux GOARCH=amd64 go build -o bin/pam-connector-linux-amd64 ./cmd/connector
-GOOS=windows GOARCH=amd64 go build -o bin/pam-connector-windows-amd64.exe ./cmd/connector
+GOOS=darwin GOARCH=arm64 go build -o bin/accessd-connector-darwin-arm64 ./cmd/connector
+GOOS=linux GOARCH=amd64 go build -o bin/accessd-connector-linux-amd64 ./cmd/connector
+GOOS=windows GOARCH=amd64 go build -o bin/accessd-connector-windows-amd64.exe ./cmd/connector
 ```

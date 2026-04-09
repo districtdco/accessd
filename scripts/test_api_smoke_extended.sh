@@ -12,10 +12,10 @@ require_cmd curl
 require_cmd jq
 
 API_BASE_URL="${API_BASE_URL:-http://127.0.0.1:8080}"
-USERNAME="${PAM_SMOKE_USERNAME:-admin}"
-PASSWORD="${PAM_SMOKE_PASSWORD:-admin123}"
+USERNAME="${ACCESSD_SMOKE_USERNAME:-${PAM_SMOKE_USERNAME:-admin}}"
+PASSWORD="${ACCESSD_SMOKE_PASSWORD:-${PAM_SMOKE_PASSWORD:-admin123}}"
 
-COOKIE_JAR="$(mktemp -t pam-matrix-cookie.XXXXXX)"
+COOKIE_JAR="$(mktemp -t accessd-matrix-cookie.XXXXXX)"
 trap 'rm -f "$COOKIE_JAR"' EXIT
 
 declare -a CHECKS
@@ -55,11 +55,11 @@ launch_session() {
   CHECKS+=("$label:$session_id")
 }
 
-linux_id="$(find_asset_id 'pam-local-linux')"
-pg_id="$(find_asset_id 'pam-local-postgres')"
-mysql_id="$(find_asset_id 'pam-local-mysql')"
-mssql_id="$(find_asset_id 'pam-local-mssql')"
-redis_id="$(find_asset_id 'pam-local-redis')"
+linux_id="$(find_asset_id 'accessd-local-linux')"
+pg_id="$(find_asset_id 'accessd-local-postgres')"
+mysql_id="$(find_asset_id 'accessd-local-mysql')"
+mssql_id="$(find_asset_id 'accessd-local-mssql')"
+redis_id="$(find_asset_id 'accessd-local-redis')"
 
 launch_session "SSH shell" "$linux_id" "shell"
 launch_session "SFTP" "$linux_id" "sftp"

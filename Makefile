@@ -1,4 +1,4 @@
-.PHONY: build build-api-bin build-connector-bin dev-api dev-ui dev-connector dev-up dev-seed test-matrix check-env test lint migrate clean smoke-api smoke-api-extended validate-contract
+.PHONY: build build-api-bin build-connector-bin build-connector-release build-deploy-bundle dev-api dev-ui dev-connector dev-up dev-seed test-matrix check-env test lint migrate clean smoke-api smoke-api-extended validate-contract
 
 # --- Build ---
 
@@ -6,17 +6,23 @@ build: build-api build-connector build-ui
 
 build-api-bin:
 	mkdir -p .gocache bin
-	cd apps/api && CGO_ENABLED=0 GOCACHE=$(CURDIR)/.gocache go build -o $(CURDIR)/bin/pam-api ./cmd/server
+	cd apps/api && CGO_ENABLED=0 GOCACHE=$(CURDIR)/.gocache go build -o $(CURDIR)/bin/accessd ./cmd/server
 
 build-connector-bin:
 	mkdir -p .gocache bin
-	cd apps/connector && CGO_ENABLED=0 GOCACHE=$(CURDIR)/.gocache go build -o $(CURDIR)/bin/pam-connector ./cmd/connector
+	cd apps/connector && CGO_ENABLED=0 GOCACHE=$(CURDIR)/.gocache go build -o $(CURDIR)/bin/accessd-connector ./cmd/connector
 
 build-api:
-	cd apps/api && go build -o bin/pam-server ./cmd/server
+	cd apps/api && go build -o bin/accessd ./cmd/server
 
 build-connector:
-	cd apps/connector && go build -o bin/pam-connector ./cmd/connector
+	cd apps/connector && go build -o bin/accessd-connector ./cmd/connector
+
+build-connector-release:
+	./scripts/build_connector_release.sh $(VERSION)
+
+build-deploy-bundle:
+	./scripts/build_deploy_bundle.sh $(VERSION)
 
 build-ui:
 	cd apps/ui && npm run build
@@ -105,4 +111,4 @@ down:
 # --- Clean ---
 
 clean:
-	rm -rf apps/api/bin apps/connector/bin apps/ui/dist
+	rm -rf apps/api/bin apps/connector/bin apps/ui/dist deploy/artifacts dist/connector

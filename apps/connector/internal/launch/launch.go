@@ -220,7 +220,7 @@ type ShellLaunchDiagnostics struct {
 	Terminal     string `json:"terminal,omitempty"`
 }
 
-const dbeaverTempPrefix = "pam-dbeaver-launch-"
+const dbeaverTempPrefix = "accessd-dbeaver-launch-"
 
 func (r Request) Validate() error {
 	if strings.TrimSpace(r.SessionID) == "" {
@@ -452,18 +452,43 @@ func (l *Launcher) LaunchDBeaver(ctx context.Context, req DBeaverRequest) (DBeav
 	}
 
 	var launchErr error
-	switch runtime.GOOS {
-	case "darwin":
-		launchErr, launchMode = launchDBeaverMacOS(ctx, spec, dbeaverPath, l.logger)
-	case "linux":
-		launchErr = launchDBeaverLinux(ctx, spec, dbeaverPath, l.logger)
-	case "windows":
-		launchErr = launchDBeaverWindows(ctx, spec, dbeaverPath, l.logger)
-	default:
-		launchErr = &LaunchError{
-			Code:    "unsupported_os",
-			Message: fmt.Sprintf("unsupported OS: %s", runtime.GOOS),
-			Hint:    "use darwin/linux/windows for connector shell + dbeaver launch",
+	launchWithSpec := func(connSpec string) (error, string) {
+		switch runtime.GOOS {
+		case "darwin":
+			return launchDBeaverMacOS(ctx, connSpec, dbeaverPath, l.logger)
+		case "linux":
+			return launchDBeaverLinux(ctx, connSpec, dbeaverPath, l.logger), "direct_binary"
+		case "windows":
+			return launchDBeaverWindows(ctx, connSpec, dbeaverPath, l.logger), "direct_binary"
+		default:
+			return &LaunchError{
+				Code:    "unsupported_os",
+				Message: fmt.Sprintf("unsupported OS: %s", runtime.GOOS),
+				Hint:    "use darwin/linux/windows for connector shell + dbeaver launch",
+			}, ""
+		}
+	}
+
+	launchErr, launchMode = launchWithSpec(spec)
+	if launchErr != nil {
+		repairTag := "repair-" + strconv.FormatInt(time.Now().UTC().UnixNano(), 10)
+		repairedSpec := dbeaverConnectionSpecWithNameSuffix(req, repairTag)
+		if strings.TrimSpace(repairedSpec) != "" && repairedSpec != spec {
+			l.log().Warn(
+				"dbeaver launch failed; retrying with repaired connection identity",
+				"session_id", req.SessionID,
+				"repair_tag", repairTag,
+				"error", launchErr,
+			)
+			if retryErr, retryMode := launchWithSpec(repairedSpec); retryErr == nil {
+				launchErr = nil
+				launchMode = retryMode
+				l.log().Info(
+					"dbeaver launch recovery succeeded",
+					"session_id", req.SessionID,
+					"repair_tag", repairTag,
+				)
+			}
 		}
 	}
 	if launchErr != nil {
@@ -602,7 +627,7 @@ func (l *Launcher) LaunchSFTPClient(ctx context.Context, req SFTPRequest) (SFTPL
 		return SFTPLaunchDiagnostics{}, &LaunchError{
 			Code:    "sftp_hostkey_resolve_failed",
 			Message: "failed to resolve SSH host key for FileZilla launch",
-			Hint:    "verify PAM SSH proxy is reachable and ready",
+			Hint:    "verify AccessD SSH proxy is reachable and ready",
 			Cause:   hostKeyErr,
 		}
 	}
@@ -635,8 +660,8 @@ func (l *Launcher) LaunchSFTPClient(ctx context.Context, req SFTPRequest) (SFTPL
 			Code:          "sftp_launch_failed",
 			MissingCode:   "filezilla_not_installed",
 			BaseErr:       "failed to launch FileZilla",
-			Hint:          "verify PAM_CONNECTOR_FILEZILLA_PATH or install FileZilla",
-			ConfiguredEnv: "PAM_CONNECTOR_FILEZILLA_PATH",
+			Hint:          "verify ACCESSD_CONNECTOR_FILEZILLA_PATH or install FileZilla",
+			ConfiguredEnv: "ACCESSD_CONNECTOR_FILEZILLA_PATH",
 		})
 		launchMode = "direct_binary"
 	case "linux":
@@ -644,8 +669,8 @@ func (l *Launcher) LaunchSFTPClient(ctx context.Context, req SFTPRequest) (SFTPL
 			Code:          "sftp_launch_failed",
 			MissingCode:   "filezilla_not_installed",
 			BaseErr:       "failed to launch FileZilla",
-			Hint:          "verify PAM_CONNECTOR_FILEZILLA_PATH or install filezilla in PATH",
-			ConfiguredEnv: "PAM_CONNECTOR_FILEZILLA_PATH",
+			Hint:          "verify ACCESSD_CONNECTOR_FILEZILLA_PATH or install filezilla in PATH",
+			ConfiguredEnv: "ACCESSD_CONNECTOR_FILEZILLA_PATH",
 		})
 		launchMode = "direct_binary"
 	default:
@@ -759,6 +784,10 @@ end tell`, escapeAppleScript(command))
 	cmd := exec.CommandContext(ctx, "osascript", "-e", script)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
+		if isNonFatalAppleScriptTimeout(string(out), err) {
+			logger.Warn("Terminal launch reported timeout but command was likely dispatched", "output", strings.TrimSpace(string(out)))
+			return nil
+		}
 		logger.Error("Terminal launch failed", "command", "osascript", "output", string(out), "error", err)
 		return &LaunchError{
 			Code:    "terminal_launch_failed",
@@ -780,6 +809,10 @@ end tell`, escapeAppleScript(command))
 	cmd := exec.CommandContext(ctx, "osascript", "-e", script)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
+		if isNonFatalAppleScriptTimeout(string(out), err) {
+			logger.Warn("iTerm2 launch reported timeout but command was likely dispatched", "output", strings.TrimSpace(string(out)))
+			return nil
+		}
 		logger.Error("iTerm2 launch failed", "command", "osascript", "output", string(out), "error", err)
 		return &LaunchError{
 			Code:    "terminal_launch_failed",
@@ -791,6 +824,14 @@ end tell`, escapeAppleScript(command))
 	}
 	logger.Debug("iTerm2 launched successfully", "command", "osascript")
 	return nil
+}
+
+func isNonFatalAppleScriptTimeout(output string, err error) bool {
+	if err == nil {
+		return false
+	}
+	joined := strings.ToLower(strings.TrimSpace(output + " " + err.Error()))
+	return strings.Contains(joined, "appleevent timed out") || strings.Contains(joined, "error -1712")
 }
 
 func launchLinuxTerminalByName(ctx context.Context, command, terminal string, logger *slog.Logger) error {
@@ -909,7 +950,7 @@ func launchWindows(ctx context.Context, req Request, puttyPath string, logger *s
 		return ShellLaunchDiagnostics{}, &LaunchError{
 			Code:    "terminal_launch_failed",
 			Message: "failed to open PuTTY for shell launch",
-			Hint:    "verify PAM_CONNECTOR_PUTTY_PATH or install putty in PATH",
+			Hint:    "verify ACCESSD_CONNECTOR_PUTTY_PATH or install putty in PATH",
 			Details: fmt.Sprintf("command: %s", sanitizeCommandArgs([]string{resolvedPuTTY, "-ssh", target, "-P", strconv.Itoa(req.Launch.ProxyPort)})),
 			Cause:   err,
 		}
@@ -939,8 +980,10 @@ func shellCommand(req Request) (string, error) {
 		displayAsset = strings.TrimSpace(req.AssetName)
 	}
 	displayHost := strings.TrimSpace(req.Launch.TargetHost)
+	hostKeyMode := defaultBridgeHostKeyMode()
+	knownHostsPath := defaultBridgeKnownHostsFile()
 	command := fmt.Sprintf(
-		"%s bridge-shell --host %s --port %d --username %s --session-id %s --asset-name %s --target-host %s --upstream-username %s --token-file %s",
+		"%s bridge-shell --host %s --port %d --username %s --session-id %s --asset-name %s --target-host %s --upstream-username %s --token-file %s --hostkey-mode %s --known-hosts-file %s",
 		shellEscape(executable),
 		shellEscape(req.Launch.ProxyHost),
 		req.Launch.ProxyPort,
@@ -950,6 +993,8 @@ func shellCommand(req Request) (string, error) {
 		shellEscape(displayHost),
 		shellEscape(upstreamUsername),
 		shellEscape(tokenPath),
+		shellEscape(hostKeyMode),
+		shellEscape(knownHostsPath),
 	)
 	return command, nil
 }
@@ -968,12 +1013,12 @@ func redisCLICommand(req RedisRequest, redisCLIPath string) string {
 	}
 	if req.Launch.TLS {
 		parts = append(parts, "--tls")
-		if req.Launch.InsecureSkipVerifyTLS {
+		if redisCLIShouldUseInsecureTLS(req) {
 			parts = append(parts, "--insecure")
 		}
 	}
 
-	title := fmt.Sprintf("PAM redis session %s for %s", strings.TrimSpace(req.SessionID), strings.TrimSpace(req.AssetName))
+	title := fmt.Sprintf("AccessD redis session %s for %s", strings.TrimSpace(req.SessionID), strings.TrimSpace(req.AssetName))
 	base := strings.Join(parts, " ")
 	return fmt.Sprintf(
 		"echo %s; export REDISCLI_AUTH=%s; %s; exit_code=$?; unset REDISCLI_AUTH; echo; echo %s; exec bash",
@@ -998,13 +1043,13 @@ func redisCLICommandWindows(req RedisRequest, redisCLIPath string) string {
 	}
 	if req.Launch.TLS {
 		parts = append(parts, "--tls")
-		if req.Launch.InsecureSkipVerifyTLS {
+		if redisCLIShouldUseInsecureTLS(req) {
 			parts = append(parts, "--insecure")
 		}
 	}
 	redisCmd := strings.Join(parts, " ")
 	return fmt.Sprintf(
-		"echo PAM redis session %s for %s && set REDISCLI_AUTH=%s && %s && set REDISCLI_AUTH= && echo. && echo redis-cli exited; keep this window open for review.",
+		"echo AccessD redis session %s for %s && set REDISCLI_AUTH=%s && %s && set REDISCLI_AUTH= && echo. && echo redis-cli exited; keep this window open for review.",
 		req.SessionID,
 		req.AssetName,
 		req.Launch.Password,
@@ -1026,12 +1071,25 @@ func redisCLICommandPreview(req RedisRequest) string {
 	}
 	if req.Launch.TLS {
 		parts = append(parts, "--tls")
-		if req.Launch.InsecureSkipVerifyTLS {
+		if redisCLIShouldUseInsecureTLS(req) {
 			parts = append(parts, "--insecure")
 		}
 	}
 	parts = append(parts, "(auth via REDISCLI_AUTH)")
 	return strings.Join(parts, " ")
+}
+
+func redisCLIShouldUseInsecureTLS(req RedisRequest) bool {
+	if req.Launch.InsecureSkipVerifyTLS {
+		return true
+	}
+	raw := strings.ToLower(strings.TrimSpace(os.Getenv("ACCESSD_CONNECTOR_REDIS_TLS_AUTO_INSECURE")))
+	switch raw {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
 }
 
 func filezillaTarget(req SFTPRequest) string {
@@ -1069,23 +1127,23 @@ type fileZillaServers struct {
 }
 
 type fileZillaServer struct {
-	Host                string            `xml:"Host"`
-	Port                int               `xml:"Port"`
-	Protocol            int               `xml:"Protocol"`
-	Type                int               `xml:"Type"`
-	User                string            `xml:"User"`
-	Pass                *fileZillaPass    `xml:"Pass,omitempty"`
-	Logontype           int               `xml:"Logontype"`
+	Host      string         `xml:"Host"`
+	Port      int            `xml:"Port"`
+	Protocol  int            `xml:"Protocol"`
+	Type      int            `xml:"Type"`
+	User      string         `xml:"User"`
+	Pass      *fileZillaPass `xml:"Pass,omitempty"`
+	Logontype int            `xml:"Logontype"`
 	// Force a single connection so FileZilla does not open extra
 	// transfer connections that can outlive short-lived launch tokens.
 	MaximumMultipleConnections int               `xml:"MaximumMultipleConnections,omitempty"`
-	EncodingType        string            `xml:"EncodingType,omitempty"`
-	BypassProxy         int               `xml:"BypassProxy"`
-	Name                string            `xml:"Name"`
-	SyncBrowsing        int               `xml:"SyncBrowsing,omitempty"`
-	DirectoryComparison int               `xml:"DirectoryComparison,omitempty"`
-	RemoteDir           string            `xml:"RemoteDir,omitempty"`
-	Extra               []fileZillaAnyXML `xml:",any"`
+	EncodingType               string            `xml:"EncodingType,omitempty"`
+	BypassProxy                int               `xml:"BypassProxy"`
+	Name                       string            `xml:"Name"`
+	SyncBrowsing               int               `xml:"SyncBrowsing,omitempty"`
+	DirectoryComparison        int               `xml:"DirectoryComparison,omitempty"`
+	RemoteDir                  string            `xml:"RemoteDir,omitempty"`
+	Extra                      []fileZillaAnyXML `xml:",any"`
 }
 
 type fileZillaPass struct {
@@ -1139,20 +1197,20 @@ func upsertFileZillaSite(displayName, target string) (string, error) {
 	}
 	name := sanitizeFileZillaSiteName(displayName)
 	entry := fileZillaServer{
-		Host:                host,
-		Port:                port,
-		Protocol:            1,
-		Type:                0,
-		User:                username,
-		Pass:                &fileZillaPass{Encoding: "base64", Value: base64.StdEncoding.EncodeToString([]byte(password))},
-		Logontype:           1,
+		Host:                       host,
+		Port:                       port,
+		Protocol:                   1,
+		Type:                       0,
+		User:                       username,
+		Pass:                       &fileZillaPass{Encoding: "base64", Value: base64.StdEncoding.EncodeToString([]byte(password))},
+		Logontype:                  1,
 		MaximumMultipleConnections: 1,
-		EncodingType:        "Auto",
-		BypassProxy:         0,
-		Name:                name,
-		SyncBrowsing:        0,
-		DirectoryComparison: 0,
-		RemoteDir:           remoteDir,
+		EncodingType:               "Auto",
+		BypassProxy:                0,
+		Name:                       name,
+		SyncBrowsing:               0,
+		DirectoryComparison:        0,
+		RemoteDir:                  remoteDir,
 	}
 	replaced := false
 	for idx := range doc.Servers.Server {
@@ -1226,7 +1284,7 @@ func writeFileZillaSiteFile(path string, doc fileZillaSiteFile) error {
 func sanitizeFileZillaSiteName(name string) string {
 	clean := strings.TrimSpace(name)
 	if clean == "" {
-		return "PAM Session"
+		return "AccessD Session"
 	}
 	replacer := strings.NewReplacer("/", "-", "\\", "-", "\n", " ", "\r", " ", "\t", " ")
 	clean = replacer.Replace(clean)
@@ -1270,7 +1328,7 @@ func proxyUsernameForShell(payload Shell) string {
 	if v := strings.TrimSpace(payload.Username); v != "" {
 		return v
 	}
-	return "pam"
+	return "accessd"
 }
 
 func upstreamUsernameForShell(payload Shell) string {
@@ -1290,7 +1348,7 @@ func proxyUsernameForSFTP(payload SFTPPayload) string {
 	if v := strings.TrimSpace(payload.Username); v != "" {
 		return v
 	}
-	return "pam"
+	return "accessd"
 }
 
 func targetIdentity(assetName, payloadAssetName, targetHost string) string {
@@ -1356,14 +1414,14 @@ func resolvePuTTYPath(configured string) (string, error) {
 		return "", &LaunchError{
 			Code:    "invalid_configured_path",
 			Message: "configured PuTTY path is invalid",
-			Hint:    "verify PAM_CONNECTOR_PUTTY_PATH points to a valid PuTTY executable",
+			Hint:    "verify ACCESSD_CONNECTOR_PUTTY_PATH points to a valid PuTTY executable",
 			Cause:   err,
 		}
 	}
 	return "", &LaunchError{
 		Code:    "putty_not_installed",
 		Message: "failed to open PuTTY for shell launch",
-		Hint:    "install PuTTY or set PAM_CONNECTOR_PUTTY_PATH",
+		Hint:    "install PuTTY or set ACCESSD_CONNECTOR_PUTTY_PATH",
 		Cause:   err,
 	}
 }
@@ -1382,14 +1440,14 @@ func resolveWinSCPPath(configured string) (string, error) {
 		return "", &LaunchError{
 			Code:    "invalid_configured_path",
 			Message: "configured WinSCP path is invalid",
-			Hint:    "verify PAM_CONNECTOR_WINSCP_PATH points to a valid WinSCP executable",
+			Hint:    "verify ACCESSD_CONNECTOR_WINSCP_PATH points to a valid WinSCP executable",
 			Cause:   err,
 		}
 	}
 	return "", &LaunchError{
 		Code:    "winscp_not_installed",
 		Message: "failed to launch WinSCP",
-		Hint:    "install WinSCP or set PAM_CONNECTOR_WINSCP_PATH",
+		Hint:    "install WinSCP or set ACCESSD_CONNECTOR_WINSCP_PATH",
 		Cause:   err,
 	}
 }
@@ -1417,14 +1475,14 @@ func resolveFileZillaPath(configured string) (string, error) {
 		return "", &LaunchError{
 			Code:    "invalid_configured_path",
 			Message: "configured FileZilla path is invalid",
-			Hint:    "verify PAM_CONNECTOR_FILEZILLA_PATH points to a valid FileZilla executable",
+			Hint:    "verify ACCESSD_CONNECTOR_FILEZILLA_PATH points to a valid FileZilla executable",
 			Cause:   err,
 		}
 	}
 	return "", &LaunchError{
 		Code:    "filezilla_not_installed",
 		Message: "failed to launch FileZilla",
-		Hint:    "install FileZilla or set PAM_CONNECTOR_FILEZILLA_PATH",
+		Hint:    "install FileZilla or set ACCESSD_CONNECTOR_FILEZILLA_PATH",
 		Cause:   err,
 	}
 }
@@ -1446,14 +1504,14 @@ func resolveRedisCLIPath(configured string) (string, error) {
 		return "", &LaunchError{
 			Code:    "invalid_configured_path",
 			Message: "configured redis-cli path is invalid",
-			Hint:    "verify PAM_CONNECTOR_REDIS_CLI_PATH points to a valid redis-cli executable",
+			Hint:    "verify ACCESSD_CONNECTOR_REDIS_CLI_PATH points to a valid redis-cli executable",
 			Cause:   err,
 		}
 	}
 	return "", &LaunchError{
 		Code:    "redis_cli_not_installed",
 		Message: "redis-cli is not installed",
-		Hint:    "install redis-cli or set PAM_CONNECTOR_REDIS_CLI_PATH",
+		Hint:    "install redis-cli or set ACCESSD_CONNECTOR_REDIS_CLI_PATH",
 		Cause:   err,
 	}
 }
@@ -1498,14 +1556,14 @@ func resolveDBeaverPath(configured string) (string, error) {
 		return "", &LaunchError{
 			Code:    "invalid_configured_path",
 			Message: "configured DBeaver path is invalid",
-			Hint:    "verify PAM_CONNECTOR_DBEAVER_PATH points to a valid DBeaver executable",
+			Hint:    "verify ACCESSD_CONNECTOR_DBEAVER_PATH points to a valid DBeaver executable",
 			Cause:   err,
 		}
 	}
 	return "", &LaunchError{
 		Code:    "dbeaver_not_installed",
 		Message: "failed to launch DBeaver",
-		Hint:    "install DBeaver or set PAM_CONNECTOR_DBEAVER_PATH",
+		Hint:    "install DBeaver or set ACCESSD_CONNECTOR_DBEAVER_PATH",
 		Cause:   err,
 	}
 }
@@ -1583,8 +1641,8 @@ func launchDBeaverMacOS(ctx context.Context, spec, configuredPath string, logger
 		Code:          "dbeaver_launch_failed",
 		MissingCode:   "dbeaver_not_installed",
 		BaseErr:       "failed to launch DBeaver on macOS",
-		Hint:          "ensure DBeaver is installed or set PAM_CONNECTOR_DBEAVER_PATH to a valid binary path",
-		ConfiguredEnv: "PAM_CONNECTOR_DBEAVER_PATH",
+		Hint:          "ensure DBeaver is installed or set ACCESSD_CONNECTOR_DBEAVER_PATH to a valid binary path",
+		ConfiguredEnv: "ACCESSD_CONNECTOR_DBEAVER_PATH",
 	}); err != nil {
 		return err, "direct_binary"
 	}
@@ -1627,8 +1685,8 @@ func launchFileZillaMacOS(ctx context.Context, configuredPath, target, displaySi
 		Code:          "sftp_launch_failed",
 		MissingCode:   "filezilla_not_installed",
 		BaseErr:       "failed to launch FileZilla",
-		Hint:          "ensure FileZilla is installed or set PAM_CONNECTOR_FILEZILLA_PATH to a valid binary path",
-		ConfiguredEnv: "PAM_CONNECTOR_FILEZILLA_PATH",
+		Hint:          "ensure FileZilla is installed or set ACCESSD_CONNECTOR_FILEZILLA_PATH to a valid binary path",
+		ConfiguredEnv: "ACCESSD_CONNECTOR_FILEZILLA_PATH",
 	}); err != nil {
 		return err, "direct_binary"
 	}
@@ -1723,8 +1781,8 @@ func launchDBeaverLinux(ctx context.Context, spec, configuredPath string, logger
 		Code:          "dbeaver_launch_failed",
 		MissingCode:   "dbeaver_not_installed",
 		BaseErr:       "failed to launch DBeaver on Linux",
-		Hint:          "ensure dbeaver or dbeaver-ce is installed, or set PAM_CONNECTOR_DBEAVER_PATH",
-		ConfiguredEnv: "PAM_CONNECTOR_DBEAVER_PATH",
+		Hint:          "ensure dbeaver or dbeaver-ce is installed, or set ACCESSD_CONNECTOR_DBEAVER_PATH",
+		ConfiguredEnv: "ACCESSD_CONNECTOR_DBEAVER_PATH",
 	})
 }
 
@@ -1743,8 +1801,8 @@ func launchDBeaverWindows(ctx context.Context, spec, configuredPath string, logg
 		Code:          "dbeaver_launch_failed",
 		MissingCode:   "dbeaver_not_installed",
 		BaseErr:       "failed to launch DBeaver on Windows",
-		Hint:          "ensure DBeaver is installed or set PAM_CONNECTOR_DBEAVER_PATH",
-		ConfiguredEnv: "PAM_CONNECTOR_DBEAVER_PATH",
+		Hint:          "ensure DBeaver is installed or set ACCESSD_CONNECTOR_DBEAVER_PATH",
+		ConfiguredEnv: "ACCESSD_CONNECTOR_DBEAVER_PATH",
 	})
 }
 
@@ -1830,6 +1888,10 @@ func launchFirstAvailable(ctx context.Context, attempts [][]string, options laun
 }
 
 func dbeaverConnectionSpec(req DBeaverRequest) string {
+	return dbeaverConnectionSpecWithNameSuffix(req, "")
+}
+
+func dbeaverConnectionSpecWithNameSuffix(req DBeaverRequest, suffix string) string {
 	engine := normalizeEngine(req.Launch.Engine)
 	parts := []string{
 		"driver=" + specValue(engine),
@@ -1866,9 +1928,26 @@ func dbeaverConnectionSpec(req DBeaverRequest) string {
 		if displayHost != "" {
 			label += " (" + displayHost + ")"
 		}
+		if sessionSuffix := shortSessionLabel(req.SessionID); sessionSuffix != "" {
+			label += " [" + sessionSuffix + "]"
+		}
+		if extra := strings.TrimSpace(suffix); extra != "" {
+			label += " {" + extra + "}"
+		}
 		parts = append(parts, "name="+specValue(label))
 	}
 	return strings.Join(parts, "|")
+}
+
+func shortSessionLabel(sessionID string) string {
+	id := strings.TrimSpace(sessionID)
+	if id == "" {
+		return ""
+	}
+	if len(id) > 8 {
+		return id[:8]
+	}
+	return id
 }
 
 func sanitizeCommandArgs(args []string) string {
@@ -2028,7 +2107,7 @@ func runClipboardCommand(ctx context.Context, value, bin string, args ...string)
 }
 
 func prepareLaunchTokenFile(token string) (string, error) {
-	tok, err := os.CreateTemp("", "pam-launch-token-*")
+	tok, err := os.CreateTemp("", "accessd-launch-token-*")
 	if err != nil {
 		return "", &LaunchError{
 			Code:    "temp_material_create_failed",

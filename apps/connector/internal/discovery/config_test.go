@@ -9,7 +9,7 @@ import (
 func TestLoadConfigFromFile_ValidConfig(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.yaml")
-	content := `# PAM Connector config
+	content := `# AccessD Connector config
 apps:
   dbeaver: "/Applications/DBeaver.app"
   filezilla: "/usr/bin/filezilla"
@@ -81,7 +81,7 @@ func TestLoadConfigFromFile_QuotedValues(t *testing.T) {
 }
 
 func TestLoadConfigFromFile_MissingFile(t *testing.T) {
-	cfg, err := loadConfigFromFile("/tmp/does-not-exist-pam-config-test.yaml")
+	cfg, err := loadConfigFromFile("/tmp/does-not-exist-accessd-config-test.yaml")
 	if err == nil {
 		t.Fatal("expected error for missing file")
 	}
@@ -133,7 +133,7 @@ func TestLoadConfig_EnvOverride(t *testing.T) {
 		t.Fatalf("write config: %v", err)
 	}
 
-	t.Setenv("PAM_CONNECTOR_CONFIG_FILE", cfgPath)
+	t.Setenv("ACCESSD_CONNECTOR_CONFIG_FILE", cfgPath)
 	cfg, err := LoadConfig()
 	if err != nil {
 		t.Fatalf("load config: %v", err)
@@ -147,23 +147,79 @@ func TestLoadConfig_EnvOverride(t *testing.T) {
 }
 
 func TestLoadConfig_EnvOverrideInvalidPath(t *testing.T) {
-	t.Setenv("PAM_CONNECTOR_CONFIG_FILE", "/tmp/does-not-exist-pam-cfg-test.yaml")
+	t.Setenv("ACCESSD_CONNECTOR_CONFIG_FILE", "/tmp/does-not-exist-accessd-cfg-test.yaml")
 	_, err := LoadConfig()
 	if err == nil {
-		t.Fatal("expected error when PAM_CONNECTOR_CONFIG_FILE points to missing file")
+		t.Fatal("expected error when ACCESSD_CONNECTOR_CONFIG_FILE points to missing file")
 	}
 }
 
 func TestLoadConfig_NoFileReturnsNil(t *testing.T) {
-	t.Setenv("PAM_CONNECTOR_CONFIG_FILE", "")
+	t.Setenv("ACCESSD_CONNECTOR_CONFIG_FILE", "")
 	// Use a non-existent home dir to prevent default file from being found
-	t.Setenv("HOME", "/tmp/does-not-exist-pam-home")
+	t.Setenv("HOME", "/tmp/does-not-exist-accessd-home")
 	cfg, err := LoadConfig()
 	if err != nil {
 		t.Fatalf("expected no error when no config exists: %v", err)
 	}
 	if cfg != nil {
 		t.Fatal("expected nil config when no file exists")
+	}
+}
+
+func TestEnsureDefaultConfigFile_CreatesStarterFile(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	path, created, err := EnsureDefaultConfigFile()
+	if err != nil {
+		t.Fatalf("EnsureDefaultConfigFile returned error: %v", err)
+	}
+	if !created {
+		t.Fatal("expected config file to be created")
+	}
+	if path == "" {
+		t.Fatal("expected non-empty config path")
+	}
+
+	data, readErr := os.ReadFile(path)
+	if readErr != nil {
+		t.Fatalf("read created config file: %v", readErr)
+	}
+	if len(data) == 0 {
+		t.Fatal("expected starter config to contain content")
+	}
+}
+
+func TestEnsureDefaultConfigFile_DoesNotOverwriteExisting(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	path := filepath.Join(home, ".accessd-connector", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+	original := "apps:\n  dbeaver: /custom/dbeaver\n"
+	if err := os.WriteFile(path, []byte(original), 0o600); err != nil {
+		t.Fatalf("seed config: %v", err)
+	}
+
+	gotPath, created, err := EnsureDefaultConfigFile()
+	if err != nil {
+		t.Fatalf("EnsureDefaultConfigFile returned error: %v", err)
+	}
+	if created {
+		t.Fatal("did not expect existing config to be recreated")
+	}
+	if gotPath != path {
+		t.Fatalf("expected path %q, got %q", path, gotPath)
+	}
+	data, readErr := os.ReadFile(path)
+	if readErr != nil {
+		t.Fatalf("read config: %v", readErr)
+	}
+	if string(data) != original {
+		t.Fatal("expected existing config content to stay unchanged")
 	}
 }
 

@@ -18,6 +18,7 @@ import type {
   AdminUsersResponse,
   ConnectorDBeaverLaunchRequest,
   ConnectorRedisLaunchRequest,
+  ConnectorReleaseMetadata,
   ConnectorShellLaunchRequest,
   ConnectorSFTPLaunchRequest,
   LaunchSessionRequest,
@@ -38,7 +39,7 @@ type APIError = {
 }
 
 const API_BASE = '/api'
-const CONNECTOR_BASE = import.meta.env.VITE_CONNECTOR_BASE ?? '/connector'
+const CONNECTOR_BASE = import.meta.env.VITE_CONNECTOR_BASE ?? 'http://127.0.0.1:9494'
 const CONNECTOR_TOKEN_REQUIRED = parseConnectorTokenRequired(import.meta.env.VITE_CONNECTOR_TOKEN_REQUIRED)
 
 export class ConnectorHandoffError extends Error {
@@ -116,8 +117,22 @@ export async function getMe(): Promise<User> {
   return requestJSON('/me', { method: 'GET' })
 }
 
+export async function changeMyPassword(currentPassword: string, newPassword: string): Promise<void> {
+  await requestJSON('/auth/password', {
+    method: 'PUT',
+    body: JSON.stringify({
+      current_password: currentPassword,
+      new_password: newPassword,
+    }),
+  })
+}
+
 export async function getMyAccess(): Promise<MyAccessResponse> {
   return requestJSON('/access/my', { method: 'GET' })
+}
+
+export async function getConnectorReleaseMetadata(): Promise<ConnectorReleaseMetadata> {
+  return requestJSON('/connector/releases/latest', { method: 'GET' })
 }
 
 export async function createSessionLaunch(
@@ -174,6 +189,19 @@ async function connectorLaunchRequest<TResponse>(
   }
 
   return (await response.json()) as TResponse
+}
+
+export async function getConnectorVersion(): Promise<string> {
+  const response = await fetch(`${CONNECTOR_BASE}/version`, { method: 'GET' })
+  if (!response.ok) {
+    throw new Error(`connector version check failed (${response.status})`)
+  }
+  const payload = await response.json() as { version?: string }
+  const version = (payload.version ?? '').trim()
+  if (!version) {
+    throw new Error('connector version response missing version')
+  }
+  return version
 }
 
 export async function handoffShellToConnector(

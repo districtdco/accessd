@@ -15,7 +15,7 @@ func TestValidateBinary_EmptyPath(t *testing.T) {
 }
 
 func TestValidateBinary_AbsolutePathMissing(t *testing.T) {
-	_, err := validateBinary("/tmp/does-not-exist-pam-discovery-test")
+	_, err := validateBinary("/tmp/does-not-exist-accessd-discovery-test")
 	if err == nil {
 		t.Fatal("expected error for missing absolute path")
 	}
@@ -65,7 +65,7 @@ func TestResolverResolveApp_EnvOverride(t *testing.T) {
 		t.Fatalf("write temp binary: %v", err)
 	}
 
-	t.Setenv("PAM_CONNECTOR_DBEAVER_PATH", bin)
+	t.Setenv("ACCESSD_CONNECTOR_DBEAVER_PATH", bin)
 	r := NewResolver(nil)
 	res, err := r.ResolveApp(AppDBeaver)
 	if err != nil {
@@ -80,7 +80,7 @@ func TestResolverResolveApp_EnvOverride(t *testing.T) {
 }
 
 func TestResolverResolveApp_EnvOverrideInvalid(t *testing.T) {
-	t.Setenv("PAM_CONNECTOR_DBEAVER_PATH", "/tmp/does-not-exist-pam-test")
+	t.Setenv("ACCESSD_CONNECTOR_DBEAVER_PATH", "/tmp/does-not-exist-accessd-test")
 	r := NewResolver(nil)
 	_, err := r.ResolveApp(AppDBeaver)
 	if err == nil {
@@ -103,7 +103,7 @@ func TestResolverResolveApp_ConfigOverride(t *testing.T) {
 	}
 
 	// Clear env to ensure config takes priority
-	t.Setenv("PAM_CONNECTOR_REDIS_CLI_PATH", "")
+	t.Setenv("ACCESSD_CONNECTOR_REDIS_CLI_PATH", "")
 
 	cfg := &ConnectorConfig{
 		Apps: map[string]string{
@@ -125,10 +125,10 @@ func TestResolverResolveApp_ConfigOverride(t *testing.T) {
 }
 
 func TestResolverResolveApp_ConfigOverrideInvalid(t *testing.T) {
-	t.Setenv("PAM_CONNECTOR_REDIS_CLI_PATH", "")
+	t.Setenv("ACCESSD_CONNECTOR_REDIS_CLI_PATH", "")
 	cfg := &ConnectorConfig{
 		Apps: map[string]string{
-			"redis_cli": "/tmp/does-not-exist-pam-test",
+			"redis_cli": "/tmp/does-not-exist-accessd-test",
 		},
 		loadedFrom: "/test/config.yaml",
 	}
@@ -156,7 +156,7 @@ func TestResolverResolveApp_EnvTakesPriorityOverConfig(t *testing.T) {
 		}
 	}
 
-	t.Setenv("PAM_CONNECTOR_REDIS_CLI_PATH", envBin)
+	t.Setenv("ACCESSD_CONNECTOR_REDIS_CLI_PATH", envBin)
 	cfg := &ConnectorConfig{
 		Apps: map[string]string{
 			"redis_cli": cfgBin,
@@ -177,9 +177,9 @@ func TestResolverResolveApp_EnvTakesPriorityOverConfig(t *testing.T) {
 
 func TestResolverResolveTerminal_Default(t *testing.T) {
 	// Clear env
-	t.Setenv("PAM_CONNECTOR_TERMINAL_MACOS", "")
-	t.Setenv("PAM_CONNECTOR_TERMINAL_LINUX", "")
-	t.Setenv("PAM_CONNECTOR_TERMINAL_WINDOWS", "")
+	t.Setenv("ACCESSD_CONNECTOR_TERMINAL_MACOS", "")
+	t.Setenv("ACCESSD_CONNECTOR_TERMINAL_LINUX", "")
+	t.Setenv("ACCESSD_CONNECTOR_TERMINAL_WINDOWS", "")
 
 	r := NewResolver(nil)
 	res := r.ResolveTerminal()
@@ -209,9 +209,9 @@ func TestResolverResolveTerminal_EnvOverride(t *testing.T) {
 
 func TestResolverResolveTerminal_ConfigOverride(t *testing.T) {
 	// Clear env
-	t.Setenv("PAM_CONNECTOR_TERMINAL_MACOS", "")
-	t.Setenv("PAM_CONNECTOR_TERMINAL_LINUX", "")
-	t.Setenv("PAM_CONNECTOR_TERMINAL_WINDOWS", "")
+	t.Setenv("ACCESSD_CONNECTOR_TERMINAL_MACOS", "")
+	t.Setenv("ACCESSD_CONNECTOR_TERMINAL_LINUX", "")
+	t.Setenv("ACCESSD_CONNECTOR_TERMINAL_WINDOWS", "")
 
 	cfg := &ConnectorConfig{
 		Terminal: TerminalConfig{
@@ -251,11 +251,11 @@ func TestAutoDetectCandidates_ReturnsNonEmpty(t *testing.T) {
 }
 
 func TestBuildInstallHint_ContainsEnvVar(t *testing.T) {
-	hint := buildInstallHint(AppDBeaver, "PAM_CONNECTOR_DBEAVER_PATH")
+	hint := buildInstallHint(AppDBeaver, "ACCESSD_CONNECTOR_DBEAVER_PATH")
 	if hint == "" {
 		t.Fatal("expected non-empty hint")
 	}
-	if !containsSubstring(hint, "PAM_CONNECTOR_DBEAVER_PATH") {
+	if !containsSubstring(hint, "ACCESSD_CONNECTOR_DBEAVER_PATH") {
 		t.Fatalf("expected hint to mention env var, got %q", hint)
 	}
 }

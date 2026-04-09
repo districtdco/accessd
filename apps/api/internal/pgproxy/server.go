@@ -1164,7 +1164,7 @@ func buildProxyTLSConfig(publicHost string) (*tls.Config, error) {
 	template := &x509.Certificate{
 		SerialNumber: big.NewInt(now.UnixNano()),
 		Subject: pkix.Name{
-			CommonName: "pam-pg-proxy",
+			CommonName: "accessd-pg-proxy",
 		},
 		NotBefore:             now.Add(-time.Hour),
 		NotAfter:              now.Add(365 * 24 * time.Hour),

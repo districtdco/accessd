@@ -1,4 +1,4 @@
-// Package discovery provides cross-platform application discovery for PAM
+// Package discovery provides cross-platform application discovery for AccessD
 // connector launchers. It resolves application paths using a strict priority
 // order: environment variable → config file → OS-specific auto-detection →
 // actionable error. It never silently succeeds if a binary is not valid.
@@ -42,18 +42,18 @@ const (
 
 // envKeys maps each app to its environment variable override.
 var envKeys = map[AppName]string{
-	AppDBeaver:   "PAM_CONNECTOR_DBEAVER_PATH",
-	AppFileZilla: "PAM_CONNECTOR_FILEZILLA_PATH",
-	AppWinSCP:    "PAM_CONNECTOR_WINSCP_PATH",
-	AppPuTTY:     "PAM_CONNECTOR_PUTTY_PATH",
-	AppRedisCLI:  "PAM_CONNECTOR_REDIS_CLI_PATH",
+	AppDBeaver:   "ACCESSD_CONNECTOR_DBEAVER_PATH",
+	AppFileZilla: "ACCESSD_CONNECTOR_FILEZILLA_PATH",
+	AppWinSCP:    "ACCESSD_CONNECTOR_WINSCP_PATH",
+	AppPuTTY:     "ACCESSD_CONNECTOR_PUTTY_PATH",
+	AppRedisCLI:  "ACCESSD_CONNECTOR_REDIS_CLI_PATH",
 }
 
 // terminalEnvKeys maps each OS to its terminal preference env var.
 var terminalEnvKeys = map[string]string{
-	"darwin":  "PAM_CONNECTOR_TERMINAL_MACOS",
-	"linux":   "PAM_CONNECTOR_TERMINAL_LINUX",
-	"windows": "PAM_CONNECTOR_TERMINAL_WINDOWS",
+	"darwin":  "ACCESSD_CONNECTOR_TERMINAL_MACOS",
+	"linux":   "ACCESSD_CONNECTOR_TERMINAL_LINUX",
+	"windows": "ACCESSD_CONNECTOR_TERMINAL_WINDOWS",
 }
 
 // Resolution describes how a path was resolved, for diagnostics.
@@ -403,12 +403,12 @@ func DefaultConfigPath() string {
 		if home == "" {
 			return ""
 		}
-		return filepath.Join(home, ".pam-connector", "config.yaml")
+		return filepath.Join(home, ".accessd-connector", "config.yaml")
 	default:
 		home, err := os.UserHomeDir()
 		if err != nil {
 			return ""
 		}
-		return filepath.Join(home, ".pam-connector", "config.yaml")
+		return filepath.Join(home, ".accessd-connector", "config.yaml")
 	}
 }

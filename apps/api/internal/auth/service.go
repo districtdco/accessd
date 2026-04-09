@@ -163,6 +163,15 @@ type LoginRequest struct {
 	UserAgent string
 }
 
+// ChangePasswordRequest carries metadata and credentials for self-service password change.
+type ChangePasswordRequest struct {
+	UserID          string
+	CurrentPassword string
+	NewPassword     string
+	SourceIP        string
+	UserAgent       string
+}
+
 func (s *Service) Login(ctx context.Context, username, password string) (LoginResult, *http.Cookie, error) {
 	return s.LoginWithContext(ctx, LoginRequest{Username: username, Password: password})
 }
@@ -278,6 +287,84 @@ WHERE session_token_hash = $1 AND revoked_at IS NULL;`
 	}
 
 	return nil
+}
+
+func (s *Service) ChangePassword(ctx context.Context, req ChangePasswordRequest) error {
+	userID := strings.TrimSpace(req.UserID)
+	currentPassword := strings.TrimSpace(req.CurrentPassword)
+	newPassword := strings.TrimSpace(req.NewPassword)
+
+	if userID == "" {
+		return ErrUnauthorized
+	}
+	if len(newPassword) < 8 {
+		return ErrInvalidNewPassword
+	}
+
+	const query = `
+SELECT username, COALESCE(auth_provider, 'local'), COALESCE(password_hash, '')
+FROM users
+WHERE id = $1
+LIMIT 1;`
+
+	var username string
+	var authProvider string
+	var passwordHash string
+	if err := s.pool.QueryRow(ctx, query, userID).Scan(&username, &authProvider, &passwordHash); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrUserNotFound
+		}
+		return fmt.Errorf("load user for password change: %w", err)
+	}
+
+	if authProvider != "local" {
+		s.recordPasswordChangeAudit(ctx, userID, username, req.SourceIP, req.UserAgent, "failed_non_local_user")
+		return ErrPasswordChangeNotAllowed
+	}
+
+	if passwordHash == "" || bcrypt.CompareHashAndPassword([]byte(passwordHash), []byte(currentPassword)) != nil {
+		s.recordPasswordChangeAudit(ctx, userID, username, req.SourceIP, req.UserAgent, "failed_invalid_current_password")
+		return ErrInvalidCurrentPassword
+	}
+
+	newHash, err := bcrypt.GenerateFromPassword([]byte(newPassword), bcrypt.DefaultCost)
+	if err != nil {
+		return fmt.Errorf("hash new password: %w", err)
+	}
+
+	const updateSQL = `
+UPDATE users
+SET password_hash = $2,
+    updated_at = NOW()
+WHERE id = $1;`
+	if _, err := s.pool.Exec(ctx, updateSQL, userID, string(newHash)); err != nil {
+		return fmt.Errorf("update user password hash: %w", err)
+	}
+
+	s.recordPasswordChangeAudit(ctx, userID, username, req.SourceIP, req.UserAgent, "success")
+	return nil
+}
+
+func (s *Service) recordPasswordChangeAudit(ctx context.Context, userID, username, sourceIP, userAgent, outcome string) {
+	meta := map[string]any{
+		"username": username,
+		"provider": "local",
+	}
+	eventType := AuditPasswordChangeSuccess
+	if outcome != "success" {
+		eventType = AuditPasswordChangeFailed
+	}
+	if err := writeAuditEvent(ctx, s.pool, AuditEvent{
+		EventType:   eventType,
+		Action:      "password_change",
+		Outcome:     outcome,
+		ActorUserID: &userID,
+		SourceIP:    sourceIP,
+		UserAgent:   userAgent,
+		Metadata:    meta,
+	}); err != nil {
+		s.logger.Warn("failed to write password change audit event", "user_id", userID, "error", err)
+	}
 }
 
 func (s *Service) ResolveCurrentUser(ctx context.Context, sessionToken string) (CurrentUser, error) {

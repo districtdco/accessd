@@ -453,7 +453,7 @@ func (h *SessionsHandler) Launch(w http.ResponseWriter, r *http.Request) {
 			Host:             proxyHost,
 			Port:             proxyPort,
 			Database:         meta.Database,
-			Username:         "pam",
+			Username:         "accessd",
 			UpstreamUsername: strings.TrimSpace(cred.Username),
 			TargetAssetName:  strings.TrimSpace(asset.Name),
 			TargetHost:       strings.TrimSpace(asset.Host),
@@ -1092,7 +1092,7 @@ func (h *SessionsHandler) ExportSessionTranscript(w http.ResponseWriter, r *http
 	lines := normalizeTranscriptRows(events)
 
 	var b strings.Builder
-	b.WriteString("# PAM session transcript (first-pass)\n")
+	b.WriteString("# AccessD session transcript (first-pass)\n")
 	b.WriteString(fmt.Sprintf("# session_id: %s\n", item.SessionID))
 	b.WriteString(fmt.Sprintf("# user: %s\n", item.Username))
 	b.WriteString(fmt.Sprintf("# asset: %s\n", item.AssetName))

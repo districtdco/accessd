@@ -112,6 +112,7 @@ func (s *Service) GetByID(ctx context.Context, id string) (Asset, error) {
 SELECT id, name, asset_type, host, port, metadata_json, created_at
 FROM assets
 WHERE id = $1
+  AND COALESCE(status, 'active') <> 'deleted'
 LIMIT 1;`
 
 	var asset Asset
@@ -153,6 +154,7 @@ SET name = $2,
     metadata_json = $6::jsonb,
     updated_at = NOW()
 WHERE id = $1
+  AND COALESCE(status, 'active') <> 'deleted'
 RETURNING id, name, asset_type, host, port, metadata_json, created_at;`
 
 	var asset Asset
@@ -177,6 +179,7 @@ func (s *Service) List(ctx context.Context) ([]Asset, error) {
 	const query = `
 SELECT id, name, asset_type, host, port, metadata_json, created_at
 FROM assets
+WHERE COALESCE(status, 'active') <> 'deleted'
 ORDER BY name ASC;`
 
 	rows, err := s.pool.Query(ctx, query)

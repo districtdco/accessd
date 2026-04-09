@@ -13,6 +13,7 @@ import { AdminSessionsPage } from './pages/AdminSessionsPage'
 import { AdminUserDetailPage } from './pages/AdminUserDetailPage'
 import { AdminUsersPage } from './pages/AdminUsersPage'
 import { LoginPage } from './pages/LoginPage'
+import { AccountPage } from './pages/AccountPage'
 import { MySessionsPage } from './pages/MySessionsPage'
 import { SessionDetailPage } from './pages/SessionDetailPage'
 
@@ -22,6 +23,7 @@ function App() {
       <Routes>
         <Route path="/login" element={<LoginRoute />} />
         <Route path="/" element={<AccessRoute><AccessPage /></AccessRoute>} />
+        <Route path="/account" element={<ProtectedRoute><AccountPage /></ProtectedRoute>} />
         <Route path="/sessions" element={<ProtectedRoute><MySessionsPage /></ProtectedRoute>} />
         <Route path="/sessions/:sessionID" element={<ProtectedRoute><SessionDetailPage /></ProtectedRoute>} />
         <Route path="/admin/users" element={<AdminRoute><AdminUsersPage /></AdminRoute>} />

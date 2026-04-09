@@ -1127,7 +1127,7 @@ func buildProxyTLSConfig(publicHost string) (*tls.Config, error) {
 	template := &x509.Certificate{
 		SerialNumber: big.NewInt(now.UnixNano()),
 		Subject: pkix.Name{
-			CommonName: "pam-mssql-proxy",
+			CommonName: "accessd-mssql-proxy",
 		},
 		NotBefore:             now.Add(-time.Hour),
 		NotAfter:              now.Add(365 * 24 * time.Hour),

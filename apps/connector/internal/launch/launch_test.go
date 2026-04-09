@@ -139,3 +139,72 @@ func TestUpsertFileZillaSite_EnforcesSingleConnection(t *testing.T) {
 		t.Fatalf("MaximumMultipleConnections = %d, want 1", got)
 	}
 }
+
+func TestDBeaverConnectionSpec_AppendsSessionSuffixToName(t *testing.T) {
+	req := DBeaverRequest{
+		SessionID: "13392c6b-9627-4544-b542-ad5eb9f2d883",
+		AssetName: "accessd-local-postgres",
+		Launch: DBeaverPayload{
+			Engine:           "postgres",
+			Host:             "127.0.0.1",
+			Port:             57533,
+			Username:         "accessd",
+			UpstreamUsername: "app_user",
+			TargetAssetName:  "accessd-local-postgres",
+			TargetHost:       "10.0.0.15",
+		},
+	}
+
+	spec := dbeaverConnectionSpec(req)
+	if !strings.Contains(spec, "name=accessd-local-postgres - app_user (10.0.0.15) [13392c6b]") {
+		t.Fatalf("expected session suffix in dbeaver connection name, got %q", spec)
+	}
+}
+
+func TestDBeaverConnectionSpecWithNameSuffix_AppendsRepairSuffix(t *testing.T) {
+	req := DBeaverRequest{
+		SessionID: "13392c6b-9627-4544-b542-ad5eb9f2d883",
+		AssetName: "accessd-local-postgres",
+		Launch: DBeaverPayload{
+			Engine:           "postgres",
+			Host:             "127.0.0.1",
+			Port:             57533,
+			Username:         "accessd",
+			UpstreamUsername: "app_user",
+			TargetAssetName:  "accessd-local-postgres",
+			TargetHost:       "10.0.0.15",
+		},
+	}
+
+	spec := dbeaverConnectionSpecWithNameSuffix(req, "repair-123")
+	if !strings.Contains(spec, "name=accessd-local-postgres - app_user (10.0.0.15) [13392c6b] {repair-123}") {
+		t.Fatalf("expected repair suffix in dbeaver connection name, got %q", spec)
+	}
+}
+
+func TestRedisCLICommandPreview_AutoInsecureFromEnv(t *testing.T) {
+	prev := os.Getenv("ACCESSD_CONNECTOR_REDIS_TLS_AUTO_INSECURE")
+	if err := os.Setenv("ACCESSD_CONNECTOR_REDIS_TLS_AUTO_INSECURE", "true"); err != nil {
+		t.Fatalf("set env: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Setenv("ACCESSD_CONNECTOR_REDIS_TLS_AUTO_INSECURE", prev)
+	})
+
+	req := RedisRequest{
+		Launch: RedisPayload{
+			Host:      "127.0.0.1",
+			Port:      6379,
+			TLS:       true,
+			Database:  0,
+			Password:  "token",
+			Username:  "default",
+			ExpiresAt: "2099-01-01T00:00:00Z",
+		},
+	}
+
+	preview := redisCLICommandPreview(req)
+	if !strings.Contains(preview, "--tls") || !strings.Contains(preview, "--insecure") {
+		t.Fatalf("expected redis preview to include --tls and --insecure, got %q", preview)
+	}
+}

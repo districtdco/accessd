@@ -1,4 +1,4 @@
-# PAM v1 — Build Checklist (Reconciled)
+# AccessD v1 — Build Checklist (Reconciled)
 
 ## Current Status
 
@@ -26,7 +26,7 @@
 - Access policy model is implemented via `access_grants` (not a separate `access_policies` table in this slice).
 - DB proxy support exists for PostgreSQL/MySQL/MSSQL (with MSSQL TLS tunnel limitation).
 - SFTP relay and Redis proxy flows are implemented (with Redis client-leg TLS limitation).
-- Connector trust model is HMAC-signed launch tokens (`PAM_CONNECTOR_SECRET`), not JWT login flow.
+- Connector trust model is HMAC-signed launch tokens (`ACCESSD_CONNECTOR_SECRET`), not JWT login flow.
 - API TLS posture is edge-terminated TLS (reverse proxy/LB), not app-native TLS listener.
 
 ---
@@ -140,7 +140,7 @@
 - Phase 14: Implement single centralized audit writer module called by all modules
   - Superseded by current per-module audited event writes; remaining concern is non-blocking behavior, tracked above.
 - Phase 16: Connector authentication via JWT login flow and stored connector login config
-  - Superseded by HMAC-signed backend launch tokens (`PAM_CONNECTOR_SECRET`) and loopback trust boundary.
+  - Superseded by HMAC-signed backend launch tokens (`ACCESSD_CONNECTOR_SECRET`) and loopback trust boundary.
 - Phase 17: JWT secret/key configuration for production
   - Superseded wording for current architecture (cookie sessions + launch token secret + connector secret).
 - Phase 17: HTTPS/TLS listener in API app process

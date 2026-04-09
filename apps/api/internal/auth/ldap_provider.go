@@ -3,9 +3,12 @@ package auth
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -151,9 +154,9 @@ func (p *LDAPProvider) dial() (*ldap.Conn, error) {
 		address = fmt.Sprintf("%s://%s:%d", scheme, p.cfg.Host, p.cfg.Port)
 	}
 
-	tlsConfig := &tls.Config{
-		MinVersion:         tls.VersionTLS12,
-		InsecureSkipVerify: p.cfg.InsecureSkipVerify,
+	tlsConfig, err := buildLDAPTLSConfig(p.cfg)
+	if err != nil {
+		return nil, err
 	}
 
 	options := []ldap.DialOpt{}
@@ -174,6 +177,30 @@ func (p *LDAPProvider) dial() (*ldap.Conn, error) {
 	}
 
 	return conn, nil
+}
+
+func buildLDAPTLSConfig(cfg config.LDAPConfig) (*tls.Config, error) {
+	tlsConfig := &tls.Config{
+		MinVersion:         tls.VersionTLS12,
+		InsecureSkipVerify: cfg.InsecureSkipVerify,
+	}
+	caFile := strings.TrimSpace(cfg.CACertFile)
+	if caFile == "" {
+		return tlsConfig, nil
+	}
+	pool, err := x509.SystemCertPool()
+	if err != nil || pool == nil {
+		pool = x509.NewCertPool()
+	}
+	pemData, err := os.ReadFile(caFile)
+	if err != nil {
+		return nil, fmt.Errorf("read ACCESSD_LDAP_CA_CERT_FILE %q: %w", caFile, err)
+	}
+	if ok := pool.AppendCertsFromPEM(pemData); !ok {
+		return nil, fmt.Errorf("ACCESSD_LDAP_CA_CERT_FILE %q does not contain a valid PEM certificate", caFile)
+	}
+	tlsConfig.RootCAs = pool
+	return tlsConfig, nil
 }
 
 func (p *LDAPProvider) lookupUser(ctx context.Context, conn *ldap.Conn, username string) (ldapUserProfile, error) {
@@ -450,31 +477,108 @@ func parseGroupRoleMapping(raw string) (map[string][]string, error) {
 		return result, nil
 	}
 
-	entries := strings.Split(raw, ",")
+	entries, err := splitGroupRoleEntries(raw)
+	if err != nil {
+		return nil, err
+	}
 	for _, entry := range entries {
-		parts := strings.SplitN(strings.TrimSpace(entry), "=", 2)
-		if len(parts) != 2 {
-			return nil, fmt.Errorf("invalid PAM_LDAP_GROUP_ROLE_MAPPING entry %q (expected group=role1|role2)", entry)
+		groupName, cleanRoles, err := parseGroupRoleEntry(entry)
+		if err != nil {
+			return nil, err
 		}
-		groupName := strings.ToLower(strings.TrimSpace(parts[0]))
 		if groupName == "" {
-			return nil, fmt.Errorf("invalid PAM_LDAP_GROUP_ROLE_MAPPING entry %q (empty group)", entry)
-		}
-		roles := strings.Split(parts[1], "|")
-		cleanRoles := make([]string, 0, len(roles))
-		for _, role := range roles {
-			trimmed := strings.TrimSpace(role)
-			if trimmed != "" {
-				cleanRoles = append(cleanRoles, trimmed)
-			}
+			return nil, fmt.Errorf("invalid ACCESSD_LDAP_GROUP_ROLE_MAPPING entry %q (empty group)", entry)
 		}
 		if len(cleanRoles) == 0 {
-			return nil, fmt.Errorf("invalid PAM_LDAP_GROUP_ROLE_MAPPING entry %q (no roles)", entry)
+			return nil, fmt.Errorf("invalid ACCESSD_LDAP_GROUP_ROLE_MAPPING entry %q (no roles)", entry)
 		}
 		result[groupName] = appendUnique(result[groupName], cleanRoles...)
 	}
 
 	return result, nil
+}
+
+var ldapRoleTokenPattern = regexp.MustCompile(`^[a-zA-Z0-9_.:-]+$`)
+
+func splitGroupRoleEntries(raw string) ([]string, error) {
+	parts := strings.Split(raw, ",")
+	entries := make([]string, 0, len(parts))
+	buffer := ""
+	for _, part := range parts {
+		segment := strings.TrimSpace(part)
+		if segment == "" {
+			continue
+		}
+		if buffer == "" {
+			buffer = segment
+		} else {
+			buffer += "," + segment
+		}
+		_, roles, err := parseGroupRoleEntry(buffer)
+		if err == nil && isCompleteGroupRoleEntry(roles) {
+			entries = append(entries, buffer)
+			buffer = ""
+		}
+	}
+	if strings.TrimSpace(buffer) != "" {
+		return nil, fmt.Errorf("invalid ACCESSD_LDAP_GROUP_ROLE_MAPPING entry %q (expected group=role1|role2)", buffer)
+	}
+	if len(entries) == 0 {
+		return nil, fmt.Errorf("invalid ACCESSD_LDAP_GROUP_ROLE_MAPPING entry %q (expected group=role1|role2)", raw)
+	}
+	return entries, nil
+}
+
+func isCompleteGroupRoleEntry(roles []string) bool {
+	if len(roles) == 0 {
+		return false
+	}
+	// Heuristic to disambiguate DN fragments that contain '=' and commas:
+	// - multi-role mappings (role1|role2) are considered complete
+	// - single-role mappings are only considered complete for known AccessD roles
+	//   (admin/operator/auditor/user). This avoids prematurely splitting DN pieces
+	//   like "CN=pam-admins" as if "pam-admins" were a role.
+	if len(roles) > 1 {
+		return true
+	}
+	switch strings.ToLower(strings.TrimSpace(roles[0])) {
+	case "admin", "operator", "auditor", "user":
+		return true
+	default:
+		return false
+	}
+}
+
+func parseGroupRoleEntry(entry string) (string, []string, error) {
+	trimmed := strings.TrimSpace(entry)
+	lastEq := strings.LastIndex(trimmed, "=")
+	if lastEq <= 0 || lastEq >= len(trimmed)-1 {
+		return "", nil, fmt.Errorf("invalid ACCESSD_LDAP_GROUP_ROLE_MAPPING entry %q (expected group=role1|role2)", entry)
+	}
+	groupName := strings.ToLower(strings.TrimSpace(trimmed[:lastEq]))
+	rolesRaw := strings.TrimSpace(trimmed[lastEq+1:])
+	if groupName == "" {
+		return "", nil, fmt.Errorf("invalid ACCESSD_LDAP_GROUP_ROLE_MAPPING entry %q (empty group)", entry)
+	}
+	if rolesRaw == "" {
+		return "", nil, fmt.Errorf("invalid ACCESSD_LDAP_GROUP_ROLE_MAPPING entry %q (no roles)", entry)
+	}
+	roles := strings.Split(rolesRaw, "|")
+	cleanRoles := make([]string, 0, len(roles))
+	for _, role := range roles {
+		role = strings.TrimSpace(role)
+		if role == "" {
+			continue
+		}
+		if !ldapRoleTokenPattern.MatchString(role) {
+			return "", nil, fmt.Errorf("invalid ACCESSD_LDAP_GROUP_ROLE_MAPPING entry %q (invalid role token %q)", entry, role)
+		}
+		cleanRoles = append(cleanRoles, role)
+	}
+	if len(cleanRoles) == 0 {
+		return "", nil, fmt.Errorf("invalid ACCESSD_LDAP_GROUP_ROLE_MAPPING entry %q (no roles)", entry)
+	}
+	return groupName, cleanRoles, nil
 }
 
 func firstNonEmptyAttributeValue(entry *ldap.Entry, candidates ...string) string {

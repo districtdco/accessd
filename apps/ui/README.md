@@ -1,4 +1,4 @@
-# apps/ui — PAM Frontend
+# apps/ui — AccessD Frontend
 
 Minimal React + Vite frontend for integrated shell + SFTP + DBeaver + Redis brokered launch flows.
 
@@ -99,7 +99,7 @@ Frontend sends this JSON to the connector:
   "launch": {
     "proxy_host": "127.0.0.1",
     "proxy_port": 2222,
-    "username": "pam",
+    "username": "accessd",
     "token": "short-lived-launch-token",
     "expires_at": "2026-04-06T14:30:00Z"
   }
@@ -131,9 +131,9 @@ Current DBeaver limitations:
 - MySQL path captures common simple/prepared flows.
 - MSSQL path captures SQL batch + common RPC prepared flows, but TLS-tunneled MSSQL sessions are not yet supported in this slice.
 
-Current Redis limitation: the connector supports `redis-cli --tls` when `redis_tls=true` is present in launch payload, but PAM currently issues non-TLS client-leg Redis proxy endpoints in this slice; upstream Redis TLS from PAM proxy to target is supported.
+Current Redis limitation: the connector supports `redis-cli --tls` when `redis_tls=true` is present in launch payload, but AccessD currently issues non-TLS client-leg Redis proxy endpoints in this slice; upstream Redis TLS from AccessD proxy to target is supported.
 Current SFTP limitations:
-- SFTP sessions are relayed through PAM and file-operation events are captured (`upload_write`, `download_read`, `delete`, `rename`, `mkdir`, `rmdir`, `stat`, `list`).
+- SFTP sessions are relayed through AccessD and file-operation events are captured (`upload_write`, `download_read`, `delete`, `rename`, `mkdir`, `rmdir`, `stat`, `list`).
 - Remaining gap: not all uncommon SFTP extensions are decoded yet, and operation-level success/failure attribution is still basic.
 
 ## Development

@@ -6,7 +6,26 @@ import (
 	"testing"
 )
 
+func clearAccessDEnvForCompatTests(t *testing.T) {
+	t.Helper()
+	keys := []string{
+		"ACCESSD_CONFIG_FILE",
+		"ACCESSD_ENV",
+		"ACCESSD_DB_URL",
+		"ACCESSD_VAULT_KEY",
+		"ACCESSD_LAUNCH_TOKEN_SECRET",
+		"ACCESSD_AUTH_PROVIDER_MODE",
+		"ACCESSD_LDAP_BASE_DN",
+		"ACCESSD_AUTH_COOKIE_SECURE",
+		"ACCESSD_ALLOW_UNSAFE_MODE",
+	}
+	for _, key := range keys {
+		t.Setenv(key, "")
+	}
+}
+
 func TestLoadLDAPSambaDefaults(t *testing.T) {
+	clearAccessDEnvForCompatTests(t)
 	t.Setenv("PAM_ENV", "development")
 	t.Setenv("PAM_DB_URL", "postgres://postgres:postgres@localhost:5432/pam?sslmode=disable")
 	t.Setenv("PAM_VAULT_KEY", "dev-only-key")
@@ -34,6 +53,7 @@ func TestLoadLDAPSambaDefaults(t *testing.T) {
 }
 
 func TestLoadHybridRequiresLDAPBaseDN(t *testing.T) {
+	clearAccessDEnvForCompatTests(t)
 	t.Setenv("PAM_ENV", "development")
 	t.Setenv("PAM_DB_URL", "postgres://postgres:postgres@localhost:5432/pam?sslmode=disable")
 	t.Setenv("PAM_VAULT_KEY", "dev-only-key")
@@ -48,6 +68,7 @@ func TestLoadHybridRequiresLDAPBaseDN(t *testing.T) {
 }
 
 func TestLoad_UsesConfigFileWhenEnvMissing(t *testing.T) {
+	clearAccessDEnvForCompatTests(t)
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "pam.env")
 	content := "PAM_DB_URL=postgres://postgres:postgres@localhost:5432/pam?sslmode=disable\n" +
@@ -74,6 +95,7 @@ func TestLoad_UsesConfigFileWhenEnvMissing(t *testing.T) {
 }
 
 func TestLoad_ConfigFileDoesNotOverrideExplicitEnv(t *testing.T) {
+	clearAccessDEnvForCompatTests(t)
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "pam.env")
 	content := "PAM_DB_URL=postgres://postgres:postgres@localhost:5432/from_file?sslmode=disable\n" +

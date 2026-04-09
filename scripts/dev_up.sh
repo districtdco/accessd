@@ -42,7 +42,7 @@ fi
 echo "[dev_up] starting services: ${services[*]}"
 ("${COMPOSE[@]}" -f "$ROOT_DIR/docker-compose.yml" up -d "${services[@]}")
 
-echo "[dev_up] waiting for PAM postgres to become reachable"
+echo "[dev_up] waiting for AccessD postgres to become reachable"
 for _ in $(seq 1 30); do
   if ("${COMPOSE[@]}" -f "$ROOT_DIR/docker-compose.yml" exec -T postgres pg_isready -U pam -d pam >/dev/null 2>&1); then
     echo "[dev_up] postgres is ready"
@@ -58,7 +58,7 @@ fi
 
 echo
 printf 'Started services:\n'
-printf '  - PAM control-plane DB:     postgres://pam:pam_dev_password@127.0.0.1:5432/pam?sslmode=disable\n'
+printf '  - AccessD control-plane DB: postgres://pam:pam_dev_password@127.0.0.1:5432/pam?sslmode=disable\n'
 printf '  - LDAP (optional dev auth): ldap://127.0.0.1:389 and ldaps://127.0.0.1:636\n'
 
 if [[ "$WITH_TARGETS" == "true" ]]; then

@@ -82,12 +82,12 @@ func (c *Cipher) Decrypt(nonce, encrypted, aad []byte) ([]byte, error) {
 func decodeOrDeriveKey(masterKey string) ([]byte, error) {
 	trimmed := strings.TrimSpace(masterKey)
 	if trimmed == "" {
-		return nil, fmt.Errorf("PAM_VAULT_KEY is required")
+		return nil, fmt.Errorf("ACCESSD_VAULT_KEY is required")
 	}
 
 	if decoded, err := base64.StdEncoding.DecodeString(trimmed); err == nil {
 		if len(decoded) != 32 {
-			return nil, fmt.Errorf("PAM_VAULT_KEY base64 value must decode to 32 bytes")
+			return nil, fmt.Errorf("ACCESSD_VAULT_KEY base64 value must decode to 32 bytes")
 		}
 		return decoded, nil
 	}

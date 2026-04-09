@@ -1,6 +1,6 @@
-# apps/api — PAM Backend
+# apps/api — AccessD Backend
 
-Go backend for PAM v1. Current slices include provider-based auth (`local`, `ldap`, `hybrid`) + cookie sessions + RBAC foundation, plus integrated brokered launch flows for shell, SFTP, DBeaver, and Redis CLI.
+Go backend for AccessD v1. Current slices include provider-based auth (`local`, `ldap`, `hybrid`) + cookie sessions + RBAC foundation, plus integrated brokered launch flows for shell, SFTP, DBeaver, and Redis CLI.
 
 ## What Exists Now
 
@@ -42,7 +42,7 @@ go run ./cmd/server migrate status
 go run ./cmd/server bootstrap
 
 # Build with version metadata injection (useful for deploy artifacts)
-go build -ldflags "-X main.version=0.1.0 -X main.commit=$(git rev-parse --short HEAD) -X main.builtAt=$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o bin/pam-api ./cmd/server
+go build -ldflags "-X main.version=0.1.0 -X main.commit=$(git rev-parse --short HEAD) -X main.builtAt=$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o bin/accessd ./cmd/server
 ```
 
 ## Backend Integration Tests
@@ -51,119 +51,121 @@ Focused reliability tests now live under `internal/integration` and cover high-v
 
 ```bash
 cd apps/api
-export PAM_TEST_DB_URL='postgres://postgres:postgres@localhost:5432/pam_test?sslmode=disable'
+export ACCESSD_TEST_DB_URL='postgres://postgres:postgres@localhost:5432/pam_test?sslmode=disable'
 go test ./internal/integration -count=1
 ```
 
 Notes:
 
-- Tests are skipped when `PAM_TEST_DB_URL` is not set.
+- Tests are skipped when `ACCESSD_TEST_DB_URL` is not set.
 - Tests truncate app tables between test cases, so use a dedicated test database.
-- Optional safeguard override: set `PAM_TEST_DB_UNSAFE_OK=1` if your DB URL does not include `test`.
+- Optional safeguard override: set `ACCESSD_TEST_DB_UNSAFE_OK=1` if your DB URL does not include `test`.
 
 ## Startup / Runtime Safety Notes
 
 - `server` startup now logs explicit phases (`migrations`, `bootstrap`) with fail-fast behavior.
 - Migration failures stop startup and return non-zero exit.
 - `GET /health/ready` remains the primary readiness endpoint for deploy checks.
-- In systemd deployment, prefer running migrations in `ExecStartPre` (see `deploy/systemd/pam-api.service`).
+- In systemd deployment, prefer running migrations in `ExecStartPre` (see `deploy/systemd/accessd.service`).
 
 ## Configuration
 
 Required:
 
-- `PAM_DB_URL`: PostgreSQL connection URL
+- `ACCESSD_DB_URL`: PostgreSQL connection URL
 
 Optional:
 
-- `PAM_APP_NAME` (default: `pam-api`)
-- `PAM_ENV` (default: `development`)
-- `PAM_HTTP_ADDR` (default: `:8080`)
-- `PAM_CORS_ALLOWED_ORIGINS` (default in development: `http://localhost:3000,http://127.0.0.1:3000`; empty by default outside development)
-- `PAM_CONFIG_FILE` (optional path to `KEY=VALUE` env file; loaded first, explicit env vars still take precedence)
-- `PAM_SHUTDOWN_TIMEOUT` (default: `15s`)
-- `PAM_VERSION` (default: `0.1.0-dev`)
-- `PAM_COMMIT` (default: `dev`)
-- `PAM_BUILT_AT` (default: `unknown`)
-- `PAM_MIGRATIONS_DIR` (default: `migrations`)
-- `PAM_MIGRATIONS_TABLE` (default: `schema_migrations`)
-- `PAM_DB_MAX_CONNS` (default: `10`)
-- `PAM_DB_MIN_CONNS` (default: `1`)
-- `PAM_DB_MAX_CONN_LIFETIME` (default: `1h`)
-- `PAM_DB_MAX_CONN_IDLE_TIME` (default: `15m`)
-- `PAM_AUTH_COOKIE_NAME` (default: `pam_session`)
-- `PAM_AUTH_SESSION_TTL` (default: `12h`)
-- `PAM_AUTH_COOKIE_SECURE` (default: `false` in `development`, `true` otherwise)
-- `PAM_AUTH_COOKIE_SAMESITE` (default: `lax` in `development`, `strict` otherwise; options: `lax`, `strict`, `none`)
-- `PAM_AUTH_PROVIDER_MODE` (default: `local`; options: `local`, `ldap`, `hybrid`)
-- `PAM_VAULT_KEY` (required): master key for credential encryption (base64-encoded 32-byte key recommended; required outside development unless `PAM_ALLOW_UNSAFE_MODE=true`)
-- `PAM_VAULT_KEY_ID` (default: `v1`)
-- `PAM_LAUNCH_TOKEN_SECRET` (required): HMAC signing secret for launch tokens
-- `PAM_LAUNCH_TOKEN_TTL` (default: `2m`)
-- `PAM_LAUNCH_MATERIALIZE_TIMEOUT` (default: `45s`): timeout for connector-accepted launches to materialize into a proxy/client connection before auto-fail
-- `PAM_LAUNCH_SWEEP_INTERVAL` (default: `15s`): interval for stale pending launch sweep
-- `PAM_SSH_PROXY_ADDR` (default: `:2222`)
-- `PAM_SSH_PROXY_PUBLIC_HOST` (default: `127.0.0.1`)
-- `PAM_SSH_PROXY_PUBLIC_PORT` (default: `2222`)
-- `PAM_SSH_PROXY_USERNAME` (default: `pam`)
-- `PAM_SSH_PROXY_IDLE_TIMEOUT` (default: `5m`)
-- `PAM_SSH_PROXY_MAX_SESSION_DURATION` (default: `8h`)
-- `PAM_PG_PROXY_BIND_HOST` (default: `127.0.0.1`)
-- `PAM_PG_PROXY_PUBLIC_HOST` (default: `127.0.0.1`)
-- `PAM_PG_PROXY_CONNECT_TIMEOUT` (default: `10s`)
-- `PAM_PG_PROXY_QUERY_LOG_QUEUE` (default: `1024`)
-- `PAM_PG_PROXY_QUERY_MAX_BYTES` (default: `16384`)
-- `PAM_PG_PROXY_IDLE_TIMEOUT` (default: `5m`)
-- `PAM_PG_PROXY_MAX_SESSION_DURATION` (default: `8h`)
-- `PAM_MYSQL_PROXY_BIND_HOST` (default: `127.0.0.1`)
-- `PAM_MYSQL_PROXY_PUBLIC_HOST` (default: `127.0.0.1`)
-- `PAM_MYSQL_PROXY_CONNECT_TIMEOUT` (default: `10s`)
-- `PAM_MYSQL_PROXY_QUERY_LOG_QUEUE` (default: `1024`)
-- `PAM_MYSQL_PROXY_QUERY_MAX_BYTES` (default: `16384`)
-- `PAM_MYSQL_PROXY_IDLE_TIMEOUT` (default: `5m`)
-- `PAM_MYSQL_PROXY_MAX_SESSION_DURATION` (default: `8h`)
-- `PAM_MSSQL_PROXY_BIND_HOST` (default: `127.0.0.1`)
-- `PAM_MSSQL_PROXY_PUBLIC_HOST` (default: `127.0.0.1`)
-- `PAM_MSSQL_PROXY_CONNECT_TIMEOUT` (default: `10s`)
-- `PAM_MSSQL_PROXY_QUERY_LOG_QUEUE` (default: `1024`)
-- `PAM_MSSQL_PROXY_QUERY_MAX_BYTES` (default: `16384`)
-- `PAM_MSSQL_PROXY_IDLE_TIMEOUT` (default: `5m`)
-- `PAM_MSSQL_PROXY_MAX_SESSION_DURATION` (default: `8h`)
-- `PAM_REDIS_PROXY_BIND_HOST` (default: `127.0.0.1`)
-- `PAM_REDIS_PROXY_PUBLIC_HOST` (default: `127.0.0.1`)
-- `PAM_REDIS_PROXY_CONNECT_TIMEOUT` (default: `10s`)
-- `PAM_REDIS_PROXY_COMMAND_LOG_QUEUE` (default: `1024`)
-- `PAM_REDIS_PROXY_ARG_MAX_LEN` (default: `128`)
-- `PAM_REDIS_PROXY_IDLE_TIMEOUT` (default: `5m`)
-- `PAM_REDIS_PROXY_MAX_SESSION_DURATION` (default: `8h`)
-- `PAM_SSH_PROXY_HOST_KEY_PATH` (default: `.pam_ssh_proxy_host_key`)
-- `PAM_SSH_PROXY_UPSTREAM_HOSTKEY_MODE` (default: `known-hosts`; options: `accept-new`, `known-hosts`, `insecure`)
-- `PAM_SSH_PROXY_UPSTREAM_KNOWN_HOSTS_PATH` (default: `.pam_upstream_known_hosts`)
-- `PAM_DEV_ADMIN_USERNAME` (default: `admin`)
-- `PAM_DEV_ADMIN_PASSWORD` (default: `admin123`)
-- `PAM_DEV_ADMIN_EMAIL` (default: `admin@pam.local`)
-- `PAM_DEV_ADMIN_NAME` (default: `PAM Administrator`)
-- `PAM_LDAP_URL` (optional; overrides host/port when set)
-- `PAM_LDAP_HOST` (default: `127.0.0.1`)
-- `PAM_LDAP_PORT` (default: `389`)
-- `PAM_LDAP_BASE_DN` (required when auth mode is `ldap` or `hybrid`)
-- `PAM_LDAP_BIND_DN` / `PAM_LDAP_BIND_PASSWORD` (optional service account for user/group searches)
-- `PAM_LDAP_USER_FILTER` (default: `(&(objectCategory=person)(objectClass=user)({{username_attr}}={{username}}))`)
-- `PAM_LDAP_USERNAME_ATTR` (default: `sAMAccountName`)
-- `PAM_LDAP_DISPLAY_NAME_ATTR` (default: `displayName`; falls back to `cn`/`name` when empty)
-- `PAM_LDAP_EMAIL_ATTR` (default: `mail`)
-- `PAM_LDAP_USE_TLS` (default: `false`)
-- `PAM_LDAP_STARTTLS` (default: `false`; mutually exclusive with `PAM_LDAP_USE_TLS`)
-- `PAM_LDAP_INSECURE_SKIP_VERIFY` (default: `false`; dev-only certificate bypass)
-- `PAM_LDAP_GROUP_BASE_DN` (optional; defaults to `PAM_LDAP_BASE_DN`)
-- `PAM_LDAP_GROUP_FILTER` (default: `(&(objectClass=group)(member={{user_dn}}))`)
-- `PAM_LDAP_GROUP_NAME_ATTR` (default: `cn`)
-- `PAM_LDAP_GROUP_ROLE_MAPPING` (optional additive mapping: `ldapGroup=role1|role2,groupDN=role3`)
-- `PAM_ALLOW_UNSAFE_MODE` (default: `false`; enables development-only unsafe settings outside `development`)
+- `ACCESSD_APP_NAME` (default: `accessd`)
+- `ACCESSD_ENV` (default: `development`)
+- `ACCESSD_HTTP_ADDR` (default: `:8080`)
+- `ACCESSD_CORS_ALLOWED_ORIGINS` (default in development: `http://localhost:3000,http://127.0.0.1:3000`; empty by default outside development)
+- `ACCESSD_CONFIG_FILE` (optional path to `KEY=VALUE` env file; loaded first, explicit env vars still take precedence)
+- `ACCESSD_SHUTDOWN_TIMEOUT` (default: `15s`)
+- `ACCESSD_VERSION` (default: `0.1.0-dev`)
+- `ACCESSD_COMMIT` (default: `dev`)
+- `ACCESSD_BUILT_AT` (default: `unknown`)
+- `ACCESSD_MIGRATIONS_DIR` (default: `migrations`)
+- `ACCESSD_MIGRATIONS_TABLE` (default: `schema_migrations`)
+- `ACCESSD_DB_MAX_CONNS` (default: `10`)
+- `ACCESSD_DB_MIN_CONNS` (default: `1`)
+- `ACCESSD_DB_MAX_CONN_LIFETIME` (default: `1h`)
+- `ACCESSD_DB_MAX_CONN_IDLE_TIME` (default: `15m`)
+- `ACCESSD_AUTH_COOKIE_NAME` (default: `accessd_session`)
+- `ACCESSD_AUTH_SESSION_TTL` (default: `12h`)
+- `ACCESSD_AUTH_COOKIE_SECURE` (default: `false` in `development`, `true` otherwise)
+- `ACCESSD_AUTH_COOKIE_SAMESITE` (default: `lax` in `development`, `strict` otherwise; options: `lax`, `strict`, `none`)
+- `ACCESSD_AUTH_PROVIDER_MODE` (default: `local`; options: `local`, `ldap`, `hybrid`)
+- `ACCESSD_VAULT_KEY` (required): master key for credential encryption (base64-encoded 32-byte key recommended; required outside development unless `ACCESSD_ALLOW_UNSAFE_MODE=true`)
+- `ACCESSD_VAULT_KEY_ID` (default: `v1`)
+- `ACCESSD_LAUNCH_TOKEN_SECRET` (required): HMAC signing secret for launch tokens
+- `ACCESSD_LAUNCH_TOKEN_TTL` (default: `2m`)
+- `ACCESSD_LAUNCH_MATERIALIZE_TIMEOUT` (default: `45s`): timeout for connector-accepted launches to materialize into a proxy/client connection before auto-fail
+- `ACCESSD_LAUNCH_SWEEP_INTERVAL` (default: `15s`): interval for stale pending launch sweep
+- `ACCESSD_SSH_PROXY_ADDR` (default: `:2222`)
+- `ACCESSD_SSH_PROXY_PUBLIC_HOST` (default: `127.0.0.1`)
+- `ACCESSD_SSH_PROXY_PUBLIC_PORT` (default: `2222`)
+- `ACCESSD_SSH_PROXY_USERNAME` (default: `accessd`)
+- `ACCESSD_SSH_PROXY_IDLE_TIMEOUT` (default: `5m`)
+- `ACCESSD_SSH_PROXY_MAX_SESSION_DURATION` (default: `8h`)
+- `ACCESSD_PG_PROXY_BIND_HOST` (default: `127.0.0.1`)
+- `ACCESSD_PG_PROXY_PUBLIC_HOST` (default: `127.0.0.1`)
+- `ACCESSD_PG_PROXY_CONNECT_TIMEOUT` (default: `10s`)
+- `ACCESSD_PG_PROXY_QUERY_LOG_QUEUE` (default: `1024`)
+- `ACCESSD_PG_PROXY_QUERY_MAX_BYTES` (default: `16384`)
+- `ACCESSD_PG_PROXY_IDLE_TIMEOUT` (default: `5m`)
+- `ACCESSD_PG_PROXY_MAX_SESSION_DURATION` (default: `8h`)
+- `ACCESSD_MYSQL_PROXY_BIND_HOST` (default: `127.0.0.1`)
+- `ACCESSD_MYSQL_PROXY_PUBLIC_HOST` (default: `127.0.0.1`)
+- `ACCESSD_MYSQL_PROXY_CONNECT_TIMEOUT` (default: `10s`)
+- `ACCESSD_MYSQL_PROXY_QUERY_LOG_QUEUE` (default: `1024`)
+- `ACCESSD_MYSQL_PROXY_QUERY_MAX_BYTES` (default: `16384`)
+- `ACCESSD_MYSQL_PROXY_IDLE_TIMEOUT` (default: `5m`)
+- `ACCESSD_MYSQL_PROXY_MAX_SESSION_DURATION` (default: `8h`)
+- `ACCESSD_MSSQL_PROXY_BIND_HOST` (default: `127.0.0.1`)
+- `ACCESSD_MSSQL_PROXY_PUBLIC_HOST` (default: `127.0.0.1`)
+- `ACCESSD_MSSQL_PROXY_CONNECT_TIMEOUT` (default: `10s`)
+- `ACCESSD_MSSQL_PROXY_QUERY_LOG_QUEUE` (default: `1024`)
+- `ACCESSD_MSSQL_PROXY_QUERY_MAX_BYTES` (default: `16384`)
+- `ACCESSD_MSSQL_PROXY_IDLE_TIMEOUT` (default: `5m`)
+- `ACCESSD_MSSQL_PROXY_MAX_SESSION_DURATION` (default: `8h`)
+- `ACCESSD_REDIS_PROXY_BIND_HOST` (default: `127.0.0.1`)
+- `ACCESSD_REDIS_PROXY_PUBLIC_HOST` (default: `127.0.0.1`)
+- `ACCESSD_REDIS_PROXY_CONNECT_TIMEOUT` (default: `10s`)
+- `ACCESSD_REDIS_PROXY_COMMAND_LOG_QUEUE` (default: `1024`)
+- `ACCESSD_REDIS_PROXY_ARG_MAX_LEN` (default: `128`)
+- `ACCESSD_REDIS_PROXY_IDLE_TIMEOUT` (default: `5m`)
+- `ACCESSD_REDIS_PROXY_MAX_SESSION_DURATION` (default: `8h`)
+- `ACCESSD_SSH_PROXY_HOST_KEY_PATH` (default: `.accessd_ssh_proxy_host_key`)
+- `ACCESSD_SSH_PROXY_UPSTREAM_HOSTKEY_MODE` (default: `accept-new`; options: `accept-new`, `known-hosts`, `insecure`)
+- `ACCESSD_SSH_PROXY_UPSTREAM_KNOWN_HOSTS_PATH` (default: `.accessd_upstream_known_hosts`)
+- `ACCESSD_SSH_PROXY_UPSTREAM_HOSTKEY_AUTO_REPAIR` (default: `true`; auto-repairs known_hosts entry and retries once on upstream host-key mismatch/unknown)
+- `ACCESSD_DEV_ADMIN_USERNAME` (default: `admin`)
+- `ACCESSD_DEV_ADMIN_PASSWORD` (default: `admin123`)
+- `ACCESSD_DEV_ADMIN_EMAIL` (default: `admin@accessd.local`)
+- `ACCESSD_DEV_ADMIN_NAME` (default: `AccessD Administrator`)
+- `ACCESSD_LDAP_URL` (optional; overrides host/port when set)
+- `ACCESSD_LDAP_HOST` (default: `127.0.0.1`)
+- `ACCESSD_LDAP_PORT` (default: `389`)
+- `ACCESSD_LDAP_BASE_DN` (required when auth mode is `ldap` or `hybrid`)
+- `ACCESSD_LDAP_BIND_DN` / `ACCESSD_LDAP_BIND_PASSWORD` (optional service account for user/group searches)
+- `ACCESSD_LDAP_USER_FILTER` (default: `(&(objectCategory=person)(objectClass=user)({{username_attr}}={{username}}))`)
+- `ACCESSD_LDAP_USERNAME_ATTR` (default: `sAMAccountName`)
+- `ACCESSD_LDAP_DISPLAY_NAME_ATTR` (default: `displayName`; falls back to `cn`/`name` when empty)
+- `ACCESSD_LDAP_EMAIL_ATTR` (default: `mail`)
+- `ACCESSD_LDAP_USE_TLS` (default: `false`)
+- `ACCESSD_LDAP_STARTTLS` (default: `false`; mutually exclusive with `ACCESSD_LDAP_USE_TLS`)
+- `ACCESSD_LDAP_INSECURE_SKIP_VERIFY` (default: `false`; dev-only certificate bypass)
+- `ACCESSD_LDAP_CA_CERT_FILE` (optional path to PEM CA cert; use for Samba AD/private/self-signed CA trust)
+- `ACCESSD_LDAP_GROUP_BASE_DN` (optional; defaults to `ACCESSD_LDAP_BASE_DN`)
+- `ACCESSD_LDAP_GROUP_FILTER` (default: `(&(objectClass=group)(member={{user_dn}}))`)
+- `ACCESSD_LDAP_GROUP_NAME_ATTR` (default: `cn`)
+- `ACCESSD_LDAP_GROUP_ROLE_MAPPING` (optional additive mapping: `ldapGroup=role1|role2,groupDN=role3`)
+- `ACCESSD_ALLOW_UNSAFE_MODE` (default: `false`; enables development-only unsafe settings outside `development`)
 
 Deployment note:
 - The API binary serves HTTP in this slice. Production must terminate HTTPS/TLS at an external reverse proxy or load balancer.
-- Reference edge configuration is available at `deploy/nginx/pam-edge.conf`.
+- Reference edge configuration is available at `deploy/nginx/accessd.conf.example`.
 
 ## Current HTTP Endpoints
 
@@ -198,11 +200,11 @@ Deployment note:
 
 ```bash
 cd apps/api
-export PAM_DB_URL='postgres://postgres:postgres@localhost:5432/pam?sslmode=disable'
-export PAM_VAULT_KEY='replace-with-dev-key'
-export PAM_LAUNCH_TOKEN_SECRET='replace-with-dev-launch-token-secret'
-export PAM_LAUNCH_MATERIALIZE_TIMEOUT='45s'
-export PAM_LAUNCH_SWEEP_INTERVAL='15s'
+export ACCESSD_DB_URL='postgres://postgres:postgres@localhost:5432/pam?sslmode=disable'
+export ACCESSD_VAULT_KEY='replace-with-dev-key'
+export ACCESSD_LAUNCH_TOKEN_SECRET='replace-with-dev-launch-token-secret'
+export ACCESSD_LAUNCH_MATERIALIZE_TIMEOUT='45s'
+export ACCESSD_LAUNCH_SWEEP_INTERVAL='15s'
 go run ./cmd/server
 ```
 
@@ -277,11 +279,11 @@ Paste launch token when prompted. Password auth also works as first-pass fallbac
 ## Current Limitations (First Pass)
 
 - Supports `linux_vm + shell`, `linux_vm + sftp`, `database + dbeaver`, and `redis + redis` launch creation in this slice.
-- DBeaver path now launches through an engine-specific PAM DB proxy endpoint (`postgres`, `mysql`, `mssql`) with query capture into `session_events` (`event_type=db_query`).
-- Redis launch now targets a session-scoped PAM RESP proxy endpoint and captures commands into `session_events` (`event_type=redis_command`).
+- DBeaver path now launches through an engine-specific AccessD DB proxy endpoint (`postgres`, `mysql`, `mssql`) with query capture into `session_events` (`event_type=db_query`).
+- Redis launch now targets a session-scoped AccessD RESP proxy endpoint and captures commands into `session_events` (`event_type=redis_command`).
 - Redis command audit payload uses argument summaries with value/script redaction for sensitive patterns (`AUTH`, `SET`/`MSET`/`HMSET`, `CONFIG SET`, `EVAL`, `ACL SETUSER`).
-- SFTP path now launches through PAM SSH/SFTP relay using session launch token authentication and logs file operations (`event_type=file_operation`) in `session_events`.
-- DBeaver launch payload no longer includes the DB password; connector connects to a session-scoped PAM proxy endpoint.
+- SFTP path now launches through AccessD SSH/SFTP relay using session launch token authentication and logs file operations (`event_type=file_operation`) in `session_events`.
+- DBeaver launch payload no longer includes the DB password; connector connects to a session-scoped AccessD proxy endpoint.
 - Connector now returns richer launch diagnostics and DBeaver temp-material cleanup metadata to improve operator troubleshooting.
 - Connector lifecycle metadata currently tracks:
   - `launch_created`
@@ -300,9 +302,10 @@ Paste launch token when prompted. Password auth also works as first-pass fallbac
   - `GET /admin/audit/events` supports practical filters: `event_type`, `user_id`, `asset_id`, `session_id`, `action`, `from`, `to`, `limit`
   - `GET /admin/audit/events/{id}` returns event metadata payload plus linked actor/session/asset summaries
 - Upstream credential type is `password` only in this slice.
-- Upstream host key validation defaults to `known-hosts`; production-like deployments should pre-populate trusted host keys.
-- `accept-new` and `insecure` SSH host-key modes are blocked outside `development` unless `PAM_ALLOW_UNSAFE_MODE=true`.
-- `PAM_AUTH_COOKIE_SECURE=false`, `PAM_AUTH_COOKIE_SAMESITE=none`, and `PAM_LDAP_INSECURE_SKIP_VERIFY=true` are blocked outside `development` unless `PAM_ALLOW_UNSAFE_MODE=true`.
+- Upstream host key validation defaults to `accept-new` and persists accepted fingerprints in `ACCESSD_SSH_PROXY_UPSTREAM_KNOWN_HOSTS_PATH`.
+- In `accept-new`, unknown and rotated keys are accepted and recorded with SHA256 fingerprint logs.
+- `insecure` SSH host-key mode is blocked outside `development` unless `ACCESSD_ALLOW_UNSAFE_MODE=true`.
+- `ACCESSD_AUTH_COOKIE_SECURE=false`, `ACCESSD_AUTH_COOKIE_SAMESITE=none`, and `ACCESSD_LDAP_INSECURE_SKIP_VERIFY=true` are blocked outside `development` unless `ACCESSD_ALLOW_UNSAFE_MODE=true`.
 - Admin credential updates (`PUT /admin/assets/{assetID}/credentials/{credentialType}`) now write an explicit `audit_events` record (`event_type=admin_action`, `action=credential_upsert`).
 - Session stream capture stores `data_in`/`data_out` chunks in `session_events` with base64 payload plus asciicast-v2-like timing tuples; terminal resizes are tracked as `terminal_resize`.
 - Shell replay data remains raw/timed capture; UI replay now uses terminal-emulator rendering for CSI/control-sequence fidelity.
@@ -315,12 +318,12 @@ Paste launch token when prompted. Password auth also works as first-pass fallbac
 - MySQL proxy captures `COM_QUERY` and common prepared flows (`COM_STMT_PREPARE`/`COM_STMT_EXECUTE`) with practical TLS support.
 - MSSQL proxy captures SQL batch and common RPC prepared flows (`sp_prepare`/`sp_prepexec`/`sp_executesql`/`sp_execute`) with per-connection template caching when derivable.
 - MSSQL TLS limitation in this slice: client->proxy TLS tunneling and upstream TDS-TLS tunneling are not implemented; use non-required TLS mode (for example `ssl_mode=disable`) for DBeaver MSSQL launches.
-- Redis client-leg TLS limitation in this slice: connector `redis-cli` currently connects to the PAM Redis proxy endpoint without TLS (typically loopback/session endpoint). Upstream Redis TLS from PAM proxy to target is supported via asset metadata.
+- Redis client-leg TLS limitation in this slice: connector `redis-cli` currently connects to the AccessD Redis proxy endpoint without TLS (typically loopback/session endpoint). Upstream Redis TLS from AccessD proxy to target is supported via asset metadata.
 - SFTP relay captures practical operations (`upload_write`, `download_read`, `delete`, `rename`, `mkdir`, `rmdir`, `stat`, `list`) with path and size (when derivable). Remaining gap: operation-level success/failure and full protocol coverage for less-common SFTP extensions.
 
 ## Auth/RBAC Notes
 
-- Auth mode is selected by `PAM_AUTH_PROVIDER_MODE`:
+- Auth mode is selected by `ACCESSD_AUTH_PROVIDER_MODE`:
   - `local`: local provider only.
   - `ldap`: LDAP provider only.
   - `hybrid`: LDAP provider first, local fallback second.
@@ -328,7 +331,7 @@ Paste launch token when prompted. Password auth also works as first-pass fallbac
 - Authenticated API access uses server-controlled HTTP-only cookies.
 - LDAP login maps users into local `users` rows (`auth_provider=ldap`) and updates basic profile attributes on login.
 - LDAP diagnostics now differentiate user-not-found, invalid password, bind/search config issues, and TLS/connectivity issues in logs without leaking secrets.
-- Optional LDAP group-to-role mapping is additive-only on login (`PAM_LDAP_GROUP_ROLE_MAPPING`); existing local roles are preserved.
+- Optional LDAP group-to-role mapping is additive-only on login (`ACCESSD_LDAP_GROUP_ROLE_MAPPING`); existing local roles are preserved.
 - Group-role mapping keys can be either LDAP group names (`cn`) or full LDAP group DNs.
 - Roles are stored in `roles` and `user_roles`, with baseline roles:
   - `admin`
@@ -344,21 +347,22 @@ Paste launch token when prompted. Password auth also works as first-pass fallbac
 ## Samba AD Example Configuration
 
 ```env
-PAM_AUTH_PROVIDER_MODE=hybrid
-PAM_LDAP_HOST=dc1.corp.example.com
-PAM_LDAP_PORT=636
-PAM_LDAP_USE_TLS=true
-PAM_LDAP_BASE_DN=DC=corp,DC=example,DC=com
-PAM_LDAP_BIND_DN=CN=pam-reader,OU=Service Accounts,DC=corp,DC=example,DC=com
-PAM_LDAP_BIND_PASSWORD=replace-me
-PAM_LDAP_USERNAME_ATTR=sAMAccountName
-PAM_LDAP_USER_FILTER=(&(objectCategory=person)(objectClass=user)({{username_attr}}={{username}}))
-PAM_LDAP_DISPLAY_NAME_ATTR=displayName
-PAM_LDAP_EMAIL_ATTR=mail
-PAM_LDAP_GROUP_BASE_DN=OU=Groups,DC=corp,DC=example,DC=com
-PAM_LDAP_GROUP_FILTER=(&(objectClass=group)(member={{user_dn}}))
-PAM_LDAP_GROUP_NAME_ATTR=cn
-PAM_LDAP_GROUP_ROLE_MAPPING=PAM Operators=operator,CN=PAM Admins,OU=Groups,DC=corp,DC=example,DC=com=admin|auditor
+ACCESSD_AUTH_PROVIDER_MODE=hybrid
+ACCESSD_LDAP_HOST=dc1.corp.example.com
+ACCESSD_LDAP_PORT=636
+ACCESSD_LDAP_USE_TLS=true
+ACCESSD_LDAP_CA_CERT_FILE=/etc/accessd/certs/samba-ad-ca.pem
+ACCESSD_LDAP_BASE_DN=DC=corp,DC=example,DC=com
+ACCESSD_LDAP_BIND_DN=CN=pam-reader,OU=Service Accounts,DC=corp,DC=example,DC=com
+ACCESSD_LDAP_BIND_PASSWORD=replace-me
+ACCESSD_LDAP_USERNAME_ATTR=sAMAccountName
+ACCESSD_LDAP_USER_FILTER=(&(objectCategory=person)(objectClass=user)({{username_attr}}={{username}}))
+ACCESSD_LDAP_DISPLAY_NAME_ATTR=displayName
+ACCESSD_LDAP_EMAIL_ATTR=mail
+ACCESSD_LDAP_GROUP_BASE_DN=OU=Groups,DC=corp,DC=example,DC=com
+ACCESSD_LDAP_GROUP_FILTER=(&(objectClass=group)(member={{user_dn}}))
+ACCESSD_LDAP_GROUP_NAME_ATTR=cn
+ACCESSD_LDAP_GROUP_ROLE_MAPPING=AccessD Operators=operator,CN=AccessD Admins,OU=Groups,DC=corp,DC=example,DC=com=admin|auditor
 ```
 
 - Typical DN/base DN examples:

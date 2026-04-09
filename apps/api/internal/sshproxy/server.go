@@ -32,6 +32,7 @@ type Config struct {
 	HostKeyPath            string
 	UpstreamHostKeyMode    string
 	UpstreamKnownHostsPath string
+	UpstreamHostKeyAutoFix bool
 	IdleTimeout            time.Duration
 	MaxSessionAge          time.Duration
 }
@@ -48,6 +49,7 @@ type Server struct {
 	hostKeyCallback ssh.HostKeyCallback
 	mu              sync.Mutex
 	active          map[net.Conn]struct{}
+	knownHostsMu    sync.Mutex
 }
 
 func New(cfg Config, sessionsSvc *sessions.Service, credSvc *credentials.Service, logger *slog.Logger) (*Server, error) {
@@ -184,7 +186,7 @@ func (s *Server) newSSHServerConfig() (*ssh.ServerConfig, error) {
 		KeyboardInteractiveCallback: func(conn ssh.ConnMetadata, challenge ssh.KeyboardInteractiveChallenge) (*ssh.Permissions, error) {
 			answers, err := challenge(
 				conn.User(),
-				"Enter launch token for this PAM session.",
+				"Enter launch token for this AccessD session.",
 				[]string{"Launch token:"},
 				[]bool{false},
 			)
@@ -409,10 +411,28 @@ func (s *Server) connectUpstream(ctx context.Context, launch sessions.LaunchCont
 	}
 
 	endpoint := net.JoinHostPort(launch.Host, strconv.Itoa(launch.Port))
-	s.logger.Info("connecting to upstream ssh",
+	s.logger.Info(
+		"connecting to upstream ssh",
 		"session_id", launch.SessionID, "request_id", launch.RequestID,
-		"endpoint", endpoint, "upstream_user", cred.Username, "action", launch.Action)
-	client, err := ssh.Dial("tcp", endpoint, clientCfg)
+		"endpoint", endpoint, "upstream_user", cred.Username, "action", launch.Action,
+	)
+	client, err := s.dialUpstreamSSH(endpoint, clientCfg)
+	if err != nil {
+		if repaired, repairErr := s.tryAutoRepairKnownHostsOnDialError(ctx, launch, endpoint, err); repairErr != nil {
+			s.logger.Warn(
+				"upstream known_hosts auto-repair failed",
+				"session_id", launch.SessionID, "request_id", launch.RequestID,
+				"endpoint", endpoint, "error", repairErr,
+			)
+		} else if repaired {
+			s.logger.Info(
+				"upstream known_hosts repaired; retrying dial",
+				"session_id", launch.SessionID, "request_id", launch.RequestID,
+				"endpoint", endpoint,
+			)
+			client, err = s.dialUpstreamSSH(endpoint, clientCfg)
+		}
+	}
 	if err != nil {
 		s.logger.Error("upstream ssh dial failed",
 			"session_id", launch.SessionID, "request_id", launch.RequestID,
@@ -431,6 +451,44 @@ func (s *Server) connectUpstream(ctx context.Context, launch sessions.LaunchCont
 		"session_id", launch.SessionID, "request_id", launch.RequestID,
 		"endpoint", endpoint)
 	return client, session, strings.TrimSpace(cred.Username), nil
+}
+
+func (s *Server) dialUpstreamSSH(endpoint string, clientCfg *ssh.ClientConfig) (*ssh.Client, error) {
+	return ssh.Dial("tcp", endpoint, clientCfg)
+}
+
+func (s *Server) tryAutoRepairKnownHostsOnDialError(ctx context.Context, launch sessions.LaunchContext, endpoint string, dialErr error) (bool, error) {
+	if !s.cfg.UpstreamHostKeyAutoFix {
+		return false, nil
+	}
+	if strings.EqualFold(strings.TrimSpace(s.cfg.UpstreamHostKeyMode), "insecure") {
+		return false, nil
+	}
+	var keyErr *knownhosts.KeyError
+	if !errors.As(dialErr, &keyErr) {
+		return false, nil
+	}
+	key, err := fetchSSHHostKey(ctx, launch.Host, launch.Port)
+	if err != nil {
+		return false, fmt.Errorf("fetch upstream host key: %w", err)
+	}
+	if err := s.upsertUpstreamKnownHost(launch.Host, launch.Port, key); err != nil {
+		return false, err
+	}
+	mode := "unknown"
+	if len(keyErr.Want) > 0 {
+		mode = "replaced"
+	}
+	s.logger.Warn(
+		"upstream host key auto-repaired",
+		"session_id", launch.SessionID,
+		"request_id", launch.RequestID,
+		"endpoint", endpoint,
+		"known_hosts_path", s.cfg.UpstreamKnownHostsPath,
+		"fingerprint_sha256", ssh.FingerprintSHA256(key),
+		"repair_mode", mode,
+	)
+	return true, nil
 }
 
 func (s *Server) bridgeSession(
@@ -1162,7 +1220,6 @@ func (s *Server) buildUpstreamHostKeyCallback() (ssh.HostKeyCallback, error) {
 		return baseCallback, nil
 	}
 
-	var mu sync.Mutex
 	return func(hostname string, remote net.Addr, key ssh.PublicKey) error {
 		err := baseCallback(hostname, remote, key)
 		if err == nil {
@@ -1172,24 +1229,117 @@ func (s *Server) buildUpstreamHostKeyCallback() (ssh.HostKeyCallback, error) {
 		if !errors.As(err, &keyErr) {
 			return err
 		}
+		// In accept-new mode we auto-persist unknown keys and also recover from
+		// key rotations by replacing the host entry with the presented key.
+		mode := "unknown"
 		if len(keyErr.Want) > 0 {
-			// Host exists but key mismatched.
-			return err
+			mode = "rotated"
 		}
-		line := knownhosts.Line([]string{knownHostsAddrString(hostname, remote)}, key)
-		mu.Lock()
-		defer mu.Unlock()
-		f, openErr := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600)
-		if openErr != nil {
-			return fmt.Errorf("append known_hosts: %w", openErr)
+		s.knownHostsMu.Lock()
+		defer s.knownHostsMu.Unlock()
+		if upsertErr := upsertKnownHostEntry(path, hostname, remote, key); upsertErr != nil {
+			return upsertErr
 		}
-		defer f.Close()
-		if _, writeErr := fmt.Fprintln(f, line); writeErr != nil {
-			return fmt.Errorf("write known_hosts entry: %w", writeErr)
-		}
-		s.logger.Info("accepted new upstream host key", "known_hosts_path", path, "host", hostname)
+		s.logger.Info(
+			"accepted upstream host key",
+			"known_hosts_path", path,
+			"host", hostname,
+			"remote", remote.String(),
+			"fingerprint_sha256", ssh.FingerprintSHA256(key),
+			"accept_mode", mode,
+		)
 		return nil
 	}, nil
+}
+
+func upsertKnownHostEntry(path, hostname string, remote net.Addr, key ssh.PublicKey) error {
+	pattern := knownHostsAddrString(hostname, remote)
+	line := knownhosts.Line([]string{pattern}, key)
+	existing := ""
+	if blob, err := os.ReadFile(path); err == nil {
+		existing = string(blob)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("read known_hosts: %w", err)
+	}
+	lines := strings.Split(existing, "\n")
+	out := make([]string, 0, len(lines)+1)
+	replaced := false
+	for _, current := range lines {
+		trimmed := strings.TrimSpace(current)
+		if trimmed == "" {
+			continue
+		}
+		if strings.HasPrefix(trimmed, pattern+" ") {
+			if !replaced {
+				out = append(out, line)
+				replaced = true
+			}
+			continue
+		}
+		out = append(out, trimmed)
+	}
+	if !replaced {
+		out = append(out, line)
+	}
+	content := strings.Join(out, "\n") + "\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		return fmt.Errorf("write known_hosts entry: %w", err)
+	}
+	return nil
+}
+
+func (s *Server) upsertUpstreamKnownHost(host string, port int, key ssh.PublicKey) error {
+	path := strings.TrimSpace(s.cfg.UpstreamKnownHostsPath)
+	if err := ensureKnownHostsFile(path); err != nil {
+		return err
+	}
+	hostname := upstreamKnownHostPattern(host, port)
+	remote := &net.TCPAddr{IP: net.ParseIP(strings.TrimSpace(host)), Port: port}
+	s.knownHostsMu.Lock()
+	defer s.knownHostsMu.Unlock()
+	if err := upsertKnownHostEntry(path, hostname, remote, key); err != nil {
+		return err
+	}
+	return nil
+}
+
+func upstreamKnownHostPattern(host string, port int) string {
+	cleanHost := strings.TrimSpace(host)
+	if port <= 0 {
+		return cleanHost
+	}
+	return net.JoinHostPort(cleanHost, strconv.Itoa(port))
+}
+
+func fetchSSHHostKey(ctx context.Context, host string, port int) (ssh.PublicKey, error) {
+	endpoint := net.JoinHostPort(strings.TrimSpace(host), strconv.Itoa(port))
+	var captured ssh.PublicKey
+	cfg := &ssh.ClientConfig{
+		User: "accessd",
+		Auth: []ssh.AuthMethod{
+			ssh.Password("invalid"),
+		},
+		HostKeyCallback: func(_ string, _ net.Addr, key ssh.PublicKey) error {
+			if captured == nil {
+				captured = key
+			}
+			return nil
+		},
+		Timeout: 5 * time.Second,
+	}
+	conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", endpoint)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
+	_, _, _, err = ssh.NewClientConn(conn, endpoint, cfg)
+	if captured == nil {
+		if err == nil {
+			return nil, fmt.Errorf("ssh handshake completed without host key capture")
+		}
+		return nil, fmt.Errorf("ssh handshake failed before host key capture: %w", err)
+	}
+	return captured, nil
 }
 
 func ensureKnownHostsFile(path string) error {

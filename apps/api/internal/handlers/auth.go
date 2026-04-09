@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 
@@ -27,6 +28,11 @@ type userResponse struct {
 
 type loginResponse struct {
 	User userResponse `json:"user"`
+}
+
+type changePasswordRequest struct {
+	CurrentPassword string `json:"current_password"`
+	NewPassword     string `json:"new_password"`
 }
 
 func NewAuthHandler(authService *auth.Service) *AuthHandler {
@@ -114,6 +120,43 @@ func (h *AuthHandler) AuthPing(w http.ResponseWriter, r *http.Request) {
 		"scope":  "authenticated",
 		"user":   currentUser.Username,
 	})
+}
+
+func (h *AuthHandler) ChangePassword(w http.ResponseWriter, r *http.Request) {
+	currentUser, ok := auth.CurrentUserFromContext(r.Context())
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+
+	var req changePasswordRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json body"})
+		return
+	}
+
+	err := h.authService.ChangePassword(r.Context(), auth.ChangePasswordRequest{
+		UserID:          currentUser.ID,
+		CurrentPassword: req.CurrentPassword,
+		NewPassword:     req.NewPassword,
+		SourceIP:        clientIP(r),
+		UserAgent:       r.UserAgent(),
+	})
+	if err != nil {
+		switch {
+		case errors.Is(err, auth.ErrInvalidCurrentPassword):
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
+		case errors.Is(err, auth.ErrPasswordChangeNotAllowed):
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": err.Error()})
+		case errors.Is(err, auth.ErrInvalidNewPassword):
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		default:
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to change password"})
+		}
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (h *AuthHandler) AdminPing(w http.ResponseWriter, _ *http.Request) {

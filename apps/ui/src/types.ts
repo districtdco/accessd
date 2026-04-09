@@ -100,6 +100,27 @@ export type ConnectorSFTPLaunchRequest = ConnectorLaunchRequestEnvelope<SFTPLaun
 
 export type ConnectorRedisLaunchRequest = ConnectorLaunchRequestEnvelope<RedisLaunchConnection>
 
+export type ConnectorReleaseArtifact = {
+  os: 'darwin' | 'linux' | 'windows'
+  arch: 'arm64' | 'amd64'
+  file_name: string
+  archive_type: string
+  download_url: string
+}
+
+export type ConnectorReleaseMetadata = {
+  product_name: string
+  binary_name: string
+  latest_version: string
+  minimum_version: string
+  release_channel: string
+  runtime_model: 'on-demand' | 'background' | 'hybrid'
+  install_docs_url: string
+  checksum_file_url: string
+  artifacts: ConnectorReleaseArtifact[]
+  backward_compatibility: string[]
+}
+
 export type AdminUser = {
   id: string
   username: string

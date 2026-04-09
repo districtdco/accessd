@@ -12,32 +12,63 @@ import (
 
 const (
 	defaultAddr           = "127.0.0.1:9494"
-	defaultAllowedOrigins = "http://127.0.0.1:3000,http://localhost:3000"
+	defaultAllowedOrigins = "http://127.0.0.1:3000,http://localhost:3000,http://127.0.0.1:5173,http://localhost:5173,https://127.0.0.1:5173,https://localhost:5173"
 	defaultDBeaverTempTTL = 15 * time.Minute
 )
 
 type Config struct {
-	Addr            string
-	AllowedOrigins  []string
-	AllowAnyOrigin  bool
-	AllowRemote     bool
-	ConnectorSecret string // Shared HMAC secret for verifying backend-signed launch payloads
-	DBeaverTempTTL  time.Duration
+	Addr                 string
+	AllowedOrigins       []string
+	AllowAnyOrigin       bool
+	AllowRemote          bool
+	AllowInsecureNoToken bool
+	ConnectorSecret      string // Shared HMAC secret for verifying backend-signed launch payloads
+	DBeaverTempTTL       time.Duration
 
 	// Resolver handles cross-platform application discovery with strict
 	// priority: ENV → config file → auto-detect → actionable error.
 	Resolver *discovery.Resolver
 }
 
-func Load() Config {
-	cfg := Config{
-		Addr:            strings.TrimSpace(os.Getenv("PAM_CONNECTOR_ADDR")),
-		AllowAnyOrigin:  parseBoolEnv("PAM_CONNECTOR_ALLOW_ANY_ORIGIN", false),
-		AllowRemote:     parseBoolEnv("PAM_CONNECTOR_ALLOW_REMOTE", false),
-		ConnectorSecret: strings.TrimSpace(os.Getenv("PAM_CONNECTOR_SECRET")),
-		DBeaverTempTTL:  parseDurationEnv("PAM_CONNECTOR_DBEAVER_TEMP_TTL", defaultDBeaverTempTTL),
+// migrateEnvCompat bridges legacy PAM_CONNECTOR_* env vars to ACCESSD_CONNECTOR_*
+// equivalents so that existing connector installations continue to work without
+// changes. ACCESSD_* values win if both are set.
+func migrateEnvCompat() {
+	for _, env := range os.Environ() {
+		eq := strings.IndexByte(env, '=')
+		if eq <= 0 {
+			continue
+		}
+		key := env[:eq]
+		val := env[eq+1:]
+		if !strings.HasPrefix(key, "PAM_") {
+			continue
+		}
+		newKey := "ACCESSD_" + key[4:]
+		if strings.TrimSpace(os.Getenv(newKey)) == "" {
+			_ = os.Setenv(newKey, val)
+		}
 	}
-	rawOrigins := strings.TrimSpace(os.Getenv("PAM_CONNECTOR_ALLOWED_ORIGIN"))
+}
+
+func Load() Config {
+	// Migrate legacy PAM_* env vars first so ACCESSD_* reads below pick them up.
+	migrateEnvCompat()
+	if path, created, err := discovery.EnsureDefaultConfigFile(); err != nil {
+		log.Printf("WARNING: failed to prepare default discovery config file: %v", err)
+	} else if created {
+		log.Printf("discovery: created default config file at %s", path)
+	}
+
+	cfg := Config{
+		Addr:                 strings.TrimSpace(os.Getenv("ACCESSD_CONNECTOR_ADDR")),
+		AllowAnyOrigin:       parseBoolEnv("ACCESSD_CONNECTOR_ALLOW_ANY_ORIGIN", false),
+		AllowRemote:          parseBoolEnv("ACCESSD_CONNECTOR_ALLOW_REMOTE", false),
+		AllowInsecureNoToken: parseBoolEnv("ACCESSD_CONNECTOR_ALLOW_INSECURE_NO_TOKEN", false),
+		ConnectorSecret:      strings.TrimSpace(os.Getenv("ACCESSD_CONNECTOR_SECRET")),
+		DBeaverTempTTL:       parseDurationEnv("ACCESSD_CONNECTOR_DBEAVER_TEMP_TTL", defaultDBeaverTempTTL),
+	}
+	rawOrigins := strings.TrimSpace(os.Getenv("ACCESSD_CONNECTOR_ALLOWED_ORIGIN"))
 	if rawOrigins == "" {
 		rawOrigins = defaultAllowedOrigins
 	}

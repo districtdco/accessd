@@ -6,8 +6,8 @@ export function LoginPage() {
   const navigate = useNavigate()
   const { login } = useAuth()
 
-  const [username, setUsername] = useState('admin')
-  const [password, setPassword] = useState('admin123')
+  const [username, setUsername] = useState('')
+  const [password, setPassword] = useState('')
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -32,10 +32,10 @@ export function LoginPage() {
       <div className="w-full max-w-sm">
         <div className="mb-8 text-center">
           <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-xl bg-indigo-600 text-white text-xl font-bold">
-            P
+            A
           </div>
-          <h1 className="mt-4 text-2xl font-bold text-gray-900">Sign in to PAM</h1>
-          <p className="mt-1 text-sm text-gray-500">Privileged Access Management</p>
+          <h1 className="mt-4 text-2xl font-bold text-gray-900">Sign in to AccessD</h1>
+          <p className="mt-1 text-sm text-gray-500">Infrastructure Access Gateway</p>
         </div>
 
         <form
@@ -84,7 +84,18 @@ export function LoginPage() {
           </button>
 
           <p className="mt-4 text-center text-xs text-gray-400">
-            Local dev auth (cookie session)
+            AccessD &bull; Infrastructure Access Gateway
+          </p>
+          <p className="mt-1 text-center text-xs text-gray-400">
+            Developed by{' '}
+            <a
+              href="https://districtd.co.in"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="hover:text-gray-600 transition-colors"
+            >
+              DistrictD
+            </a>
           </p>
         </form>
       </div>

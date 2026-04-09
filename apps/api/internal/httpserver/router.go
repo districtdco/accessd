@@ -8,13 +8,14 @@ import (
 )
 
 type RouteHandlers struct {
-	Health   *handlers.HealthHandler
-	Version  *handlers.VersionHandler
-	Auth     *handlers.AuthHandler
-	Access   *handlers.AccessHandler
-	Sessions *handlers.SessionsHandler
-	Admin    *handlers.AdminHandler
-	AuthSvc  *auth.Service
+	Health    *handlers.HealthHandler
+	Version   *handlers.VersionHandler
+	Connector *handlers.ConnectorReleasesHandler
+	Auth      *handlers.AuthHandler
+	Access    *handlers.AccessHandler
+	Sessions  *handlers.SessionsHandler
+	Admin     *handlers.AdminHandler
+	AuthSvc   *auth.Service
 }
 
 func NewRouter(h RouteHandlers) *http.ServeMux {
@@ -22,9 +23,13 @@ func NewRouter(h RouteHandlers) *http.ServeMux {
 	mux.HandleFunc("GET /health/live", h.Health.Live)
 	mux.HandleFunc("GET /health/ready", h.Health.Ready)
 	mux.HandleFunc("GET /version", h.Version.Get)
+	if h.Connector != nil {
+		mux.HandleFunc("GET /connector/releases/latest", h.Connector.Latest)
+	}
 	mux.HandleFunc("POST /auth/login", h.Auth.Login)
 	mux.HandleFunc("POST /auth/logout", h.Auth.Logout)
 	mux.Handle("GET /me", h.AuthSvc.Authenticated(http.HandlerFunc(h.Auth.Me)))
+	mux.Handle("PUT /auth/password", h.AuthSvc.Authenticated(http.HandlerFunc(h.Auth.ChangePassword)))
 	mux.Handle("GET /auth/ping", h.AuthSvc.Authenticated(http.HandlerFunc(h.Auth.AuthPing)))
 	mux.Handle("GET /access/my", h.AuthSvc.Authenticated(http.HandlerFunc(h.Access.MyAccess)))
 	mux.Handle("GET /sessions/my", h.AuthSvc.Authenticated(http.HandlerFunc(h.Sessions.MySessions)))

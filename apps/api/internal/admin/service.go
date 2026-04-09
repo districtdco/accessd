@@ -526,6 +526,7 @@ SELECT
 FROM assets a
 LEFT JOIN access_grants ag ON ag.asset_id = a.id
 LEFT JOIN credentials c ON c.asset_id = a.id
+WHERE COALESCE(a.status, 'active') <> 'deleted'
 GROUP BY a.id, a.name, a.asset_type, a.host, a.port
 ORDER BY a.name ASC;`
 
@@ -926,7 +927,7 @@ func (s *Service) groupExists(ctx context.Context, groupID string) (bool, error)
 }
 
 func (s *Service) assetExists(ctx context.Context, assetID string) (bool, error) {
-	const query = `SELECT EXISTS (SELECT 1 FROM assets WHERE id = $1);`
+	const query = `SELECT EXISTS (SELECT 1 FROM assets WHERE id = $1 AND COALESCE(status, 'active') <> 'deleted');`
 	var exists bool
 	if err := s.pool.QueryRow(ctx, query, assetID).Scan(&exists); err != nil {
 		return false, fmt.Errorf("check asset exists: %w", err)
@@ -1113,7 +1114,8 @@ func (s *Service) DeleteAsset(ctx context.Context, assetID string) error {
 		return ErrAssetNotFound
 	}
 
-	// Delete dependent rows first: grants, credentials, then the asset.
+	// Preserve historical references (sessions/audit) by archiving the asset
+	// instead of hard-deleting it. We still remove active access + credentials.
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("begin transaction: %w", err)
@@ -1126,12 +1128,23 @@ func (s *Service) DeleteAsset(ctx context.Context, assetID string) error {
 	if _, err := tx.Exec(ctx, `DELETE FROM credentials WHERE asset_id = $1`, trimmedID); err != nil {
 		return fmt.Errorf("delete asset credentials: %w", err)
 	}
-	if _, err := tx.Exec(ctx, `DELETE FROM assets WHERE id = $1`, trimmedID); err != nil {
-		return fmt.Errorf("delete asset: %w", err)
+	if _, err := tx.Exec(ctx, `DELETE FROM asset_protocols WHERE asset_id = $1`, trimmedID); err != nil {
+		return fmt.Errorf("delete asset protocols: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+UPDATE assets
+SET status = 'deleted',
+    name = CASE
+      WHEN name LIKE '% [deleted-%]' THEN name
+      ELSE name || ' [deleted-' || SUBSTRING(id::text, 1, 8) || ']'
+    END,
+    updated_at = NOW()
+WHERE id = $1`, trimmedID); err != nil {
+		return fmt.Errorf("archive asset: %w", err)
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("commit delete asset: %w", err)
+		return fmt.Errorf("commit archive asset: %w", err)
 	}
 	return nil
 }

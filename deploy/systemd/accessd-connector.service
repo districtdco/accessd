@@ -1,0 +1,23 @@
+[Unit]
+Description=AccessD Connector (optional managed-desktop background mode)
+Documentation=https://github.com/districtd/accessd
+After=network.target
+
+[Service]
+Type=simple
+User=accessd
+Group=accessd
+WorkingDirectory=/opt/accessd
+EnvironmentFile=/etc/accessd/accessd-connector.env
+ExecStart=/opt/accessd/bin/accessd-connector
+Restart=on-failure
+RestartSec=5s
+TimeoutStartSec=30s
+TimeoutStopSec=15s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target
