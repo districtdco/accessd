@@ -26,6 +26,7 @@ func NewRouter(h RouteHandlers) *http.ServeMux {
 	if h.Connector != nil {
 		mux.HandleFunc("GET /connector/releases/latest", h.Connector.Latest)
 	}
+	mux.HandleFunc("POST /connector/token/verify", h.Sessions.VerifyConnectorToken)
 	mux.HandleFunc("POST /auth/login", h.Auth.Login)
 	mux.HandleFunc("POST /auth/logout", h.Auth.Logout)
 	mux.Handle("GET /me", h.AuthSvc.Authenticated(http.HandlerFunc(h.Auth.Me)))

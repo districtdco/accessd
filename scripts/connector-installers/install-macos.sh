@@ -171,16 +171,53 @@ write_runtime_env_file() {
     echo "# Keep secrets out of this file."
     echo "ACCESSD_CONNECTOR_ADDR=127.0.0.1:9494"
     echo "ACCESSD_CONNECTOR_ALLOWED_ORIGIN=${default_origin}"
+    echo "# Optional backend online token verification endpoint."
+    echo "# If unset, connector derives: <allowed_origin>/api/connector/token/verify"
+    echo "# ACCESSD_CONNECTOR_BACKEND_VERIFY_URL=https://accessd.example.internal/api/connector/token/verify"
     echo "ACCESSD_CONNECTOR_ALLOW_ANY_ORIGIN=false"
     echo "ACCESSD_CONNECTOR_ALLOW_REMOTE=false"
+    echo "# Optional bootstrap env URL. Default if unset:"
+    echo "# https://<ACCESSD_CONNECTOR_ALLOWED_ORIGIN host>/downloads/bootstrap/accessd-connector.env"
+    echo "# ACCESSD_CONNECTOR_BOOTSTRAP_ENV_URL=https://accessd.example.internal/downloads/bootstrap/accessd-connector.env"
     echo "ACCESSD_CONNECTOR_AUTO_TRUST_SERVER_CERT=true"
     echo "# ACCESSD_CONNECTOR_TRUST_CERT_URL=https://accessd.example.internal/downloads/certs/accessd-server.crt"
     echo ""
-    echo "# Optional: set ACCESSD_CONNECTOR_SECRET in system environment"
-    echo "# (recommended) instead of storing it here."
+    echo "# Optional legacy local-HMAC mode:"
+    echo "# ACCESSD_CONNECTOR_SECRET=<shared-secret>"
   } > "${ENV_FILE}"
   chmod 0600 "${ENV_FILE}"
   echo "[accessd-connector] Wrote runtime env: ${ENV_FILE}"
+}
+
+bootstrap_runtime_env_from_server() {
+  mkdir -p "${ENV_DIR}"
+  if [[ -f "${ENV_FILE}" ]]; then
+    return 0
+  fi
+
+  local origin="${ACCESSD_CONNECTOR_ALLOWED_ORIGIN:-https://accessd.example.internal}"
+  local host
+  host="$(origin_host "${origin}")"
+  if [[ -z "${host}" || "${host}" == "accessd.example.internal" ]]; then
+    return 0
+  fi
+  local env_url="${ACCESSD_CONNECTOR_BOOTSTRAP_ENV_URL:-https://${host}/downloads/bootstrap/accessd-connector.env}"
+  local tmp_env="${ENV_FILE}.tmp.$$"
+
+  if ! command -v curl >/dev/null 2>&1; then
+    return 0
+  fi
+  if ! curl -fsS -k -L "${env_url}" -o "${tmp_env}"; then
+    rm -f "${tmp_env}" || true
+    return 0
+  fi
+  if ! grep -q '^ACCESSD_CONNECTOR_ADDR=' "${tmp_env}"; then
+    rm -f "${tmp_env}" || true
+    return 0
+  fi
+  mv "${tmp_env}" "${ENV_FILE}"
+  chmod 0600 "${ENV_FILE}"
+  echo "[accessd-connector] Downloaded runtime env from ${env_url}"
 }
 
 write_trust_refresh_script() {
@@ -321,8 +358,9 @@ fi
 
 CONNECTOR_ADDR="${ACCESSD_CONNECTOR_ADDR:-127.0.0.1:9494}"
 TRUST_SCRIPT="${HOME}/.accessd-connector/bin/trust-refresh-macos.sh"
-if [[ -z "${ACCESSD_CONNECTOR_SECRET:-}" ]]; then
-  echo "[accessd-connector] WARNING: ACCESSD_CONNECTOR_SECRET is not set in process env." >&2
+BACKEND_VERIFY_URL="${ACCESSD_CONNECTOR_BACKEND_VERIFY_URL:-}"
+if [[ -z "${ACCESSD_CONNECTOR_SECRET:-}" && -z "${BACKEND_VERIFY_URL}" ]]; then
+  echo "[accessd-connector] WARNING: token verification not configured (set ACCESSD_CONNECTOR_BACKEND_VERIFY_URL or ACCESSD_CONNECTOR_SECRET)." >&2
 fi
 if [[ -x "${TRUST_SCRIPT}" ]]; then
   "${TRUST_SCRIPT}" || true
@@ -409,6 +447,7 @@ redis_cli_path="$(prompt_for_path_if_missing "redis-cli" "${redis_detected}")"
 terminal_pref="$(choose_terminal_pref)"
 
 write_installer_config "${dbeaver_path}" "${filezilla_path}" "${redis_cli_path}" "${terminal_pref}"
+bootstrap_runtime_env_from_server
 write_runtime_env_file
 if [[ -f "${ENV_FILE}" ]]; then
   set -a

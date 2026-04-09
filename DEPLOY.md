@@ -49,6 +49,7 @@ Notes:
 - cert: `/etc/ssl/accessd/fullchain.pem`
 - key: `/etc/ssl/accessd/privkey.pem`
 - Installer publishes `/downloads/certs/accessd-server.crt` (when cert exists) for connector trust bootstrap.
+- Installer also publishes `/downloads/bootstrap/accessd-connector.env` so operator installers can auto-fetch connector runtime env.
 
 ---
 

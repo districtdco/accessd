@@ -124,16 +124,70 @@ function Write-RuntimeEnvFile {
     '# Keep secrets out of this file.'
     'ACCESSD_CONNECTOR_ADDR=127.0.0.1:9494'
     "ACCESSD_CONNECTOR_ALLOWED_ORIGIN=$defaultOrigin"
+    '# Optional backend online token verification endpoint.'
+    '# If unset, connector derives: <allowed_origin>/api/connector/token/verify'
+    '# ACCESSD_CONNECTOR_BACKEND_VERIFY_URL=https://accessd.example.internal/api/connector/token/verify'
     'ACCESSD_CONNECTOR_ALLOW_ANY_ORIGIN=false'
     'ACCESSD_CONNECTOR_ALLOW_REMOTE=false'
+    '# Optional bootstrap env URL. Default if unset:'
+    '# https://<ACCESSD_CONNECTOR_ALLOWED_ORIGIN host>/downloads/bootstrap/accessd-connector.env'
+    '# ACCESSD_CONNECTOR_BOOTSTRAP_ENV_URL=https://accessd.example.internal/downloads/bootstrap/accessd-connector.env'
     'ACCESSD_CONNECTOR_AUTO_TRUST_SERVER_CERT=true'
     '# ACCESSD_CONNECTOR_TRUST_CERT_URL=https://accessd.example.internal/downloads/certs/accessd-server.crt'
     ''
-    '# Optional: set ACCESSD_CONNECTOR_SECRET in system environment'
-    '# (recommended) instead of storing it here.'
+    '# Optional legacy local-HMAC mode:'
+    '# ACCESSD_CONNECTOR_SECRET=<shared-secret>'
   )
   Set-Content -Path $EnvFile -Value $lines -Encoding UTF8
   Write-Host "[accessd-connector] Wrote runtime env: $EnvFile"
+}
+
+function Download-EnvFileInsecure {
+  param(
+    [string]$Url,
+    [string]$OutFile
+  )
+  $prev = [System.Net.ServicePointManager]::ServerCertificateValidationCallback
+  try {
+    [System.Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
+    $wc = New-Object System.Net.WebClient
+    $wc.DownloadFile($Url, $OutFile)
+    return $true
+  } catch {
+    return $false
+  } finally {
+    [System.Net.ServicePointManager]::ServerCertificateValidationCallback = $prev
+  }
+}
+
+function Bootstrap-RuntimeEnvFile {
+  param([string]$EnvFile)
+
+  if (Test-Path $EnvFile) { return }
+  $origin = if ([string]::IsNullOrWhiteSpace($env:ACCESSD_CONNECTOR_ALLOWED_ORIGIN)) { 'https://accessd.example.internal' } else { $env:ACCESSD_CONNECTOR_ALLOWED_ORIGIN }
+  $host = Get-OriginHost -Origin $origin
+  if ([string]::IsNullOrWhiteSpace($host) -or $host -eq 'accessd.example.internal') { return }
+
+  $envUrl = if ([string]::IsNullOrWhiteSpace($env:ACCESSD_CONNECTOR_BOOTSTRAP_ENV_URL)) {
+    "https://$host/downloads/bootstrap/accessd-connector.env"
+  } else {
+    $env:ACCESSD_CONNECTOR_BOOTSTRAP_ENV_URL
+  }
+
+  $envDir = Split-Path -Parent $EnvFile
+  New-Item -ItemType Directory -Force -Path $envDir | Out-Null
+  $tmp = "$EnvFile.tmp"
+
+  if (-not (Download-EnvFileInsecure -Url $envUrl -OutFile $tmp)) {
+    Remove-Item -Force $tmp -ErrorAction SilentlyContinue
+    return
+  }
+  if (-not (Select-String -Path $tmp -Pattern '^ACCESSD_CONNECTOR_ADDR=' -Quiet)) {
+    Remove-Item -Force $tmp -ErrorAction SilentlyContinue
+    return
+  }
+  Move-Item -Force $tmp $EnvFile
+  Write-Host "[accessd-connector] Downloaded runtime env from $envUrl"
 }
 
 function Get-OriginHost {
@@ -303,8 +357,8 @@ if (Test-Path `$envFile) {
 }
 `$connectorAddr = if ([string]::IsNullOrWhiteSpace(`$env:ACCESSD_CONNECTOR_ADDR)) { '127.0.0.1:9494' } else { `$env:ACCESSD_CONNECTOR_ADDR }
 `$trustScript = Join-Path `$env:USERPROFILE '.accessd-connector\bin\trust-refresh-windows.ps1'
-if ([string]::IsNullOrWhiteSpace(`$env:ACCESSD_CONNECTOR_SECRET)) {
-  Write-Host '[accessd-connector] WARNING: ACCESSD_CONNECTOR_SECRET is not set in process env.'
+if ([string]::IsNullOrWhiteSpace(`$env:ACCESSD_CONNECTOR_SECRET) -and [string]::IsNullOrWhiteSpace(`$env:ACCESSD_CONNECTOR_BACKEND_VERIFY_URL)) {
+  Write-Host '[accessd-connector] WARNING: token verification not configured (set ACCESSD_CONNECTOR_BACKEND_VERIFY_URL or ACCESSD_CONNECTOR_SECRET).'
 }
 if (Test-Path `$trustScript) { powershell.exe -NoProfile -ExecutionPolicy Bypass -File `$trustScript | Out-Null }
 try {
@@ -369,6 +423,7 @@ if (-not $puttyPath) {
 }
 
 Write-InstallerConfig -ConfigFile $configFile -DBeaverPath $dbeaverPath -FileZillaPath $filezillaPath -RedisCLIPath $redisCLIPath -PuTTYPath $puttyPath -WinSCPPath $winscpPath -TerminalPref $terminalPref
+Bootstrap-RuntimeEnvFile -EnvFile $runtimeEnvFile
 Write-RuntimeEnvFile -EnvFile $runtimeEnvFile
 if (Test-Path $runtimeEnvFile) {
   Get-Content $runtimeEnvFile | ForEach-Object {

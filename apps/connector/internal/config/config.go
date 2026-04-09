@@ -3,6 +3,7 @@ package config
 
 import (
 	"log"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -23,6 +24,8 @@ type Config struct {
 	AllowRemote          bool
 	AllowInsecureNoToken bool
 	ConnectorSecret      string // Shared HMAC secret for verifying backend-signed launch payloads
+	BackendVerifyURL     string // API endpoint for online connector-token verification
+	BackendVerifyTimeout time.Duration
 	DBeaverTempTTL       time.Duration
 
 	// Resolver handles cross-platform application discovery with strict
@@ -43,6 +46,8 @@ func Load() Config {
 		AllowRemote:          parseBoolEnv("ACCESSD_CONNECTOR_ALLOW_REMOTE", false),
 		AllowInsecureNoToken: parseBoolEnv("ACCESSD_CONNECTOR_ALLOW_INSECURE_NO_TOKEN", false),
 		ConnectorSecret:      strings.TrimSpace(os.Getenv("ACCESSD_CONNECTOR_SECRET")),
+		BackendVerifyURL:     strings.TrimSpace(os.Getenv("ACCESSD_CONNECTOR_BACKEND_VERIFY_URL")),
+		BackendVerifyTimeout: parseDurationEnv("ACCESSD_CONNECTOR_BACKEND_VERIFY_TIMEOUT", 5*time.Second),
 		DBeaverTempTTL:       parseDurationEnv("ACCESSD_CONNECTOR_DBEAVER_TEMP_TTL", defaultDBeaverTempTTL),
 	}
 	rawOrigins := strings.TrimSpace(os.Getenv("ACCESSD_CONNECTOR_ALLOWED_ORIGIN"))
@@ -50,6 +55,9 @@ func Load() Config {
 		rawOrigins = defaultAllowedOrigins
 	}
 	cfg.AllowedOrigins = parseCSV(rawOrigins)
+	if cfg.BackendVerifyURL == "" {
+		cfg.BackendVerifyURL = deriveDefaultBackendVerifyURL(cfg.AllowedOrigins)
+	}
 
 	if cfg.Addr == "" {
 		cfg.Addr = defaultAddr
@@ -66,6 +74,35 @@ func Load() Config {
 	cfg.Resolver = discovery.NewResolver(discoveryCfg)
 
 	return cfg
+}
+
+func deriveDefaultBackendVerifyURL(origins []string) string {
+	for _, origin := range origins {
+		parsed, err := url.Parse(strings.TrimSpace(origin))
+		if err != nil || parsed == nil {
+			continue
+		}
+		host := strings.ToLower(strings.TrimSpace(parsed.Hostname()))
+		if host == "" {
+			continue
+		}
+		if host == "localhost" || host == "127.0.0.1" || host == "::1" {
+			continue
+		}
+		base := strings.TrimRight(parsed.Scheme+"://"+parsed.Host, "/")
+		if parsed.Scheme == "" {
+			continue
+		}
+		return base + "/api/connector/token/verify"
+	}
+	if len(origins) == 0 {
+		return ""
+	}
+	first, err := url.Parse(strings.TrimSpace(origins[0]))
+	if err != nil || first == nil || first.Scheme == "" || first.Host == "" {
+		return ""
+	}
+	return strings.TrimRight(first.Scheme+"://"+first.Host, "/") + "/api/connector/token/verify"
 }
 
 func parseDurationEnv(key string, fallback time.Duration) time.Duration {

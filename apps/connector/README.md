@@ -11,10 +11,13 @@ Thin local connector process for brokered launch flows: shell, SFTP, DBeaver, an
 
 ## Connector Trust Model
 
-When `ACCESSD_CONNECTOR_SECRET` is set (same value on both API and connector):
-- Every launch request must include a `connector_token` field signed by the backend
-- The connector verifies the HMAC signature, checks session_id matches, and rejects expired tokens
-- Unsigned or invalid requests are rejected with HTTP 403
+Recommended mode (no operator-side shared secret):
+- Connector calls backend verify endpoint (`ACCESSD_CONNECTOR_BACKEND_VERIFY_URL`, default derived from UI origin)
+- Every launch request must include a `connector_token` signed by backend
+- Connector verifies token online and rejects invalid/expired/session-mismatch requests with HTTP 403
+
+Legacy mode:
+- If `ACCESSD_CONNECTOR_SECRET` is set, connector can verify token signature locally (HMAC)
 
 When not set, verification is skipped (suitable for development only).
 
@@ -142,6 +145,9 @@ For SFTP in this slice, connector launches FileZilla/WinSCP against the AccessD 
 | `ACCESSD_CONNECTOR_ALLOWED_ORIGIN` | `http://127.0.0.1:3000,http://localhost:3000` | CORS allowlist (comma-separated origins) |
 | `ACCESSD_CONNECTOR_ALLOW_ANY_ORIGIN` | `false` | If `true`, sets `Access-Control-Allow-Origin: *` (unsafe) |
 | `ACCESSD_CONNECTOR_ALLOW_REMOTE` | `false` | If `true`, allows non-loopback HTTP callers (unsafe) |
+| `ACCESSD_CONNECTOR_BOOTSTRAP_ENV_URL` | derived from UI domain | Installer helper override for auto-downloaded runtime env URL (`/downloads/bootstrap/accessd-connector.env`) |
+| `ACCESSD_CONNECTOR_BACKEND_VERIFY_URL` | derived from allowed origin | API endpoint for online connector-token verification (`/api/connector/token/verify`) |
+| `ACCESSD_CONNECTOR_BACKEND_VERIFY_TIMEOUT` | `5s` | HTTP timeout for backend online token verification |
 | `ACCESSD_CONNECTOR_AUTO_TRUST_SERVER_CERT` | `true` | Installer helper: auto-fetch and trust AccessD HTTPS cert on operator machine |
 | `ACCESSD_CONNECTOR_TRUST_CERT_URL` | derived from UI domain | Installer helper override for cert download URL |
 | `ACCESSD_CONNECTOR_PUTTY_PATH` | `putty` | PuTTY executable/path on Windows |
@@ -153,7 +159,7 @@ For SFTP in this slice, connector launches FileZilla/WinSCP against the AccessD 
 | `ACCESSD_CONNECTOR_PROXY_HOSTKEY_MODE` | `accept-replace` | Shell-bridge proxy host-key policy (`strict`, `accept-new`, `accept-replace`) |
 | `ACCESSD_CONNECTOR_PROXY_KNOWN_HOSTS_PATH` | `~/.accessd-connector/proxy_known_hosts` | Local known_hosts path for shell-bridge proxy key trust |
 | `ACCESSD_CONNECTOR_REDIS_TLS_AUTO_INSECURE` | `false` | Auto-add `redis-cli --insecure` when `redis_tls=true` and payload does not already request insecure |
-| `ACCESSD_CONNECTOR_SECRET` | *(empty)* | Shared HMAC secret for verifying backend-signed launch payloads. Must match `ACCESSD_CONNECTOR_SECRET` on the API. When empty, verification is disabled. |
+| `ACCESSD_CONNECTOR_SECRET` | *(empty)* | Optional legacy local-HMAC verification secret. Prefer backend online verify URL to avoid operator-side secret distribution. |
 
 Runtime notes:
 
@@ -174,7 +180,7 @@ cmd/connector/     Entry point
 internal/
   launch/          Shell launch payload + OS-specific launcher
   config/          Connector runtime config
-  auth/            Connector token verification (HMAC signature check)
+  auth/            Connector token verification (online + optional local HMAC fallback)
 ```
 
 ## Run

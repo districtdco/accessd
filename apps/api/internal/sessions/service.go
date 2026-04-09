@@ -468,6 +468,21 @@ func (s *Service) ConnectorTokenEnabled() bool {
 	return s.connectorTokens != nil
 }
 
+// VerifyConnectorToken validates a connector launch token and returns claims.
+func (s *Service) VerifyConnectorToken(token string) (LaunchTokenClaims, error) {
+	if s.connectorTokens == nil {
+		return LaunchTokenClaims{}, fmt.Errorf("connector token verification is not configured")
+	}
+	claims, err := s.connectorTokens.Verify(strings.TrimSpace(token))
+	if err != nil {
+		if errors.Is(err, ErrLaunchExpired) {
+			return LaunchTokenClaims{}, err
+		}
+		return LaunchTokenClaims{}, ErrUnauthorizedLaunch
+	}
+	return claims, nil
+}
+
 func (s *Service) ResolveLaunchToken(ctx context.Context, token string) (LaunchContext, error) {
 	claims, err := s.tokens.Verify(strings.TrimSpace(token))
 	if err != nil {

@@ -42,6 +42,11 @@ type launchRequest struct {
 	Action  string `json:"action"`
 }
 
+type connectorTokenVerifyRequest struct {
+	ConnectorToken string `json:"connector_token"`
+	SessionID      string `json:"session_id,omitempty"`
+}
+
 type sessionEventRequest struct {
 	EventType string         `json:"event_type"`
 	Metadata  map[string]any `json:"metadata,omitempty"`
@@ -637,6 +642,46 @@ func (h *SessionsHandler) RecordEvent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusAccepted, map[string]string{"status": "recorded", "session_id": sessionID})
+}
+
+// VerifyConnectorToken validates a connector token for operator-side connector online verification.
+func (h *SessionsHandler) VerifyConnectorToken(w http.ResponseWriter, r *http.Request) {
+	var req connectorTokenVerifyRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json body"})
+		return
+	}
+	token := strings.TrimSpace(req.ConnectorToken)
+	if token == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "connector_token is required"})
+		return
+	}
+
+	claims, err := h.sessionsService.VerifyConnectorToken(token)
+	if err != nil {
+		if errors.Is(err, sessions.ErrLaunchExpired) {
+			writeJSON(w, http.StatusForbidden, map[string]any{"valid": false, "error": "connector token expired"})
+			return
+		}
+		writeJSON(w, http.StatusForbidden, map[string]any{"valid": false, "error": "connector token invalid"})
+		return
+	}
+	if sid := strings.TrimSpace(req.SessionID); sid != "" && sid != claims.SessionID {
+		writeJSON(w, http.StatusForbidden, map[string]any{"valid": false, "error": "connector token session mismatch"})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"valid": true,
+		"claims": map[string]any{
+			"sid": claims.SessionID,
+			"uid": claims.UserID,
+			"aid": claims.AssetID,
+			"act": claims.Action,
+			"exp": claims.ExpiresAt,
+			"v":   claims.Version,
+		},
+	})
 }
 
 func (h *SessionsHandler) MySessions(w http.ResponseWriter, r *http.Request) {

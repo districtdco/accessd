@@ -43,6 +43,8 @@ WEB_GROUP="${WEB_GROUP:-www-data}"
 NGINX_SITE_NAME="${NGINX_SITE_NAME:-accessd.conf}"
 INSTALL_NGINX="${INSTALL_NGINX:-true}"
 INSTALL_POSTGRES="${INSTALL_POSTGRES:-auto}" # auto|true|false
+PUBLISH_OPERATOR_CONNECTOR_ENV="${PUBLISH_OPERATOR_CONNECTOR_ENV:-true}"
+PUBLISH_OPERATOR_CONNECTOR_SECRET="${PUBLISH_OPERATOR_CONNECTOR_SECRET:-false}"
 TLS_SETUP_MODE="${TLS_SETUP_MODE:-prompt}"   # prompt|existing|self-signed|csr|skip
 ACCESSD_DOMAIN="${ACCESSD_DOMAIN:-}"
 ACCESSD_TLS_CERT_DIR="${ACCESSD_TLS_CERT_DIR:-/etc/ssl/accessd}"
@@ -158,13 +160,13 @@ choose_tls_mode() {
     printf 'existing'
     return 0
   fi
-  echo "[install] TLS setup mode"
-  echo "  1) existing cert/key (default)"
-  echo "  2) generate self-signed cert"
-  echo "  3) generate private key + CSR"
-  echo "  4) skip TLS setup"
+  echo "[install] TLS setup mode" >&2
+  echo "  1) existing cert/key (default)" >&2
+  echo "  2) generate self-signed cert" >&2
+  echo "  3) generate private key + CSR" >&2
+  echo "  4) skip TLS setup" >&2
   local choice
-  read -r -p "Select mode [1-4]: " choice
+  read -r -p "Select mode [1-4]: " choice </dev/tty
   choice="$(trim "${choice}")"
   case "${choice}" in
     2|self-signed) printf 'self-signed' ;;
@@ -290,15 +292,12 @@ require_non_placeholder_env_value() {
 
 enforce_required_secrets_configured() {
   local api_env="${VM_ETC_DIR}/accessd.env"
-  local connector_env="${VM_ETC_DIR}/accessd-connector.env"
 
   require_non_placeholder_env_value "${api_env}" "ACCESSD_DB_URL"
   require_non_placeholder_env_value "${api_env}" "ACCESSD_VAULT_KEY"
   require_non_placeholder_env_value "${api_env}" "ACCESSD_LAUNCH_TOKEN_SECRET"
   require_non_placeholder_env_value "${api_env}" "ACCESSD_CONNECTOR_SECRET"
   require_non_placeholder_env_value "${api_env}" "ACCESSD_DEV_ADMIN_PASSWORD"
-
-  require_non_placeholder_env_value "${connector_env}" "ACCESSD_CONNECTOR_SECRET"
 }
 
 ensure_apt_packages() {
@@ -331,9 +330,36 @@ copy_env_if_missing() {
     chown root:"${group}" "${dst}.example.new"
     chmod 0640 "${dst}.example.new"
     log "preserved existing $(basename "${dst}"), wrote template update: ${dst}.example.new"
+    merge_env_missing_keys "${src}" "${dst}"
   else
     install -o root -g "${group}" -m 0640 "${src}" "${dst}"
     log "created env file: ${dst}"
+  fi
+}
+
+merge_env_missing_keys() {
+  local template="$1"
+  local target="$2"
+  [[ -f "${template}" && -f "${target}" ]] || return 0
+
+  local added=0
+  while IFS= read -r line; do
+    [[ "${line}" =~ ^[A-Z0-9_]+= ]] || continue
+    local key="${line%%=*}"
+    if ! grep -qE "^${key}=" "${target}"; then
+      if [[ "${added}" -eq 0 ]]; then
+        {
+          echo ""
+          echo "# Added automatically from latest template during upgrade."
+        } >> "${target}"
+      fi
+      echo "${line}" >> "${target}"
+      added=$((added + 1))
+    fi
+  done < "${template}"
+
+  if [[ "${added}" -gt 0 ]]; then
+    log "merged ${added} missing env keys into ${target} (existing values untouched)"
   fi
 }
 
@@ -449,6 +475,10 @@ publish_operator_tls_cert_if_available() {
     return 0
   fi
   if [[ ! -f "${ACCESSD_PUBLIC_CERT_SOURCE}" ]]; then
+    if [[ "${TLS_MODE:-}" == "csr" ]]; then
+      log "operator TLS cert publish skipped: CSR mode selected and signed cert not installed yet (${ACCESSD_PUBLIC_CERT_SOURCE})"
+      return 0
+    fi
     warn "operator TLS cert source not found: ${ACCESSD_PUBLIC_CERT_SOURCE}; skipping cert publish"
     return 0
   fi
@@ -472,6 +502,51 @@ publish_operator_tls_cert_if_available() {
   chown root:"${WEB_GROUP}" "${cert_out}"
   chmod 0644 "${cert_out}"
   log "published operator TLS cert: ${cert_out}"
+}
+
+publish_operator_connector_env_if_available() {
+  if ! bool_is_true "${PUBLISH_OPERATOR_CONNECTOR_ENV}"; then
+    log "operator connector env publish skipped (PUBLISH_OPERATOR_CONNECTOR_ENV=${PUBLISH_OPERATOR_CONNECTOR_ENV})"
+    return 0
+  fi
+
+  local source_env="${VM_ETC_DIR}/accessd-connector.env"
+  if [[ ! -f "${source_env}" ]]; then
+    warn "connector env source not found: ${source_env}; skipping operator connector env publish"
+    return 0
+  fi
+
+  local out_dir="${VM_DOWNLOADS_DIR}/bootstrap"
+  local out_file="${out_dir}/accessd-connector.env"
+  mkdir -p "${out_dir}"
+
+  if bool_is_true "${PUBLISH_OPERATOR_CONNECTOR_SECRET}"; then
+    cp "${source_env}" "${out_file}"
+  else
+    awk '
+      BEGIN { printed_secret_note=0 }
+      /^ACCESSD_CONNECTOR_SECRET=/ {
+        if (printed_secret_note == 0) {
+          print "# ACCESSD_CONNECTOR_SECRET intentionally omitted from bootstrap env."
+          print "# Set this in operator system environment (recommended) or local connector.env."
+          printed_secret_note=1
+        }
+        next
+      }
+      { print }
+    ' "${source_env}" > "${out_file}"
+  fi
+
+  if [[ -n "${ACCESSD_DOMAIN}" ]]; then
+    set_or_replace_env_kv "${out_file}" "ACCESSD_CONNECTOR_ALLOWED_ORIGIN" "https://${ACCESSD_DOMAIN}"
+  fi
+
+  chown root:"${WEB_GROUP}" "${out_file}"
+  chmod 0640 "${out_file}"
+  log "published operator connector env: ${out_file}"
+  if bool_is_true "${PUBLISH_OPERATOR_CONNECTOR_SECRET}"; then
+    warn "published connector secret in downloadable operator env; ensure VM/network access is restricted to trusted operators."
+  fi
 }
 
 log "bundle: ${BUNDLE_DIR}"
@@ -533,6 +608,7 @@ if bool_is_true "${INSTALL_NGINX}"; then
 fi
 
 publish_operator_tls_cert_if_available
+publish_operator_connector_env_if_available
 
 setup_local_postgres_if_requested
 

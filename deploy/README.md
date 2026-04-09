@@ -93,6 +93,8 @@ Useful installer flags:
 - `ACCESSD_CONNECTOR_TAG=vX.Y.Z` (override connector artifact tag to publish)
 - `PUBLISH_OPERATOR_TLS_CERT=true|false` (default: `true`; publishes `/downloads/certs/accessd-server.crt` when source cert exists)
 - `ACCESSD_PUBLIC_CERT_SOURCE=/path/to/fullchain.pem` (default: `/etc/ssl/accessd/fullchain.pem`)
+- `PUBLISH_OPERATOR_CONNECTOR_ENV=true|false` (default: `true`; publishes `/downloads/bootstrap/accessd-connector.env`)
+- `PUBLISH_OPERATOR_CONNECTOR_SECRET=true|false` (default: `false`; include `ACCESSD_CONNECTOR_SECRET` in published operator env)
 
 Interactive behavior:
 - With `TLS_SETUP_MODE=prompt`, installer asks for domain and TLS mode.
@@ -107,6 +109,11 @@ Connector runtime note:
   - Default source URL: `https://<ui-domain>/downloads/certs/accessd-server.crt`
   - Override with `ACCESSD_CONNECTOR_TRUST_CERT_URL`
   - Disable with `ACCESSD_CONNECTOR_AUTO_TRUST_SERVER_CERT=false`
+- Connector installers can auto-bootstrap runtime env on first run:
+  - Default source URL: `https://<ui-domain>/downloads/bootstrap/accessd-connector.env`
+  - Override with `ACCESSD_CONNECTOR_BOOTSTRAP_ENV_URL`
+  - Existing local `~/.config/accessd/connector.env` is never overwritten.
+  - Preferred verification model: connector uses `ACCESSD_CONNECTOR_BACKEND_VERIFY_URL` (`/api/connector/token/verify`) so operator machines do not need shared secret distribution.
 
 ## Secrets
 

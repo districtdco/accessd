@@ -34,13 +34,21 @@ func main() {
 	}
 
 	cfg := config.Load()
-	if strings.TrimSpace(cfg.ConnectorSecret) == "" && !cfg.AllowInsecureNoToken {
-		log.Fatal("ACCESSD_CONNECTOR_SECRET is required (set ACCESSD_CONNECTOR_ALLOW_INSECURE_NO_TOKEN=true only for temporary local development)")
+	localVerifier := auth.NewVerifier(cfg.ConnectorSecret)
+	remoteVerifier := auth.NewRemoteVerifier(cfg.BackendVerifyURL, cfg.BackendVerifyTimeout)
+	var verifier connectorTokenVerifier
+	switch {
+	case localVerifier != nil:
+		verifier = localVerifier
+		log.Printf("connector token verification enabled (mode=local-hmac)")
+	case remoteVerifier != nil:
+		verifier = remoteVerifier
+		log.Printf("connector token verification enabled (mode=backend-online verify_url=%s)", cfg.BackendVerifyURL)
 	}
-	verifier := auth.NewVerifier(cfg.ConnectorSecret)
-	if verifier != nil {
-		log.Printf("connector token verification enabled")
-	} else {
+	if verifier == nil && !cfg.AllowInsecureNoToken {
+		log.Fatal("connector token verification requires ACCESSD_CONNECTOR_SECRET or ACCESSD_CONNECTOR_BACKEND_VERIFY_URL (set ACCESSD_CONNECTOR_ALLOW_INSECURE_NO_TOKEN=true only for temporary local development)")
+	}
+	if verifier == nil {
 		log.Printf("WARNING: connector token verification disabled by ACCESSD_CONNECTOR_ALLOW_INSECURE_NO_TOKEN=true")
 	}
 	launcher := launch.Launcher{
@@ -75,8 +83,8 @@ func main() {
 	})
 	mux.HandleFunc("GET /info", func(w http.ResponseWriter, _ *http.Request) {
 		missing := make([]string, 0, 1)
-		if strings.TrimSpace(cfg.ConnectorSecret) == "" && !cfg.AllowInsecureNoToken {
-			missing = append(missing, "ACCESSD_CONNECTOR_SECRET")
+		if verifier == nil && !cfg.AllowInsecureNoToken {
+			missing = append(missing, "ACCESSD_CONNECTOR_SECRET or ACCESSD_CONNECTOR_BACKEND_VERIFY_URL")
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"service":  "accessd-connector",
@@ -89,11 +97,13 @@ func main() {
 				"allow_any_origin":     cfg.AllowAnyOrigin,
 				"allow_insecure_token": cfg.AllowInsecureNoToken,
 				"allowed_origins":      cfg.AllowedOrigins,
+				"backend_verify_url":   cfg.BackendVerifyURL,
 			},
 			"requirements": map[string]any{
-				"ok":                      len(missing) == 0,
-				"missing_env":             missing,
+				"ok":                       len(missing) == 0,
+				"missing_env":              missing,
 				"connector_secret_present": strings.TrimSpace(cfg.ConnectorSecret) != "",
+				"backend_verify_url_set":   strings.TrimSpace(cfg.BackendVerifyURL) != "",
 				"notes": []string{
 					"Connector runtime settings are operator-machine specific.",
 					"Set ACCESSD_CONNECTOR_ALLOWED_ORIGIN to the UI origin.",
@@ -343,14 +353,19 @@ type statusRecorder struct {
 	status int
 }
 
+type connectorTokenVerifier interface {
+	Verify(token string) (auth.ConnectorClaims, error)
+}
+
 func (r *statusRecorder) WriteHeader(status int) {
 	r.status = status
 	r.ResponseWriter.WriteHeader(status)
 }
 
-// verifyConnectorToken checks the HMAC-signed connector token if a verifier is configured.
-// When no verifier is present, verification is skipped (explicit insecure mode only).
-func verifyConnectorToken(v *auth.Verifier, token, sessionID string) error {
+// verifyConnectorToken checks the connector token if a verifier is configured.
+// Verifier can be local-HMAC or backend-online. When verifier is nil, verification
+// is skipped (explicit insecure mode only).
+func verifyConnectorToken(v connectorTokenVerifier, token, sessionID string) error {
 	if v == nil {
 		return nil // verification disabled
 	}
