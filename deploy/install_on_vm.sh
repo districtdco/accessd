@@ -482,6 +482,60 @@ nginx_tls_ready() {
   [[ -f "${ACCESSD_TLS_CERT_PATH}" && -f "${ACCESSD_TLS_KEY_PATH}" ]]
 }
 
+ensure_nginx_connector_csp_sources() {
+  local site_file="$1"
+  [[ -f "${site_file}" ]] || return 0
+
+  local desired_connect="         connect-src 'self' https://127.0.0.1:9494 https://localhost:9494 http://127.0.0.1:9494 http://localhost:9494 wss://127.0.0.1:9494 wss://localhost:9494 ws://127.0.0.1:9494 ws://localhost:9494;"
+  local desired_frame="         frame-src 'self' accessd-connector:;"
+  local tmp_file="${site_file}.tmp.$$"
+
+  awk -v desired_connect="${desired_connect}" -v desired_frame="${desired_frame}" '
+    /^[[:space:]]*add_header[[:space:]]+Content-Security-Policy/ {
+      in_csp=1
+      has_frame_src=0
+      print
+      next
+    }
+    {
+      if (in_csp == 1) {
+        line=$0
+
+        # Backslashes at line ends become literal "\" in the header value and
+        # break CSP parsing in browsers. Strip them from managed CSP blocks.
+        sub(/[[:space:]]*\\[[:space:]]*$/, "", line)
+
+        if (line ~ /^[[:space:]]*connect-src[[:space:]]/) {
+          line=desired_connect
+        }
+        if (line ~ /^[[:space:]]*frame-src[[:space:]]/) {
+          line=desired_frame
+          has_frame_src=1
+        }
+        if (line ~ /^[[:space:]]*always;[[:space:]]*$/) {
+          if (has_frame_src == 0) {
+            print desired_frame
+          }
+          in_csp=0
+          has_frame_src=0
+        }
+
+        print line
+        next
+      }
+
+      print $0
+    }
+  ' "${site_file}" > "${tmp_file}"
+  mv "${tmp_file}" "${site_file}"
+}
+
+ensure_nginx_http2_disabled() {
+  local site_file="$1"
+  [[ -f "${site_file}" ]] || return 0
+  sed -i -E '/^[[:space:]]*http2[[:space:]]+on;[[:space:]]*$/d' "${site_file}"
+}
+
 configure_nginx_site_for_domain_and_tls() {
   local site_file="$1"
   local domain="$2"
@@ -497,6 +551,8 @@ configure_nginx_site_for_domain_and_tls() {
   sed -i -E "s|server_name accessd\\.example\\.internal;|server_name ${domain_esc};|g" "${site_file}"
   sed -i -E "s|ssl_certificate[[:space:]]+/etc/ssl/accessd/fullchain\\.pem;|ssl_certificate     ${cert_esc};|g" "${site_file}"
   sed -i -E "s|ssl_certificate_key[[:space:]]+/etc/ssl/accessd/privkey\\.pem;|ssl_certificate_key ${key_esc};|g" "${site_file}"
+  ensure_nginx_http2_disabled "${site_file}"
+  ensure_nginx_connector_csp_sources "${site_file}"
 }
 
 configure_api_env_interactive() {

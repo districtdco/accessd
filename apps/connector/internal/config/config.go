@@ -61,6 +61,11 @@ func Load() Config {
 		rawOrigins = defaultAllowedOrigins
 	}
 	cfg.AllowedOrigins = parseCSV(rawOrigins)
+	if hasPlaceholderOrigin(cfg.AllowedOrigins) {
+		// Placeholder origin is a bootstrap default; allow runtime origin checks
+		// to proceed instead of hard-failing CORS on real deployments.
+		cfg.AllowAnyOrigin = true
+	}
 	if cfg.BackendVerifyURL == "" {
 		cfg.BackendVerifyURL = deriveDefaultBackendVerifyURL(cfg.AllowedOrigins)
 	}
@@ -158,4 +163,14 @@ func parseCSV(raw string) []string {
 		}
 	}
 	return values
+}
+
+func hasPlaceholderOrigin(origins []string) bool {
+	for _, origin := range origins {
+		trimmed := strings.TrimSpace(strings.ToLower(origin))
+		if trimmed == "https://accessd.example.internal" || trimmed == "http://accessd.example.internal" {
+			return true
+		}
+	}
+	return false
 }

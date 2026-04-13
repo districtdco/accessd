@@ -191,8 +191,8 @@ function Write-RuntimeEnvFile {
     '# Keep secrets out of this file.'
     'ACCESSD_CONNECTOR_ADDR=127.0.0.1:9494'
     'ACCESSD_CONNECTOR_ENABLE_TLS=true'
-    'ACCESSD_CONNECTOR_TLS_CERT_FILE=$HOME/.accessd-connector/tls/localhost.crt'
-    'ACCESSD_CONNECTOR_TLS_KEY_FILE=$HOME/.accessd-connector/tls/localhost.key'
+    'ACCESSD_CONNECTOR_TLS_CERT_FILE=%USERPROFILE%/.accessd-connector/tls/localhost.crt'
+    'ACCESSD_CONNECTOR_TLS_KEY_FILE=%USERPROFILE%/.accessd-connector/tls/localhost.key'
     "ACCESSD_CONNECTOR_ALLOWED_ORIGIN=$defaultOrigin"
     '# Optional backend online token verification endpoint.'
     '# If unset, connector derives: <allowed_origin>/api/connector/token/verify'
@@ -225,6 +225,60 @@ function Get-EnvMapFromFile {
     $map[$parts[0].Trim()] = $parts[1].Trim()
   }
   return $map
+}
+
+function Expand-EnvValue {
+  param([string]$Value)
+  if ($null -eq $Value) { return $Value }
+  $expanded = "$Value".Trim().Trim('"').Trim("'")
+  if (-not [string]::IsNullOrWhiteSpace($env:USERPROFILE)) {
+    $expanded = $expanded -replace '^\$HOME(?=[\\/]|$)', [Regex]::Escape($env:USERPROFILE).Replace('\\', '\')
+    $expanded = $expanded -replace '^\$\{HOME\}(?=[\\/]|$)', [Regex]::Escape($env:USERPROFILE).Replace('\\', '\')
+    $expanded = $expanded -replace '^%USERPROFILE%(?=[\\/]|$)', [Regex]::Escape($env:USERPROFILE).Replace('\\', '\')
+  }
+  if (-not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
+    $expanded = $expanded -replace '^%LOCALAPPDATA%(?=[\\/]|$)', [Regex]::Escape($env:LOCALAPPDATA).Replace('\\', '\')
+  }
+  return $expanded
+}
+
+function Load-EnvFileIntoProcess {
+  param([string]$Path)
+  if (-not (Test-Path $Path)) { return }
+  Get-Content -Path $Path | ForEach-Object {
+    $line = ($_.Trim())
+    if ([string]::IsNullOrWhiteSpace($line) -or $line.StartsWith('#')) { return }
+    if ($line -notmatch '^[A-Za-z_][A-Za-z0-9_]*=') { return }
+    $parts = $line.Split('=', 2)
+    if ($parts.Count -ne 2) { return }
+    $key = $parts[0].Trim()
+    $value = Expand-EnvValue -Value $parts[1]
+    [System.Environment]::SetEnvironmentVariable($key, $value, 'Process')
+  }
+}
+
+function Import-CertificateToCurrentUserRoot {
+  param(
+    [string]$CertFile,
+    [switch]$Quiet
+  )
+  if ([string]::IsNullOrWhiteSpace($CertFile) -or -not (Test-Path $CertFile)) { return $false }
+  try {
+    Import-Certificate -FilePath $CertFile -CertStoreLocation 'Cert:\CurrentUser\Root' | Out-Null
+    return $true
+  } catch {
+  }
+  try {
+    & certutil.exe -user -f -addstore Root $CertFile *> $null
+    if ($LASTEXITCODE -eq 0) {
+      return $true
+    }
+  } catch {
+  }
+  if (-not $Quiet) {
+    Write-Host "[accessd-connector] WARNING: failed to import cert into CurrentUser Root: $CertFile"
+  }
+  return $false
 }
 
 function Set-EnvValueInFile {
@@ -334,11 +388,11 @@ function Bootstrap-RuntimeEnvFile {
   param([string]$EnvFile)
 
   $origin = if ([string]::IsNullOrWhiteSpace($env:ACCESSD_CONNECTOR_ALLOWED_ORIGIN)) { 'https://accessd.example.internal' } else { $env:ACCESSD_CONNECTOR_ALLOWED_ORIGIN }
-  $host = Get-OriginHost -Origin $origin
-  if ([string]::IsNullOrWhiteSpace($host) -or $host -eq 'accessd.example.internal') { return }
+  $originHost = Get-OriginHost -Origin $origin
+  if ([string]::IsNullOrWhiteSpace($originHost) -or $originHost -eq 'accessd.example.internal') { return }
 
   $envUrl = if ([string]::IsNullOrWhiteSpace($env:ACCESSD_CONNECTOR_BOOTSTRAP_ENV_URL)) {
-    "https://$host/downloads/bootstrap/accessd-connector.env"
+    "https://$originHost/downloads/bootstrap/accessd-connector.env"
   } else {
     $env:ACCESSD_CONNECTOR_BOOTSTRAP_ENV_URL
   }
@@ -376,15 +430,15 @@ function Get-OriginHost {
 
 function Save-RemoteServerCert {
   param(
-    [string]$Host,
+    [string]$ServerHost,
     [string]$OutFile
   )
   $tcp = $null
   $ssl = $null
   try {
-    $tcp = New-Object System.Net.Sockets.TcpClient($Host, 443)
+    $tcp = New-Object System.Net.Sockets.TcpClient($ServerHost, 443)
     $ssl = New-Object System.Net.Security.SslStream($tcp.GetStream(), $false, ({ $true }))
-    $ssl.AuthenticateAsClient($Host)
+    $ssl.AuthenticateAsClient($ServerHost)
     $remote = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2($ssl.RemoteCertificate)
     [System.IO.File]::WriteAllBytes($OutFile, $remote.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Cert))
     return $true
@@ -406,19 +460,19 @@ function Trust-AccessDServerCert {
   }
 
   $origin = $env:ACCESSD_CONNECTOR_ALLOWED_ORIGIN
-  $host = Get-OriginHost -Origin $origin
-  if ([string]::IsNullOrWhiteSpace($host) -or $host -in @('localhost', '127.0.0.1', 'accessd.example.internal')) {
+  $originHost = Get-OriginHost -Origin $origin
+  if ([string]::IsNullOrWhiteSpace($originHost) -or $originHost -in @('localhost', '127.0.0.1', 'accessd.example.internal')) {
     return
   }
 
   $certDir = Join-Path $configDir 'certs'
   New-Item -ItemType Directory -Force -Path $certDir | Out-Null
-  $certFile = Join-Path $certDir ("accessd-{0}.cer" -f $host)
-  $stateFile = Join-Path $certDir ("accessd-{0}.trusted.sha256" -f $host)
+  $certFile = Join-Path $certDir ("accessd-{0}.cer" -f $originHost)
+  $stateFile = Join-Path $certDir ("accessd-{0}.trusted.sha256" -f $originHost)
 
-  $saved = Save-RemoteServerCert -Host $host -OutFile $certFile
+  $saved = Save-RemoteServerCert -ServerHost $originHost -OutFile $certFile
   if (-not $saved) {
-    Write-Host "[accessd-connector] WARNING: failed to fetch TLS certificate from $host:443"
+    Write-Host "[accessd-connector] WARNING: failed to fetch TLS certificate from $originHost:443"
     return
   }
 
@@ -439,14 +493,16 @@ function Trust-AccessDServerCert {
   }
 
   try {
-    Import-Certificate -FilePath $certFile -CertStoreLocation 'Cert:\CurrentUser\Root' | Out-Null
-    Write-Host "[accessd-connector] Installed server cert into CurrentUser Root trust store: $certFile"
-    if ($certHash) {
-      Set-Content -Path $stateFile -Value $certHash -Encoding ASCII
+    if (Import-CertificateToCurrentUserRoot -CertFile $certFile -Quiet) {
+      Write-Host "[accessd-connector] Installed server cert into CurrentUser Root trust store: $certFile"
+      if ($certHash) {
+        Set-Content -Path $stateFile -Value $certHash -Encoding ASCII
+      }
+      return
     }
-  } catch {
-    Write-Host "[accessd-connector] WARNING: failed to import cert into CurrentUser Root: $($_.Exception.Message)"
     Write-Host "[accessd-connector] Saved cert at: $certFile"
+  } catch {
+    Write-Host "[accessd-connector] WARNING: failed to trust server cert: $($_.Exception.Message)"
   }
 }
 
@@ -462,9 +518,34 @@ function Trust-LocalConnectorTLSCert {
   if ([string]::IsNullOrWhiteSpace($certFile)) { return }
   $certPath = "$certFile".Trim()
   if (-not (Test-Path $certPath)) { return }
+  if (-not (Import-CertificateToCurrentUserRoot -CertFile $certPath -Quiet)) {
+    Write-Host "[accessd-connector] WARNING: failed to trust local connector TLS cert: $certPath"
+  }
+}
+
+function Start-ConnectorProcess {
+  param(
+    [string]$BinaryPath,
+    [string]$RuntimeEnvFile,
+    [string]$Reason
+  )
+  if (-not (Test-Path $BinaryPath)) { return $false }
   try {
-    Import-Certificate -FilePath $certPath -CertStoreLocation 'Cert:\CurrentUser\Root' | Out-Null
+    $alreadyRunning = Get-Process -Name 'accessd-connector' -ErrorAction SilentlyContinue
+    if ($alreadyRunning) {
+      return $true
+    }
+    Load-EnvFileIntoProcess -Path $RuntimeEnvFile
+    Start-Process -FilePath $BinaryPath -WindowStyle Hidden | Out-Null
+    if ([string]::IsNullOrWhiteSpace($Reason)) {
+      Write-Host '[accessd-connector] Started connector process.'
+    } else {
+      Write-Host "[accessd-connector] Started connector process ($Reason)."
+    }
+    return $true
   } catch {
+    Write-Host "[accessd-connector] WARNING: failed to start connector automatically: $($_.Exception.Message)"
+    return $false
   }
 }
 
@@ -512,19 +593,30 @@ if ($sourceResolved -ieq $targetResolved) {
 
 @"
 `$ErrorActionPreference = 'SilentlyContinue'
+function Expand-EnvValue {
+  param([string]`$Value)
+  if (`$null -eq `$Value) { return `$Value }
+  `$expanded = "`$Value".Trim().Trim('"').Trim("'")
+  if (-not [string]::IsNullOrWhiteSpace(`$env:USERPROFILE)) {
+    `$expanded = `$expanded -replace '^\$HOME(?=[\\/]|$)', [Regex]::Escape(`$env:USERPROFILE).Replace('\\', '\')
+    `$expanded = `$expanded -replace '^\$\{HOME\}(?=[\\/]|$)', [Regex]::Escape(`$env:USERPROFILE).Replace('\\', '\')
+    `$expanded = `$expanded -replace '^%USERPROFILE%(?=[\\/]|$)', [Regex]::Escape(`$env:USERPROFILE).Replace('\\', '\')
+  }
+  return `$expanded
+}
 function Get-OriginHost {
   param([string]`$Origin)
   if ([string]::IsNullOrWhiteSpace(`$Origin)) { return `$null }
   try { return ([Uri]`$Origin).Host } catch { return `$null }
 }
 function Save-RemoteServerCert {
-  param([string]`$Host, [string]`$OutFile)
+  param([string]`$ServerHost, [string]`$OutFile)
   `$tcp = `$null
   `$ssl = `$null
   try {
-    `$tcp = New-Object System.Net.Sockets.TcpClient(`$Host, 443)
+    `$tcp = New-Object System.Net.Sockets.TcpClient(`$ServerHost, 443)
     `$ssl = New-Object System.Net.Security.SslStream(`$tcp.GetStream(), `$false, ({ `$true }))
-    `$ssl.AuthenticateAsClient(`$Host)
+    `$ssl.AuthenticateAsClient(`$ServerHost)
     `$remote = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2(`$ssl.RemoteCertificate)
     [System.IO.File]::WriteAllBytes(`$OutFile, `$remote.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Cert))
     return `$true
@@ -544,24 +636,42 @@ if (Test-Path `$envFile) {
     `$parts = `$line.Split('=', 2)
     if (`$parts.Count -ne 2) { return }
     `$key = `$parts[0].Trim()
-    `$value = `$parts[1].Trim().Trim('"').Trim("'")
+    `$value = Expand-EnvValue -Value `$parts[1]
     [System.Environment]::SetEnvironmentVariable(`$key, `$value, 'Process')
   }
 }
 `$autoTrust = `$env:ACCESSD_CONNECTOR_AUTO_TRUST_SERVER_CERT
 if (-not [string]::IsNullOrWhiteSpace(`$autoTrust) -and `$autoTrust -match '^(?i:false|0|no|off)$') { exit 0 }
-`$host = Get-OriginHost -Origin `$env:ACCESSD_CONNECTOR_ALLOWED_ORIGIN
-if ([string]::IsNullOrWhiteSpace(`$host) -or `$host -in @('localhost', '127.0.0.1', 'accessd.example.internal')) { exit 0 }
+`$originHost = Get-OriginHost -Origin `$env:ACCESSD_CONNECTOR_ALLOWED_ORIGIN
+if ([string]::IsNullOrWhiteSpace(`$originHost) -or `$originHost -in @('localhost', '127.0.0.1', 'accessd.example.internal')) { exit 0 }
 `$certDir = Join-Path `$env:USERPROFILE '.accessd-connector\certs'
 New-Item -ItemType Directory -Force -Path `$certDir | Out-Null
-`$certFile = Join-Path `$certDir ("accessd-{0}.cer" -f `$host)
-if (-not (Save-RemoteServerCert -Host `$host -OutFile `$certFile)) { exit 0 }
-Import-Certificate -FilePath `$certFile -CertStoreLocation 'Cert:\CurrentUser\Root' | Out-Null
+`$certFile = Join-Path `$certDir ("accessd-{0}.cer" -f `$originHost)
+if (-not (Save-RemoteServerCert -ServerHost `$originHost -OutFile `$certFile)) { exit 0 }
+try {
+  Import-Certificate -FilePath `$certFile -CertStoreLocation 'Cert:\CurrentUser\Root' | Out-Null
+} catch {
+  & certutil.exe -user -f -addstore Root `$certFile *> `$null
+}
 "@ | Set-Content -Path $trustHelperScript -Encoding UTF8
 
 @"
 `$ErrorActionPreference = 'SilentlyContinue'
 $envFile = Join-Path `$env:USERPROFILE '.config\accessd\connector.env'
+function Expand-EnvValue {
+  param([string]`$Value)
+  if (`$null -eq `$Value) { return `$Value }
+  `$expanded = "`$Value".Trim().Trim('"').Trim("'")
+  if (-not [string]::IsNullOrWhiteSpace(`$env:USERPROFILE)) {
+    `$expanded = `$expanded -replace '^\$HOME(?=[\\/]|$)', [Regex]::Escape(`$env:USERPROFILE).Replace('\\', '\')
+    `$expanded = `$expanded -replace '^\$\{HOME\}(?=[\\/]|$)', [Regex]::Escape(`$env:USERPROFILE).Replace('\\', '\')
+    `$expanded = `$expanded -replace '^%USERPROFILE%(?=[\\/]|$)', [Regex]::Escape(`$env:USERPROFILE).Replace('\\', '\')
+  }
+  if (-not [string]::IsNullOrWhiteSpace(`$env:LOCALAPPDATA)) {
+    `$expanded = `$expanded -replace '^%LOCALAPPDATA%(?=[\\/]|$)', [Regex]::Escape(`$env:LOCALAPPDATA).Replace('\\', '\')
+  }
+  return `$expanded
+}
 function Get-OriginFromProtocolArg {
   param([string]`$Arg)
   if ([string]::IsNullOrWhiteSpace(`$Arg)) { return `$null }
@@ -667,7 +777,7 @@ if (Test-Path `$envFile) {
     `$parts = `$line.Split('=', 2)
     if (`$parts.Count -ne 2) { return }
     `$key = `$parts[0].Trim()
-    `$value = `$parts[1].Trim().Trim('"').Trim("'")
+    `$value = Expand-EnvValue -Value `$parts[1]
     [System.Environment]::SetEnvironmentVariable(`$key, `$value, 'Process')
   }
 }
@@ -742,40 +852,19 @@ if (-not $puttyPath) {
 Write-InstallerConfig -ConfigFile $configFile -DBeaverPath $dbeaverPath -FileZillaPath $filezillaPath -RedisCLIPath $redisCLIPath -PuTTYPath $puttyPath -WinSCPPath $winscpPath -TerminalPref $terminalPref
 Bootstrap-RuntimeEnvFile -EnvFile $runtimeEnvFile
 Write-RuntimeEnvFile -EnvFile $runtimeEnvFile
-if (Test-Path $runtimeEnvFile) {
-  Get-Content $runtimeEnvFile | ForEach-Object {
-    $line = ($_.Trim())
-    if ([string]::IsNullOrWhiteSpace($line) -or $line.StartsWith('#')) { return }
-    if ($line -notmatch '^[A-Za-z_][A-Za-z0-9_]*=') { return }
-    $parts = $line.Split('=', 2)
-    if ($parts.Count -ne 2) { return }
-    $key = $parts[0].Trim()
-    $value = $parts[1].Trim().Trim('"').Trim("'")
-    [System.Environment]::SetEnvironmentVariable($key, $value, 'Process')
-  }
-}
+Load-EnvFileIntoProcess -Path $runtimeEnvFile
 Trust-AccessDServerCert -RuntimeEnvFile $runtimeEnvFile
 Trust-LocalConnectorTLSCert -ConnectorBinary $targetBin
 
 if ($wasRunning) {
   Write-Host '[accessd-connector] Restarting connector after reinstall...'
-  try {
-    if (Test-Path $runtimeEnvFile) {
-      Get-Content $runtimeEnvFile | ForEach-Object {
-        $line = ($_.Trim())
-        if ([string]::IsNullOrWhiteSpace($line) -or $line.StartsWith('#')) { return }
-        if ($line -notmatch '^[A-Za-z_][A-Za-z0-9_]*=') { return }
-        $parts = $line.Split('=', 2)
-        if ($parts.Count -ne 2) { return }
-        $key = $parts[0].Trim()
-        $value = $parts[1].Trim().Trim('"').Trim("'")
-        [System.Environment]::SetEnvironmentVariable($key, $value, 'Process')
-      }
-    }
-    Start-Process -FilePath $targetBin -WindowStyle Hidden | Out-Null
-  } catch {
-    Write-Host "[accessd-connector] WARNING: failed to restart connector automatically: $($_.Exception.Message)"
-  }
+}
+$startReason = 'initial install'
+if ($wasRunning) {
+  $startReason = 'restart after reinstall'
+}
+if (-not (Start-ConnectorProcess -BinaryPath $targetBin -RuntimeEnvFile $runtimeEnvFile -Reason $startReason)) {
+  Write-Host '[accessd-connector] WARNING: connector is not running yet; UI will still be able to start it via accessd-connector://start.'
 }
 
 Write-Host "[accessd-connector] Installed binary: $targetBin"

@@ -107,20 +107,247 @@ build_binary_and_payload() {
 package main
 
 import (
+	"bufio"
+	"bytes"
+	"crypto/sha256"
+	"crypto/tls"
+	"encoding/hex"
 	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 )
+
+func logLine(w io.Writer, msg string) {
+	if w == nil {
+		return
+	}
+	_, _ = io.WriteString(w, msg+"\n")
+}
+
+func firstNonEmptyLine(s string) string {
+	var fallback string
+	sc := bufio.NewScanner(strings.NewReader(s))
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line != "" {
+			if strings.HasSuffix(strings.ToLower(line), ".crt") {
+				if _, err := os.Stat(line); err == nil {
+					return line
+				}
+				if fallback == "" {
+					fallback = line
+				}
+				continue
+			}
+			if fallback == "" {
+				fallback = line
+			}
+		}
+	}
+	return fallback
+}
+
+func expandValue(raw, userProfile, localAppData string) string {
+	v := strings.TrimSpace(raw)
+	v = strings.Trim(v, "\"'")
+	if userProfile != "" {
+		repls := []string{"$HOME", "${HOME}", "%USERPROFILE%"}
+		for _, p := range repls {
+			if strings.EqualFold(v, p) {
+				return userProfile
+			}
+			if strings.HasPrefix(strings.ToUpper(v), strings.ToUpper(p+"\\")) || strings.HasPrefix(strings.ToUpper(v), strings.ToUpper(p+"/")) {
+				return userProfile + v[len(p):]
+			}
+		}
+	}
+	if localAppData != "" {
+		p := "%LOCALAPPDATA%"
+		if strings.EqualFold(v, p) {
+			return localAppData
+		}
+		if strings.HasPrefix(strings.ToUpper(v), strings.ToUpper(p+"\\")) || strings.HasPrefix(strings.ToUpper(v), strings.ToUpper(p+"/")) {
+			return localAppData + v[len(p):]
+		}
+	}
+	return v
+}
+
+func ensureRuntimeEnv(runtimeEnvPath string, log io.Writer) {
+	if _, err := os.Stat(runtimeEnvPath); err == nil {
+		return
+	}
+	_ = os.MkdirAll(filepath.Dir(runtimeEnvPath), 0o755)
+	lines := []string{
+		"# AccessD Connector runtime env (non-sensitive defaults)",
+		"# Keep secrets out of this file.",
+		"ACCESSD_CONNECTOR_ADDR=127.0.0.1:9494",
+		"ACCESSD_CONNECTOR_ENABLE_TLS=true",
+		"ACCESSD_CONNECTOR_TLS_CERT_FILE=%USERPROFILE%/.accessd-connector/tls/localhost.crt",
+		"ACCESSD_CONNECTOR_TLS_KEY_FILE=%USERPROFILE%/.accessd-connector/tls/localhost.key",
+		"ACCESSD_CONNECTOR_ALLOWED_ORIGIN=https://accessd.example.internal",
+		"ACCESSD_CONNECTOR_ALLOW_ANY_ORIGIN=false",
+		"ACCESSD_CONNECTOR_ALLOW_REMOTE=false",
+		"ACCESSD_CONNECTOR_AUTO_TRUST_SERVER_CERT=true",
+	}
+	_ = os.WriteFile(runtimeEnvPath, []byte(strings.Join(lines, "\n")+"\n"), 0o644)
+	logLine(log, "[accessd-connector] Wrote runtime env: "+runtimeEnvPath)
+}
+
+func loadRuntimeEnv(runtimeEnvPath string, log io.Writer) {
+	f, err := os.Open(runtimeEnvPath)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	userProfile := os.Getenv("USERPROFILE")
+	localAppData := os.Getenv("LOCALAPPDATA")
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		parts := strings.SplitN(line, "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		key := strings.TrimSpace(parts[0])
+		val := expandValue(parts[1], userProfile, localAppData)
+		_ = os.Setenv(key, val)
+	}
+	if err := sc.Err(); err != nil {
+		logLine(log, "env load warning="+err.Error())
+	}
+}
+
+func verifyPayload(dir string, log io.Writer) bool {
+	checksumsPath := filepath.Join(dir, "release-files-sha256.txt")
+	data, err := os.ReadFile(checksumsPath)
+	if err != nil {
+		logLine(log, "[accessd-connector] WARNING: checksum file missing; skipping verification")
+		return true
+	}
+	sc := bufio.NewScanner(bytes.NewReader(data))
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" {
+			continue
+		}
+		parts := strings.Fields(line)
+		if len(parts) < 2 {
+			continue
+		}
+		expected := strings.ToLower(strings.TrimSpace(parts[0]))
+		name := strings.TrimSpace(parts[1])
+		target := filepath.Join(dir, name)
+		b, err := os.ReadFile(target)
+		if err != nil {
+			logLine(log, "payload verification failed: missing file "+name)
+			return false
+		}
+		sum := sha256.Sum256(b)
+		actual := hex.EncodeToString(sum[:])
+		if actual != expected {
+			logLine(log, "payload verification failed: checksum mismatch "+name)
+			return false
+		}
+	}
+	if err := sc.Err(); err != nil {
+		logLine(log, "payload verification read error="+err.Error())
+		return false
+	}
+	logLine(log, "[accessd-connector] Payload integrity check passed.")
+	return true
+}
+
+func connectorResponsive(addr string) bool {
+	if strings.TrimSpace(addr) == "" {
+		addr = "127.0.0.1:9494"
+	}
+	httpsClient := &http.Client{
+		Timeout: 1200 * time.Millisecond,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, // local loopback probe only
+		},
+	}
+	if resp, err := httpsClient.Get("https://" + addr + "/version"); err == nil {
+		_ = resp.Body.Close()
+		if resp.StatusCode >= 200 && resp.StatusCode < 500 {
+			return true
+		}
+	}
+	httpClient := &http.Client{Timeout: 1200 * time.Millisecond}
+	if resp, err := httpClient.Get("http://" + addr + "/version"); err == nil {
+		_ = resp.Body.Close()
+		return resp.StatusCode >= 200 && resp.StatusCode < 500
+	}
+	return false
+}
+
+func runCertTrust(certPath string, log io.Writer) {
+	if strings.TrimSpace(certPath) == "" {
+		logLine(log, "[accessd-connector] WARNING: cert trust skipped: empty cert path from ensure-local-tls")
+		return
+	}
+	if _, err := os.Stat(certPath); err != nil {
+		logLine(log, "[accessd-connector] WARNING: cert trust skipped: cert file not found "+certPath)
+		return
+	}
+	cmd := exec.Command("certutil.exe", "-user", "-f", "-addstore", "Root", certPath)
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+	if err := cmd.Run(); err != nil {
+		logLine(log, "[accessd-connector] WARNING: cert trust failed: "+err.Error())
+		if out.Len() > 0 {
+			logLine(log, strings.TrimSpace(out.String()))
+		}
+		return
+	}
+	logLine(log, "[accessd-connector] Trusted local TLS cert: "+certPath)
+}
+
+func registerProtocol(connectorPath string, log io.Writer) {
+	root := `HKCU\Software\Classes\accessd-connector`
+	_ = exec.Command("reg.exe", "add", root, "/ve", "/d", "URL:AccessD Connector Protocol", "/f").Run()
+	_ = exec.Command("reg.exe", "add", root, "/v", "URL Protocol", "/d", "", "/f").Run()
+	_ = exec.Command("reg.exe", "add", root+`\DefaultIcon`, "/ve", "/d", `"`+connectorPath+`",0`, "/f").Run()
+	commandValue := `"` + connectorPath + `" "%1"`
+	_ = exec.Command("reg.exe", "add", root+`\shell\open\command`, "/ve", "/d", commandValue, "/f").Run()
+	logLine(log, "[accessd-connector] Registered URL scheme: accessd-connector://")
+}
+
+func startConnector(connectorPath string, log io.Writer) {
+	addr := os.Getenv("ACCESSD_CONNECTOR_ADDR")
+	if connectorResponsive(addr) {
+		logLine(log, "[accessd-connector] Connector already running; skipping auto-start.")
+		return
+	}
+	cmd := exec.Command(connectorPath)
+	cmd.Env = os.Environ()
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	cmd.Stdout = log
+	cmd.Stderr = log
+	if err := cmd.Start(); err != nil {
+		logLine(log, "[accessd-connector] WARNING: failed to start connector: "+err.Error())
+		return
+	}
+	logLine(log, "[accessd-connector] Started connector process (msi bootstrap).")
+}
 
 func main() {
 	exePath, err := os.Executable()
 	if err != nil {
 		os.Exit(1)
 	}
-	scriptPath := filepath.Join(filepath.Dir(exePath), "install.ps1")
+	baseDir := filepath.Dir(exePath)
+	connectorPath := filepath.Join(baseDir, "accessd-connector.exe")
 	logDir := filepath.Join(os.Getenv("LOCALAPPDATA"), "AccessD")
 	if logDir == "" || logDir == "." {
 		logDir = os.TempDir()
@@ -131,26 +358,47 @@ func main() {
 	if logFile != nil {
 		defer logFile.Close()
 		_, _ = io.WriteString(logFile, "---- bootstrap-runner start "+time.Now().Format(time.RFC3339)+" ----\n")
-		_, _ = io.WriteString(logFile, "script="+scriptPath+"\n")
+		_, _ = io.WriteString(logFile, "connector="+connectorPath+"\n")
 	}
 
-	cmd := exec.Command("powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File", scriptPath)
-	cmd.Env = append(os.Environ(), "ACCESSD_CONNECTOR_INSTALLER_NONINTERACTIVE=true")
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-	if logFile != nil {
-		cmd.Stdout = logFile
-		cmd.Stderr = logFile
-	} else {
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-	}
-	if err := cmd.Run(); err != nil {
-		if logFile != nil {
-			_, _ = io.WriteString(logFile, "error="+err.Error()+"\n")
-		}
+	if _, err := os.Stat(connectorPath); err != nil {
+		logLine(logFile, "error=connector binary missing")
 		os.Exit(1)
 	}
-	if logFile != nil {
+	if !verifyPayload(baseDir, logFile) {
+		logLine(logFile, "error=payload verification failed")
+		os.Exit(1)
+	}
+
+	userProfile := os.Getenv("USERPROFILE")
+	if userProfile == "" {
+		if home, err := os.UserHomeDir(); err == nil {
+			userProfile = home
+		}
+	}
+	runtimeEnvPath := filepath.Join(userProfile, ".config", "accessd", "connector.env")
+	ensureRuntimeEnv(runtimeEnvPath, logFile)
+	loadRuntimeEnv(runtimeEnvPath, logFile)
+	registerProtocol(connectorPath, logFile)
+
+	ensureCmd := exec.Command(connectorPath, "ensure-local-tls")
+	var ensureOut bytes.Buffer
+	ensureCmd.Stdout = &ensureOut
+	ensureCmd.Stderr = &ensureOut
+	if err := ensureCmd.Run(); err != nil {
+		logLine(logFile, "[accessd-connector] WARNING: ensure-local-tls failed: "+err.Error())
+	}
+	if txt := strings.TrimSpace(ensureOut.String()); txt != "" {
+		logLine(logFile, "[accessd-connector] ensure-local-tls output: "+txt)
+	}
+	certPath := firstNonEmptyLine(ensureOut.String())
+	runCertTrust(certPath, logFile)
+
+	startConnector(connectorPath, logFile)
+
+	if logFile == nil {
+		_, _ = os.Stdout.WriteString("status=ok\n")
+	} else {
 		_, _ = io.WriteString(logFile, "status=ok\n")
 	}
 }

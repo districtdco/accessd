@@ -8,6 +8,7 @@ import {
   Card,
   CardBody,
   CardHeader,
+  Checkbox,
   EmptyRow,
   ErrorState,
   Input,
@@ -35,6 +36,18 @@ const typeFilterOptions = [
 
 const PAGE_SIZE = 10
 
+function defaultPortForAssetType(type: string): string {
+  if (type === 'database') return '5432'
+  if (type === 'redis') return '6379'
+  return '22'
+}
+
+function suggestedDBPort(engine: string): string {
+  if (engine === 'mysql' || engine === 'mariadb') return '3306'
+  if (engine === 'mssql') return '1433'
+  return '5432'
+}
+
 export function AdminAssetsPage() {
   const [mode, setMode] = useState<'inventory' | 'single' | 'bulk'>('inventory')
   const [items, setItems] = useState<AdminAsset[]>([])
@@ -52,7 +65,15 @@ export function AdminAssetsPage() {
   const [assetType, setAssetType] = useState('linux_vm')
   const [host, setHost] = useState('')
   const [port, setPort] = useState('22')
-  const [metadataText, setMetadataText] = useState('{}')
+  const [sftpPath, setSftpPath] = useState('')
+  const [dbEngine, setDbEngine] = useState('postgres')
+  const [dbName, setDbName] = useState('')
+  const [dbSSLMode, setDbSSLMode] = useState('prefer')
+  const [redisDBIndex, setRedisDBIndex] = useState('0')
+  const [redisTLS, setRedisTLS] = useState(false)
+  const [redisInsecureSkipVerifyTLS, setRedisInsecureSkipVerifyTLS] = useState(false)
+  const [showAdvancedMetadata, setShowAdvancedMetadata] = useState(false)
+  const [advancedMetadataText, setAdvancedMetadataText] = useState('{}')
   const [bulkInput, setBulkInput] = useState('')
 
   const load = async () => {
@@ -75,17 +96,43 @@ export function AdminAssetsPage() {
   const createAsset = async () => {
     setError(null)
     setMessage(null)
-    let metadata: Record<string, unknown>
-    try {
-      metadata = JSON.parse(metadataText || '{}') as Record<string, unknown>
-    } catch {
-      setError('metadata must be valid JSON')
-      return
-    }
     const parsedPort = Number(port)
     if (!Number.isFinite(parsedPort) || parsedPort <= 0) {
       setError('port must be a valid number')
       return
+    }
+    let metadata: Record<string, unknown> = {}
+    if (assetType === 'linux_vm') {
+      const trimmedPath = sftpPath.trim()
+      if (trimmedPath) metadata.path = trimmedPath
+    } else if (assetType === 'database') {
+      const trimmedDB = dbName.trim()
+      metadata = {
+        engine: dbEngine,
+        ssl_mode: dbSSLMode,
+      }
+      if (trimmedDB) metadata.database = trimmedDB
+    } else if (assetType === 'redis') {
+      const parsedRedisDB = Number(redisDBIndex)
+      if (!Number.isInteger(parsedRedisDB) || parsedRedisDB < 0) {
+        setError('redis database index must be 0 or greater')
+        return
+      }
+      metadata = {
+        database: parsedRedisDB,
+        tls: redisTLS,
+      }
+      if (redisTLS) metadata.insecure_skip_verify_tls = redisInsecureSkipVerifyTLS
+    }
+    if (showAdvancedMetadata) {
+      let advanced: Record<string, unknown>
+      try {
+        advanced = JSON.parse(advancedMetadataText || '{}') as Record<string, unknown>
+      } catch {
+        setError('advanced metadata must be valid JSON')
+        return
+      }
+      metadata = { ...metadata, ...advanced }
     }
 
     setCreating(true)
@@ -99,8 +146,17 @@ export function AdminAssetsPage() {
       })
       setName('')
       setHost('')
+      setAssetType('linux_vm')
       setPort('22')
-      setMetadataText('{}')
+      setSftpPath('')
+      setDbEngine('postgres')
+      setDbName('')
+      setDbSSLMode('prefer')
+      setRedisDBIndex('0')
+      setRedisTLS(false)
+      setRedisInsecureSkipVerifyTLS(false)
+      setShowAdvancedMetadata(false)
+      setAdvancedMetadataText('{}')
       setMessage('Asset created')
       await load()
     } catch (err) {
@@ -216,12 +272,99 @@ export function AdminAssetsPage() {
           <CardBody>
             <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
               <Input label="Name" value={name} onChange={setName} placeholder="asset name" />
-              <Select label="Asset Type" value={assetType} onChange={setAssetType} options={ASSET_TYPE_OPTIONS} />
+              <Select
+                label="Asset Type"
+                value={assetType}
+                onChange={(next) => {
+                  setAssetType(next)
+                  setPort(defaultPortForAssetType(next))
+                }}
+                options={ASSET_TYPE_OPTIONS}
+              />
               <Input label="Host" value={host} onChange={setHost} placeholder="10.0.0.10" />
               <Input label="Port" value={port} onChange={setPort} />
             </div>
-            <div className="mt-4">
-              <TextArea label="Metadata (JSON)" value={metadataText} onChange={setMetadataText} rows={3} />
+
+            {assetType === 'linux_vm' && (
+              <div className="mt-4 grid gap-4 sm:grid-cols-2">
+                <Input label="SFTP Start Path (optional)" value={sftpPath} onChange={setSftpPath} placeholder="/home/ops" />
+                <div className="rounded-lg border border-indigo-100 bg-indigo-50 px-3 py-2 text-xs text-indigo-700">
+                  Suggested: leave empty for default home directory, or set a fixed path like `/var/www`.
+                </div>
+              </div>
+            )}
+
+            {assetType === 'database' && (
+              <div className="mt-4 grid gap-4 sm:grid-cols-3">
+                <Select
+                  label="Database Engine"
+                  value={dbEngine}
+                  onChange={(next) => {
+                    setDbEngine(next)
+                    setPort(suggestedDBPort(next))
+                  }}
+                  options={[
+                    { value: 'postgres', label: 'PostgreSQL (recommended)' },
+                    { value: 'mysql', label: 'MySQL' },
+                    { value: 'mariadb', label: 'MariaDB' },
+                    { value: 'mssql', label: 'SQL Server' },
+                  ]}
+                />
+                <Input label="Database Name (optional)" value={dbName} onChange={setDbName} placeholder="appdb" />
+                <Select
+                  label="SSL Mode"
+                  value={dbSSLMode}
+                  onChange={setDbSSLMode}
+                  options={[
+                    { value: 'prefer', label: 'prefer (recommended)' },
+                    { value: 'require', label: 'require' },
+                    { value: 'verify-ca', label: 'verify-ca' },
+                    { value: 'verify-full', label: 'verify-full' },
+                    { value: 'disable', label: 'disable' },
+                  ]}
+                />
+              </div>
+            )}
+
+            {assetType === 'redis' && (
+              <div className="mt-4 grid gap-4 sm:grid-cols-2">
+                <Input label="Redis Database Index" value={redisDBIndex} onChange={setRedisDBIndex} placeholder="0" />
+                <div className="space-y-2 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2">
+                  <Checkbox
+                    label="Use TLS"
+                    checked={redisTLS}
+                    onChange={(checked) => {
+                      setRedisTLS(checked)
+                      if (!checked) setRedisInsecureSkipVerifyTLS(false)
+                    }}
+                  />
+                  <Checkbox
+                    label="Skip TLS certificate verification"
+                    hint="Use only for internal/self-signed test environments."
+                    checked={redisInsecureSkipVerifyTLS}
+                    onChange={setRedisInsecureSkipVerifyTLS}
+                    disabled={!redisTLS}
+                  />
+                </div>
+              </div>
+            )}
+
+            <div className="mt-4 space-y-2">
+              <Checkbox
+                label="Show advanced metadata JSON (optional)"
+                hint="Only needed for custom fields not covered above."
+                checked={showAdvancedMetadata}
+                onChange={setShowAdvancedMetadata}
+              />
+              {showAdvancedMetadata && (
+                <TextArea
+                  label="Advanced Metadata (JSON)"
+                  value={advancedMetadataText}
+                  onChange={setAdvancedMetadataText}
+                  rows={3}
+                  placeholder='{"team":"it-ops"}'
+                />
+              )}
             </div>
             <div className="mt-4">
               <Button disabled={creating} onClick={() => void createAsset()}>

@@ -33,7 +33,6 @@ server {
 server {
     listen 443 ssl;
     listen [::]:443 ssl;
-    http2 on;
     server_name accessd.example.internal;
 
     ssl_certificate     /etc/ssl/accessd/fullchain.pem;
@@ -51,17 +50,20 @@ server {
     add_header Referrer-Policy           "strict-origin-when-cross-origin"      always;
     add_header Permissions-Policy        "geolocation=(), camera=(), microphone=()" always;
 
-    # CSP: connect-src includes the operator-local connector at 127.0.0.1:9494.
+    # CSP: connect-src includes the operator-local connector at 127.0.0.1:9494
+    # across http/https and ws/wss schemes; frame-src allows custom protocol
+    # handoff to the native connector app.
     add_header Content-Security-Policy
-        "default-src 'self'; \
-         script-src 'self'; \
-         style-src 'self' 'unsafe-inline'; \
-         img-src 'self' data:; \
-         font-src 'self' data:; \
-         connect-src 'self' http://127.0.0.1:9494 http://localhost:9494; \
-         worker-src 'self' blob:; \
-         frame-ancestors 'none'; \
-         object-src 'none'; \
+        "default-src 'self';
+         script-src 'self';
+         style-src 'self' 'unsafe-inline';
+         img-src 'self' data:;
+         font-src 'self' data:;
+         connect-src 'self' https://127.0.0.1:9494 https://localhost:9494 http://127.0.0.1:9494 http://localhost:9494 wss://127.0.0.1:9494 wss://localhost:9494 ws://127.0.0.1:9494 ws://localhost:9494;
+         frame-src 'self' accessd-connector:;
+         worker-src 'self' blob:;
+         frame-ancestors 'none';
+         object-src 'none';
          base-uri 'self';"
         always;
 

@@ -53,8 +53,6 @@ function connectorBaseCandidates(): string[] {
     normalizeConnectorBase(CONNECTOR_BASE),
     'https://127.0.0.1:9494',
     'https://localhost:9494',
-    'http://127.0.0.1:9494',
-    'http://localhost:9494',
   ].filter((v) => v !== '')
   return [...new Set(candidates)]
 }

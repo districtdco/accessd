@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"strings"
 	"time"
 
@@ -33,14 +35,29 @@ func main() {
 		return
 	}
 
-	cfg := config.Load()
 	if len(os.Args) > 1 && strings.EqualFold(strings.TrimSpace(os.Args[1]), "ensure-local-tls") {
-		if err := ensureLocalTLSFiles(cfg.TLSCertFile, cfg.TLSKeyFile); err != nil {
+		certFile, keyFile := tlsPathsFromEnv()
+		if err := ensureLocalTLSFiles(certFile, keyFile); err != nil {
 			fmt.Fprintf(os.Stderr, "failed to prepare local TLS cert: %v\n", err)
 			os.Exit(1)
 		}
-		fmt.Printf("%s\n", cfg.TLSCertFile)
+		fmt.Printf("%s\n", localTrustCertPath(certFile))
 		return
+	}
+
+	cfg := config.Load()
+	if len(os.Args) > 1 {
+		arg := strings.TrimSpace(os.Args[1])
+		if isProtocolAutostartArg(arg) {
+			if connectorReachable(cfg) {
+				return
+			}
+			if err := spawnBackgroundServe(); err != nil {
+				fmt.Fprintf(os.Stderr, "failed to start AccessD connector in background: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		}
 	}
 	localVerifier := auth.NewVerifier(cfg.ConnectorSecret)
 	remoteVerifier := auth.NewRemoteVerifier(cfg.BackendVerifyURL, cfg.BackendVerifyTimeout)
@@ -258,6 +275,73 @@ func main() {
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatal(err)
 	}
+}
+
+func tlsPathsFromEnv() (certFile, keyFile string) {
+	certFile = strings.TrimSpace(os.Getenv("ACCESSD_CONNECTOR_TLS_CERT_FILE"))
+	keyFile = strings.TrimSpace(os.Getenv("ACCESSD_CONNECTOR_TLS_KEY_FILE"))
+	if certFile != "" && keyFile != "" {
+		return certFile, keyFile
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || strings.TrimSpace(home) == "" {
+		return certFile, keyFile
+	}
+	if certFile == "" {
+		certFile = home + "/.accessd-connector/tls/localhost.crt"
+	}
+	if keyFile == "" {
+		keyFile = home + "/.accessd-connector/tls/localhost.key"
+	}
+	return certFile, keyFile
+}
+
+func isProtocolAutostartArg(arg string) bool {
+	if arg == "" {
+		return false
+	}
+	trimmed := strings.TrimSpace(arg)
+	if strings.EqualFold(trimmed, "start") {
+		return true
+	}
+	return strings.HasPrefix(strings.ToLower(trimmed), "accessd-connector://")
+}
+
+func connectorReachable(cfg config.Config) bool {
+	addr := strings.TrimSpace(cfg.Addr)
+	if addr == "" {
+		addr = "127.0.0.1:9494"
+	}
+	if cfg.EnableTLS {
+		httpsClient := &http.Client{
+			Timeout: 1200 * time.Millisecond,
+			Transport: &http.Transport{
+				TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, // loopback readiness probe only
+			},
+		}
+		if resp, err := httpsClient.Get("https://" + addr + "/version"); err == nil {
+			_ = resp.Body.Close()
+			if resp.StatusCode >= 200 && resp.StatusCode < 500 {
+				return true
+			}
+		}
+	}
+	httpClient := &http.Client{Timeout: 1200 * time.Millisecond}
+	if resp, err := httpClient.Get("http://" + addr + "/version"); err == nil {
+		_ = resp.Body.Close()
+		return resp.StatusCode >= 200 && resp.StatusCode < 500
+	}
+	return false
+}
+
+func spawnBackgroundServe() error {
+	exePath, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	cmd := exec.Command(exePath, "serve")
+	cmd.Env = os.Environ()
+	return cmd.Start()
 }
 
 func withLogging(next http.Handler) http.Handler {

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -293,6 +294,17 @@ func (s *Service) UpsertLDAPSettings(ctx context.Context, actorUserID string, in
 	if effectiveKeepCACert {
 		caCertExpr = "COALESCE(NULLIF(ldap_settings.ca_cert_pem, ''), '')"
 	}
+	s.logLDAPCredentialFlow("upsert_ldap_settings", normalized,
+		"actor_user_id", strings.TrimSpace(actorUserID),
+		"keep_existing_password", keepExistingPassword,
+		"effective_keep_password", effectiveKeepPassword,
+		"submitted_bind_password_present", strings.TrimSpace(input.BindPassword) != "",
+		"submitted_bind_password_len", len(strings.TrimSpace(input.BindPassword)),
+		"effective_bind_password_present", strings.TrimSpace(passwordArg) != "",
+		"effective_bind_password_len", len(strings.TrimSpace(passwordArg)),
+		"keep_existing_ca_cert_pem", keepExistingCACertPEM,
+		"effective_keep_ca_cert_pem", effectiveKeepCACert,
+	)
 
 	q := `
 INSERT INTO ldap_settings (
@@ -483,10 +495,19 @@ LIMIT 1;`
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
+			s.logLDAPCredentialFlow("resolved_ldap_settings_for_ops_defaults", defaults,
+				"config_row_id", 1,
+				"reason", "no_row",
+			)
 			return defaults, nil
 		}
 		return LDAPSettings{}, fmt.Errorf("load ldap settings: %w", err)
 	}
+	s.logLDAPCredentialFlow("resolved_ldap_settings_for_ops_row", row,
+		"config_row_id", 1,
+		"updated_by", strings.TrimSpace(row.UpdatedBy),
+		"updated_at", row.UpdatedAt.UTC().Format(time.RFC3339Nano),
+	)
 	return row, nil
 }
 
@@ -495,15 +516,29 @@ func (s *Service) TestLDAPConnection(ctx context.Context, in LDAPSettings, keepE
 	if err != nil {
 		return LDAPTestResult{}, err
 	}
+	s.logLDAPCredentialFlow("test_ldap_connection_submitted", settings,
+		"keep_existing_password", keepExistingPassword,
+		"keep_existing_ca_cert_pem", keepExistingCACertPEM,
+		"uses_submitted_settings", true,
+	)
+	usedStoredPassword := false
+	usedStoredCACert := false
 	stored, err := s.resolvedLDAPSettingsForOps(ctx)
 	if err == nil {
 		if keepExistingPassword && strings.TrimSpace(settings.BindPassword) == "" {
 			settings.BindPassword = strings.TrimSpace(stored.BindPassword)
+			usedStoredPassword = true
 		}
 		if keepExistingCACertPEM && strings.TrimSpace(settings.CACertPEM) == "" {
 			settings.CACertPEM = strings.TrimSpace(stored.CACertPEM)
+			usedStoredCACert = true
 		}
 	}
+	s.logLDAPCredentialFlow("test_ldap_connection_effective", settings,
+		"used_stored_password", usedStoredPassword,
+		"used_stored_ca_cert_pem", usedStoredCACert,
+		"uses_submitted_settings", !usedStoredPassword && !usedStoredCACert,
+	)
 	conn, server, err := dialLDAP(settings)
 	if err != nil {
 		return LDAPTestResult{Connected: false, BindOK: false, Message: err.Error(), Server: server, SearchBase: settings.BaseDN}, nil
@@ -528,6 +563,11 @@ func (s *Service) TriggerLDAPSync(ctx context.Context, actorUserID string) (LDAP
 	if err != nil {
 		return LDAPSyncRun{}, err
 	}
+	s.logLDAPCredentialFlow("trigger_ldap_sync_effective", settings,
+		"actor_user_id", strings.TrimSpace(actorUserID),
+		"uses_stored_settings", true,
+		"config_row_id", 1,
+	)
 	if !settings.Enabled {
 		return LDAPSyncRun{}, fmt.Errorf("ldap is disabled in admin settings")
 	}
@@ -958,6 +998,34 @@ func formatLDAPSyncError(err error) string {
 		return msg
 	}
 	return "sync failure: " + msg
+}
+
+func (s *Service) logLDAPCredentialFlow(stage string, settings LDAPSettings, extra ...any) {
+	if !ldapDebugLoggingEnabled() {
+		return
+	}
+	attrs := []any{
+		"stage", stage,
+		"provider_mode", strings.TrimSpace(settings.ProviderMode),
+		"enabled", settings.Enabled,
+		"host", strings.TrimSpace(settings.Host),
+		"port", settings.Port,
+		"url", strings.TrimSpace(settings.URL),
+		"base_dn", strings.TrimSpace(settings.BaseDN),
+		"bind_dn", strings.TrimSpace(settings.BindDN),
+		"bind_password_present", strings.TrimSpace(settings.BindPassword) != "",
+		"bind_password_len", len(strings.TrimSpace(settings.BindPassword)),
+		"use_tls", settings.UseTLS,
+		"start_tls", settings.StartTLS,
+		"insecure_skip_verify", settings.InsecureSkipVerify,
+	}
+	attrs = append(attrs, extra...)
+	s.logger.Info("ldap credential flow debug", attrs...)
+}
+
+func ldapDebugLoggingEnabled() bool {
+	raw := strings.TrimSpace(strings.ToLower(os.Getenv("ACCESSD_LDAP_DEBUG_LOGS")))
+	return raw == "1" || raw == "true" || raw == "yes" || raw == "on"
 }
 
 func NormalizeRemoteIP(addr string) string {

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from '../auth'
-import { getConnectorReleaseMetadata, getConnectorVersion, issueConnectorBootstrapToken } from '../api'
+import { getConnectorReleaseMetadata, getConnectorVersion } from '../api'
 import type { ConnectorReleaseMetadata } from '../types'
 
 type HeaderProps = {
@@ -153,49 +153,6 @@ export function Header({ onMenuClick }: HeaderProps) {
       return candidates[0]
     }
 
-    const triggerConnectorAutostart = async () => {
-      const baseURL = (import.meta.env.VITE_CONNECTOR_AUTOSTART_URL as string | undefined)?.trim()
-        || 'accessd-connector://start'
-      const sep = baseURL.includes('?') ? '&' : '?'
-      const origin = window.location.origin
-      let url = origin ? `${baseURL}${sep}origin=${encodeURIComponent(origin)}` : baseURL
-      try {
-        const issued = await issueConnectorBootstrapToken(origin)
-        if (issued.token) {
-          const sep2 = url.includes('?') ? '&' : '?'
-          url = `${url}${sep2}bootstrap_token=${encodeURIComponent(issued.token)}`
-        }
-      } catch {
-        // keep origin-only fallback
-      }
-      try {
-        const iframe = document.createElement('iframe')
-        iframe.style.display = 'none'
-        iframe.src = url
-        document.body.appendChild(iframe)
-        window.setTimeout(() => {
-          try { document.body.removeChild(iframe) } catch { /* ignore */ }
-        }, 1200)
-      } catch {
-        // ignore; fallback is manual download path
-      }
-    }
-
-    const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
-    const waitForConnectorVersion = async (timeoutMs: number, intervalMs = 250): Promise<string | null> => {
-      const deadline = Date.now() + timeoutMs
-      while (Date.now() < deadline) {
-        try {
-          const version = await getConnectorVersion()
-          if (version.trim() !== '') return version
-        } catch {
-          // keep polling
-        }
-        await wait(intervalMs)
-      }
-      return null
-    }
-
     const run = async () => {
       setConnectorState({ kind: 'checking', label: 'Connector Checking' })
       const platform = detectPlatform()
@@ -204,8 +161,7 @@ export function Header({ onMenuClick }: HeaderProps) {
       try {
         version = await getConnectorVersion()
       } catch {
-        await triggerConnectorAutostart()
-        version = await waitForConnectorVersion(12000)
+        version = null
       }
       if (cancelled) return
       const artifact = await selectArtifactWithFallback(metadata, platform)
@@ -303,6 +259,21 @@ export function Header({ onMenuClick }: HeaderProps) {
               >
                 <DownloadIcon />
                 <span>Download Connector</span>
+              </button>
+            )}
+            {(connectorState.kind === 'missing' || connectorState.kind === 'outdated') && (
+              <button
+                onClick={() => {
+                  const baseURL = (import.meta.env.VITE_CONNECTOR_AUTOSTART_URL as string | undefined)?.trim()
+                    || 'accessd-connector://start'
+                  const origin = window.location.origin
+                  const sep = baseURL.includes('?') ? '&' : '?'
+                  const url = origin ? `${baseURL}${sep}origin=${encodeURIComponent(origin)}` : baseURL
+                  window.location.href = url
+                }}
+                className="inline-flex items-center gap-1 rounded-lg border border-indigo-600 bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-700"
+              >
+                <span>Start Connector</span>
               </button>
             )}
             {(connectorState.kind === 'missing' || connectorState.kind === 'outdated') && (

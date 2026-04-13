@@ -7,7 +7,6 @@ import {
   getConnectorReleaseMetadata,
   getConnectorVersion,
   getMyAccess,
-  issueConnectorBootstrapToken,
   handoffDBeaverToConnector,
   handoffRedisToConnector,
   handoffSFTPToConnector,
@@ -51,19 +50,6 @@ function connectorAutostartURL(): string {
   if (!origin) return base
   const sep = base.includes('?') ? '&' : '?'
   return `${base}${sep}origin=${encodeURIComponent(origin)}`
-}
-
-async function connectorAutostartURLWithBootstrap(): Promise<string> {
-  const baseURL = connectorAutostartURL()
-  if (typeof window === 'undefined') return baseURL
-  try {
-    const issued = await issueConnectorBootstrapToken(window.location.origin)
-    if (!issued.token) return baseURL
-    const sep = baseURL.includes('?') ? '&' : '?'
-    return `${baseURL}${sep}bootstrap_token=${encodeURIComponent(issued.token)}`
-  } catch {
-    return baseURL
-  }
 }
 
 function detectPlatform(): PlatformKey {
@@ -205,40 +191,29 @@ function iconLayers() {
   )
 }
 
-async function triggerConnectorAutostart(): Promise<boolean> {
+function triggerConnectorAutostart(): boolean {
   if (typeof window === 'undefined' || typeof document === 'undefined') {
     return false
   }
+  const autostartURL = connectorAutostartURL()
   try {
-    const autostartURL = await connectorAutostartURLWithBootstrap()
-    const iframe = document.createElement('iframe')
-    iframe.style.display = 'none'
-    iframe.setAttribute('aria-hidden', 'true')
-    iframe.src = autostartURL
-    document.body.appendChild(iframe)
+    // Keep this synchronous so browsers treat it as a user gesture launch.
+    const link = document.createElement('a')
+    link.href = autostartURL
+    link.style.display = 'none'
+    document.body.appendChild(link)
+    link.click()
     window.setTimeout(() => {
       try {
-        document.body.removeChild(iframe)
+        document.body.removeChild(link)
       } catch {
         // ignore
       }
-    }, 1200)
+    }, 500)
     return true
   } catch {
     try {
-      const autostartURL = await connectorAutostartURLWithBootstrap()
-      const link = document.createElement('a')
-      link.href = autostartURL
-      link.style.display = 'none'
-      document.body.appendChild(link)
-      link.click()
-      window.setTimeout(() => {
-        try {
-          document.body.removeChild(link)
-        } catch {
-          // ignore
-        }
-      }, 1200)
+      window.location.href = autostartURL
       return true
     } catch {
       return false
@@ -351,7 +326,7 @@ async function preflightConnector(attemptAutostart: boolean): Promise<ConnectorS
     connectorVersion = await getConnectorVersion()
   } catch {
     if (attemptAutostart) {
-      await triggerConnectorAutostart()
+      triggerConnectorAutostart()
       connectorVersion = await waitForConnectorVersion(12000)
     }
   }
@@ -363,7 +338,7 @@ async function preflightConnector(attemptAutostart: boolean): Promise<ConnectorS
     const startHint = ` ${connectorStartHint(platform)}`
     return {
       kind: 'missing',
-      message: `AccessD connector not installed or not running on this machine. Auto-start was attempted but connector is still unavailable.${startHint}${downloadHint}${docsHint}`,
+      message: `AccessD connector is not running on this machine.${startHint}${downloadHint}${docsHint}`,
       downloadURL: artifact?.download_url,
       installDocsURL: metadata?.install_docs_url,
     }
@@ -410,7 +385,7 @@ export function AccessPage() {
       try {
         const [response, status] = await Promise.all([
           getMyAccess(),
-          preflightConnector(true),
+          preflightConnector(false),
         ])
         if (!cancelled) {
           setItems(response.items)
@@ -437,7 +412,14 @@ export function AccessPage() {
 
   const refreshConnectorStatus = async () => {
     setConnectorStatus({ kind: 'checking' })
-    const status = await preflightConnector(true)
+    const status = await preflightConnector(false)
+    setConnectorStatus(status)
+  }
+
+  const startConnectorNow = async () => {
+    triggerConnectorAutostart()
+    setConnectorStatus({ kind: 'checking' })
+    const status = await preflightConnector(false)
     setConnectorStatus(status)
   }
 
@@ -448,7 +430,8 @@ export function AccessPage() {
     let sessionID: string | null = null
 
     try {
-      const status = await preflightConnector(true)
+      triggerConnectorAutostart()
+      const status = await preflightConnector(false)
       if (status.kind === 'ready') {
         setConnectorStatus(status)
       } else if (status.kind === 'missing' || status.kind === 'outdated' || status.kind === 'error') {
@@ -546,7 +529,7 @@ export function AccessPage() {
       let message = err instanceof Error ? err.message : 'failed to launch asset'
       const connectorError = err instanceof ConnectorHandoffError ? err : null
       if (message.includes('connector handoff failed') || message.includes('Connector rejected launch authorization')) {
-        message += '. Ensure the local connector is running and reachable at http://127.0.0.1:9494.'
+        message += '. Ensure the local connector is running and reachable at https://127.0.0.1:9494.'
       }
       if (connectorError?.code) {
         const installGuidance = installGuidanceForConnectorCode(connectorError.code, action, detectPlatform())
@@ -630,6 +613,11 @@ export function AccessPage() {
               {(connectorStatus.kind === 'missing' || connectorStatus.kind === 'outdated') && connectorStatus.installDocsURL && (
                 <Button size="sm" variant="ghost" onClick={() => window.open(connectorStatus.installDocsURL, '_blank', 'noopener,noreferrer')}>
                   Install Guide
+                </Button>
+              )}
+              {(connectorStatus.kind === 'missing' || connectorStatus.kind === 'outdated') && (
+                <Button size="sm" onClick={() => void startConnectorNow()}>
+                  Start Connector
                 </Button>
               )}
               <Button size="sm" variant="ghost" onClick={() => void refreshConnectorStatus()}>
