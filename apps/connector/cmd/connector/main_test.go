@@ -5,11 +5,24 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
 	"github.com/districtd/pam/connector/internal/auth"
 )
+
+type stubVerifier struct {
+	claims auth.ConnectorClaims
+	err    error
+}
+
+func (s stubVerifier) Verify(_ string) (auth.ConnectorClaims, error) {
+	if s.err != nil {
+		return auth.ConnectorClaims{}, s.err
+	}
+	return s.claims, nil
+}
 
 func signConnectorTestToken(t *testing.T, secret string, claims auth.ConnectorClaims) string {
 	t.Helper()
@@ -58,5 +71,66 @@ func TestVerifyConnectorToken_AcceptsValidTokenAndRejectsSessionMismatch(t *test
 func TestVerifyConnectorToken_SkipsValidationWhenVerifierDisabled(t *testing.T) {
 	if err := verifyConnectorToken(nil, "", "session-1"); err != nil {
 		t.Fatalf("expected nil error when verifier is disabled, got %v", err)
+	}
+}
+
+func TestFallbackConnectorTokenVerifier_FallsBackWhenPrimaryFails(t *testing.T) {
+	verifier := fallbackConnectorTokenVerifier{
+		verifiers: []connectorTokenVerifier{
+			stubVerifier{err: fmt.Errorf("local signature mismatch")},
+			stubVerifier{claims: auth.ConnectorClaims{SessionID: "session-1"}},
+		},
+	}
+
+	claims, err := verifier.Verify("token")
+	if err != nil {
+		t.Fatalf("expected fallback verifier to succeed, got %v", err)
+	}
+	if claims.SessionID != "session-1" {
+		t.Fatalf("expected fallback claims session_id=session-1, got %q", claims.SessionID)
+	}
+}
+
+func TestFallbackConnectorTokenVerifier_ReportsAllVerifierFailures(t *testing.T) {
+	verifier := fallbackConnectorTokenVerifier{
+		verifiers: []connectorTokenVerifier{
+			stubVerifier{err: fmt.Errorf("local invalid")},
+			stubVerifier{err: fmt.Errorf("backend invalid")},
+		},
+	}
+
+	_, err := verifier.Verify("token")
+	if err == nil {
+		t.Fatalf("expected fallback verifier failure")
+	}
+	if got := err.Error(); got == "" || got == "connector token verification failed: " {
+		t.Fatalf("expected non-empty aggregated error, got %q", got)
+	}
+}
+
+func TestLaunchTracker_DeduplicatesInFlightAndCompleted(t *testing.T) {
+	tracker := newLaunchTracker(5 * time.Minute)
+	key := "shell:session-1"
+	if !tracker.TryStart(key) {
+		t.Fatalf("expected first TryStart to succeed")
+	}
+	if tracker.TryStart(key) {
+		t.Fatalf("expected duplicate TryStart to be rejected while in flight")
+	}
+	tracker.FinishSuccess(key)
+	if tracker.TryStart(key) {
+		t.Fatalf("expected duplicate TryStart to be rejected after success")
+	}
+}
+
+func TestLaunchTracker_AllowsRetryAfterFailure(t *testing.T) {
+	tracker := newLaunchTracker(5 * time.Minute)
+	key := "shell:session-2"
+	if !tracker.TryStart(key) {
+		t.Fatalf("expected first TryStart to succeed")
+	}
+	tracker.FinishFailure(key)
+	if !tracker.TryStart(key) {
+		t.Fatalf("expected TryStart to succeed after failure cleanup")
 	}
 }

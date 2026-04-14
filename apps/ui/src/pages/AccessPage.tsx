@@ -1,9 +1,11 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   ConnectorHandoffError,
   connectorTokenForHandoff,
   createSessionLaunch,
+  getConnectorDebugInfo,
+  getConnectorHealth,
   getConnectorReleaseMetadata,
   getConnectorVersion,
   getMyAccess,
@@ -237,6 +239,21 @@ async function waitForConnectorVersion(timeoutMs: number, intervalMs = 250): Pro
   return null
 }
 
+async function waitForConnectorHealth(timeoutMs: number, intervalMs = 250): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    try {
+      if (await getConnectorHealth()) {
+        return true
+      }
+    } catch {
+      // keep polling until timeout
+    }
+    await sleep(intervalMs)
+  }
+  return false
+}
+
 function packagePriorityForPlatform(
   os: PlatformKey['os'],
   packageType: string,
@@ -321,13 +338,24 @@ async function preflightConnector(attemptAutostart: boolean): Promise<ConnectorS
   const platform = detectPlatform()
   const metadata = await getConnectorReleaseMetadata().catch(() => null)
   let connectorVersion: string | null = null
+  let healthy = false
 
   try {
-    connectorVersion = await getConnectorVersion()
+    healthy = await getConnectorHealth()
   } catch {
-    if (attemptAutostart) {
-      triggerConnectorAutostart()
-      connectorVersion = await waitForConnectorVersion(12000)
+    healthy = false
+  }
+
+  if (!healthy && attemptAutostart) {
+    triggerConnectorAutostart()
+    healthy = await waitForConnectorHealth(12000)
+  }
+
+  if (healthy) {
+    try {
+      connectorVersion = await getConnectorVersion()
+    } catch {
+      connectorVersion = await waitForConnectorVersion(3000)
     }
   }
 
@@ -373,7 +401,13 @@ export function AccessPage() {
   const [launchMessage, setLaunchMessage] = useState<string | null>(null)
   const [launchMessageKind, setLaunchMessageKind] = useState<'success' | 'error'>('success')
   const [connectorStatus, setConnectorStatus] = useState<ConnectorStatus>({ kind: 'checking' })
+  const [connectorDebug, setConnectorDebug] = useState(getConnectorDebugInfo())
+  const launchInFlightRef = useRef(false)
   const platform = detectPlatform()
+
+  const refreshConnectorDebug = () => {
+    setConnectorDebug(getConnectorDebugInfo())
+  }
 
   useEffect(() => {
     let cancelled = false
@@ -390,6 +424,7 @@ export function AccessPage() {
         if (!cancelled) {
           setItems(response.items)
           setConnectorStatus(status)
+          refreshConnectorDebug()
         }
       } catch (err) {
         if (!cancelled) {
@@ -414,6 +449,7 @@ export function AccessPage() {
     setConnectorStatus({ kind: 'checking' })
     const status = await preflightConnector(false)
     setConnectorStatus(status)
+    refreshConnectorDebug()
   }
 
   const startConnectorNow = async () => {
@@ -421,21 +457,27 @@ export function AccessPage() {
     setConnectorStatus({ kind: 'checking' })
     const status = await preflightConnector(false)
     setConnectorStatus(status)
+    refreshConnectorDebug()
   }
 
   const launchAsset = async (item: AccessPoint, action: 'shell' | 'sftp' | 'dbeaver' | 'redis') => {
+    if (launchInFlightRef.current) {
+      return
+    }
+    launchInFlightRef.current = true
     setLaunchMessage(null)
     setLaunchMessageKind('success')
     setLaunchingAssetID(item.asset_id)
     let sessionID: string | null = null
 
     try {
-      triggerConnectorAutostart()
-      const status = await preflightConnector(false)
+      const status = await preflightConnector(connectorStatus.kind !== 'ready')
       if (status.kind === 'ready') {
         setConnectorStatus(status)
+        refreshConnectorDebug()
       } else if (status.kind === 'missing' || status.kind === 'outdated' || status.kind === 'error') {
         setConnectorStatus(status)
+        refreshConnectorDebug()
         throw new Error(status.message)
       }
 
@@ -560,6 +602,8 @@ export function AccessPage() {
       setLaunchMessage(`Launch failed for ${item.asset_name}: ${message}`)
     } finally {
       setLaunchingAssetID(null)
+      launchInFlightRef.current = false
+      refreshConnectorDebug()
     }
   }
 
@@ -595,6 +639,9 @@ export function AccessPage() {
                 {connectorStatus.kind === 'ready'
                   ? `Connector is reachable at local endpoint for ${platformLabel(platform.os)} (${platform.arch}).`
                   : connectorStatus.message}
+              </p>
+              <p className="mt-1 text-xs text-gray-500">
+                Debug endpoint: probe={connectorDebug.lastProbeBase ?? '-'} | launch={connectorDebug.lastLaunchBase ?? '-'} | preferred={connectorDebug.preferredBase ?? '-'}
               </p>
             </div>
             <div className="flex flex-wrap items-center gap-2">
@@ -659,6 +706,7 @@ export function AccessPage() {
                 const canSFTP = item.asset_type === 'linux_vm' && item.allowed_actions.includes('sftp')
                 const canDBeaver = item.asset_type === 'database' && item.allowed_actions.includes('dbeaver')
                 const canRedis = item.asset_type === 'redis' && item.allowed_actions.includes('redis')
+                const launchInProgress = launchingAssetID !== null
                 const isLaunching = launchingAssetID === item.asset_id
 
                 return (
@@ -675,22 +723,22 @@ export function AccessPage() {
                       {(canShell || canSFTP || canDBeaver || canRedis) ? (
                         <div className="flex gap-1.5">
                           {canShell && (
-                            <Button size="sm" disabled={isLaunching} onClick={() => void launchAsset(item, 'shell')}>
+                            <Button size="sm" disabled={launchInProgress} onClick={() => void launchAsset(item, 'shell')}>
                               {isLaunching ? 'Launching...' : 'Shell'}
                             </Button>
                           )}
                           {canSFTP && (
-                            <Button size="sm" variant="secondary" disabled={isLaunching} onClick={() => void launchAsset(item, 'sftp')}>
+                            <Button size="sm" variant="secondary" disabled={launchInProgress} onClick={() => void launchAsset(item, 'sftp')}>
                               {isLaunching ? 'Launching...' : 'SFTP'}
                             </Button>
                           )}
                           {canDBeaver && (
-                            <Button size="sm" disabled={isLaunching} onClick={() => void launchAsset(item, 'dbeaver')}>
+                            <Button size="sm" disabled={launchInProgress} onClick={() => void launchAsset(item, 'dbeaver')}>
                               {isLaunching ? 'Launching...' : 'DBeaver'}
                             </Button>
                           )}
                           {canRedis && (
-                            <Button size="sm" variant="secondary" disabled={isLaunching} onClick={() => void launchAsset(item, 'redis')}>
+                            <Button size="sm" variant="secondary" disabled={launchInProgress} onClick={() => void launchAsset(item, 'redis')}>
                               {isLaunching ? 'Launching...' : 'Redis CLI'}
                             </Button>
                           )}

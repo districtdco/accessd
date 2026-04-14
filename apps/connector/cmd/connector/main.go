@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"sync"
 	"strings"
 	"time"
 
@@ -63,6 +64,9 @@ func main() {
 	remoteVerifier := auth.NewRemoteVerifier(cfg.BackendVerifyURL, cfg.BackendVerifyTimeout)
 	var verifier connectorTokenVerifier
 	switch {
+	case localVerifier != nil && remoteVerifier != nil:
+		verifier = fallbackConnectorTokenVerifier{verifiers: []connectorTokenVerifier{localVerifier, remoteVerifier}}
+		log.Printf("connector token verification enabled (mode=local-hmac+backend-fallback verify_url=%s)", cfg.BackendVerifyURL)
 	case localVerifier != nil:
 		verifier = localVerifier
 		log.Printf("connector token verification enabled (mode=local-hmac)")
@@ -80,6 +84,7 @@ func main() {
 		DBeaverTempTTL: cfg.DBeaverTempTTL,
 		Resolver:       cfg.Resolver,
 	}
+	launchTracker := newLaunchTracker(10 * time.Minute)
 	if removed, err := launch.CleanupStaleDBeaverTemp(cfg.DBeaverTempTTL); err != nil {
 		log.Printf("stale dbeaver temp cleanup skipped: %v", err)
 	} else if removed > 0 {
@@ -154,12 +159,24 @@ func main() {
 			writeJSON(w, http.StatusForbidden, map[string]string{"error": "invalid or missing connector token"})
 			return
 		}
+		launchKey := "shell:" + strings.TrimSpace(req.SessionID)
+		if !launchTracker.TryStart(launchKey) {
+			log.Printf("launch/shell duplicate ignored session_id=%s", req.SessionID)
+			writeJSON(w, http.StatusAccepted, map[string]any{
+				"status":       "already_launched",
+				"session_id":   req.SessionID,
+				"instructions": "shell launch already in progress or completed for this session",
+			})
+			return
+		}
 		log.Printf("launch/shell accepted session_id=%s", req.SessionID)
 		diag, err := launcher.LaunchShell(r.Context(), req)
 		if err != nil {
+			launchTracker.FinishFailure(launchKey)
 			writeLaunchError(w, err)
 			return
 		}
+		launchTracker.FinishSuccess(launchKey)
 		writeJSON(w, http.StatusAccepted, map[string]any{
 			"status":       "launched",
 			"session_id":   req.SessionID,
@@ -182,12 +199,24 @@ func main() {
 			writeJSON(w, http.StatusForbidden, map[string]string{"error": "invalid or missing connector token"})
 			return
 		}
+		launchKey := "dbeaver:" + strings.TrimSpace(req.SessionID)
+		if !launchTracker.TryStart(launchKey) {
+			log.Printf("launch/dbeaver duplicate ignored session_id=%s", req.SessionID)
+			writeJSON(w, http.StatusAccepted, map[string]any{
+				"status":       "already_launched",
+				"session_id":   req.SessionID,
+				"instructions": "dbeaver launch already in progress or completed for this session",
+			})
+			return
+		}
 		log.Printf("launch/dbeaver accepted session_id=%s", req.SessionID)
 		diag, err := launcher.LaunchDBeaver(r.Context(), req)
 		if err != nil {
+			launchTracker.FinishFailure(launchKey)
 			writeLaunchError(w, err)
 			return
 		}
+		launchTracker.FinishSuccess(launchKey)
 		writeJSON(w, http.StatusAccepted, map[string]any{
 			"status":       "launched",
 			"session_id":   req.SessionID,
@@ -210,12 +239,24 @@ func main() {
 			writeJSON(w, http.StatusForbidden, map[string]string{"error": "invalid or missing connector token"})
 			return
 		}
+		launchKey := "redis:" + strings.TrimSpace(req.SessionID)
+		if !launchTracker.TryStart(launchKey) {
+			log.Printf("launch/redis duplicate ignored session_id=%s", req.SessionID)
+			writeJSON(w, http.StatusAccepted, map[string]any{
+				"status":       "already_launched",
+				"session_id":   req.SessionID,
+				"instructions": "redis launch already in progress or completed for this session",
+			})
+			return
+		}
 		log.Printf("launch/redis accepted session_id=%s", req.SessionID)
 		diag, err := launcher.LaunchRedisCLI(r.Context(), req)
 		if err != nil {
+			launchTracker.FinishFailure(launchKey)
 			writeLaunchError(w, err)
 			return
 		}
+		launchTracker.FinishSuccess(launchKey)
 		writeJSON(w, http.StatusAccepted, map[string]any{
 			"status":       "launched",
 			"session_id":   req.SessionID,
@@ -238,12 +279,24 @@ func main() {
 			writeJSON(w, http.StatusForbidden, map[string]string{"error": "invalid or missing connector token"})
 			return
 		}
+		launchKey := "sftp:" + strings.TrimSpace(req.SessionID)
+		if !launchTracker.TryStart(launchKey) {
+			log.Printf("launch/sftp duplicate ignored session_id=%s", req.SessionID)
+			writeJSON(w, http.StatusAccepted, map[string]any{
+				"status":       "already_launched",
+				"session_id":   req.SessionID,
+				"instructions": "sftp launch already in progress or completed for this session",
+			})
+			return
+		}
 		log.Printf("launch/sftp accepted session_id=%s", req.SessionID)
 		diag, err := launcher.LaunchSFTPClient(r.Context(), req)
 		if err != nil {
+			launchTracker.FinishFailure(launchKey)
 			writeLaunchError(w, err)
 			return
 		}
+		launchTracker.FinishSuccess(launchKey)
 		writeJSON(w, http.StatusAccepted, map[string]any{
 			"status":       "launched",
 			"session_id":   req.SessionID,
@@ -460,6 +513,95 @@ type statusRecorder struct {
 
 type connectorTokenVerifier interface {
 	Verify(token string) (auth.ConnectorClaims, error)
+}
+
+type fallbackConnectorTokenVerifier struct {
+	verifiers []connectorTokenVerifier
+}
+
+type launchTracker struct {
+	mu      sync.Mutex
+	ttl     time.Duration
+	entries map[string]launchTrackerEntry
+}
+
+type launchTrackerEntry struct {
+	startedAt  time.Time
+	inProgress bool
+	completed  bool
+}
+
+func newLaunchTracker(ttl time.Duration) *launchTracker {
+	if ttl <= 0 {
+		ttl = 10 * time.Minute
+	}
+	return &launchTracker{
+		ttl:     ttl,
+		entries: map[string]launchTrackerEntry{},
+	}
+}
+
+func (t *launchTracker) TryStart(key string) bool {
+	now := time.Now()
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.pruneLocked(now)
+	if existing, ok := t.entries[key]; ok {
+		if existing.inProgress || existing.completed {
+			return false
+		}
+	}
+	t.entries[key] = launchTrackerEntry{
+		startedAt:  now,
+		inProgress: true,
+		completed:  false,
+	}
+	return true
+}
+
+func (t *launchTracker) FinishSuccess(key string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	entry, ok := t.entries[key]
+	if !ok {
+		return
+	}
+	entry.startedAt = time.Now()
+	entry.inProgress = false
+	entry.completed = true
+	t.entries[key] = entry
+}
+
+func (t *launchTracker) FinishFailure(key string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	delete(t.entries, key)
+}
+
+func (t *launchTracker) pruneLocked(now time.Time) {
+	for key, entry := range t.entries {
+		if now.Sub(entry.startedAt) > t.ttl {
+			delete(t.entries, key)
+		}
+	}
+}
+
+func (f fallbackConnectorTokenVerifier) Verify(token string) (auth.ConnectorClaims, error) {
+	var errs []string
+	for _, verifier := range f.verifiers {
+		if verifier == nil {
+			continue
+		}
+		claims, err := verifier.Verify(token)
+		if err == nil {
+			return claims, nil
+		}
+		errs = append(errs, err.Error())
+	}
+	if len(errs) == 0 {
+		return auth.ConnectorClaims{}, fmt.Errorf("connector token verification is not configured")
+	}
+	return auth.ConnectorClaims{}, fmt.Errorf("connector token verification failed: %s", strings.Join(errs, "; "))
 }
 
 func (r *statusRecorder) WriteHeader(status int) {

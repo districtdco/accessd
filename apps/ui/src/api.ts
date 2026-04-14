@@ -43,6 +43,9 @@ type APIError = {
 const API_BASE = '/api'
 const CONNECTOR_BASE = import.meta.env.VITE_CONNECTOR_BASE ?? 'https://127.0.0.1:9494'
 const CONNECTOR_TOKEN_REQUIRED = parseConnectorTokenRequired(import.meta.env.VITE_CONNECTOR_TOKEN_REQUIRED)
+let preferredConnectorBase: string | null = null
+let lastConnectorProbeBase: string | null = null
+let lastConnectorLaunchBase: string | null = null
 
 function normalizeConnectorBase(raw: string | undefined): string {
   return (raw ?? '').trim().replace(/\/+$/, '')
@@ -50,6 +53,7 @@ function normalizeConnectorBase(raw: string | undefined): string {
 
 function connectorBaseCandidates(): string[] {
   const candidates = [
+    normalizeConnectorBase(preferredConnectorBase ?? undefined),
     normalizeConnectorBase(CONNECTOR_BASE),
     'https://127.0.0.1:9494',
     'https://localhost:9494',
@@ -190,8 +194,13 @@ async function connectorLaunchRequest<TResponse>(
 ): Promise<TResponse> {
   let response: Response | null = null
   let lastError: unknown = null
+  const nonIdempotentLaunch = path.startsWith('/launch/')
+  const candidates = nonIdempotentLaunch && preferredConnectorBase
+    ? [preferredConnectorBase]
+    : connectorBaseCandidates()
 
-  for (const base of connectorBaseCandidates()) {
+  for (const base of candidates) {
+    lastConnectorLaunchBase = base
     try {
       response = await fetch(`${base}${path}`, {
         method: 'POST',
@@ -201,11 +210,17 @@ async function connectorLaunchRequest<TResponse>(
         body: JSON.stringify(body),
       })
       if (response.ok || !shouldTryNextConnectorBase(response.status)) {
+        if (response.ok) {
+          preferredConnectorBase = base
+        }
         break
       }
       response = null
     } catch (err) {
       lastError = err
+      if (nonIdempotentLaunch) {
+        break
+      }
     }
   }
 
@@ -244,9 +259,11 @@ export async function getConnectorVersion(): Promise<string> {
   let lastError: unknown = null
 
   for (const base of connectorBaseCandidates()) {
+    lastConnectorProbeBase = base
     try {
       const resp = await fetch(`${base}/version`, { method: 'GET' })
       if (resp.ok) {
+        preferredConnectorBase = base
         response = resp
         break
       }
@@ -272,6 +289,33 @@ export async function getConnectorVersion(): Promise<string> {
     throw new Error('connector version response missing version')
   }
   return version
+}
+
+export async function getConnectorHealth(): Promise<boolean> {
+  for (const base of connectorBaseCandidates()) {
+    lastConnectorProbeBase = base
+    try {
+      const resp = await fetch(`${base}/healthz`, { method: 'GET' })
+      if (resp.ok) {
+        preferredConnectorBase = base
+        return true
+      }
+      if (!shouldTryNextConnectorBase(resp.status)) {
+        return false
+      }
+    } catch {
+      // Try next candidate endpoint.
+    }
+  }
+  return false
+}
+
+export function getConnectorDebugInfo(): { preferredBase: string | null; lastProbeBase: string | null; lastLaunchBase: string | null } {
+  return {
+    preferredBase: preferredConnectorBase,
+    lastProbeBase: lastConnectorProbeBase,
+    lastLaunchBase: lastConnectorLaunchBase,
+  }
 }
 
 export async function handoffShellToConnector(
