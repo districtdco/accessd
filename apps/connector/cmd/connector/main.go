@@ -12,12 +12,15 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
-	"sync"
+	"runtime"
+	"runtime/debug"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/districtd/pam/connector/internal/auth"
 	"github.com/districtd/pam/connector/internal/config"
+	"github.com/districtd/pam/connector/internal/discovery"
 	"github.com/districtd/pam/connector/internal/launch"
 )
 
@@ -61,7 +64,10 @@ func main() {
 		}
 	}
 	localVerifier := auth.NewVerifier(cfg.ConnectorSecret)
-	remoteVerifier := auth.NewRemoteVerifier(cfg.BackendVerifyURL, cfg.BackendVerifyTimeout)
+	remoteVerifier := auth.NewRemoteVerifier(cfg.BackendVerifyURL, cfg.BackendVerifyTimeout, auth.RemoteVerifierOptions{
+		CACertFile:         cfg.BackendCACertFile,
+		InsecureSkipVerify: cfg.BackendVerifyInsecure,
+	})
 	var verifier connectorTokenVerifier
 	switch {
 	case localVerifier != nil && remoteVerifier != nil:
@@ -99,8 +105,16 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]string{
-			"status": "ok",
+		diagnostics, issues := buildHealthDiagnostics(cfg, localVerifier, remoteVerifier)
+		readiness := "ready"
+		if len(issues) > 0 {
+			readiness = "degraded"
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status":    "ok",
+			"readiness": readiness,
+			"issues":    issues,
+			"checks":    diagnostics,
 		})
 	})
 	mux.HandleFunc("GET /version", func(w http.ResponseWriter, _ *http.Request) {
@@ -122,14 +136,16 @@ func main() {
 			"commit":   commit,
 			"built_at": builtAt,
 			"runtime": map[string]any{
-				"addr":                 cfg.Addr,
-				"enable_tls":           cfg.EnableTLS,
-				"tls_cert_file":        cfg.TLSCertFile,
-				"allow_remote":         cfg.AllowRemote,
-				"allow_any_origin":     cfg.AllowAnyOrigin,
-				"allow_insecure_token": cfg.AllowInsecureNoToken,
-				"allowed_origins":      cfg.AllowedOrigins,
-				"backend_verify_url":   cfg.BackendVerifyURL,
+				"addr":                    cfg.Addr,
+				"enable_tls":              cfg.EnableTLS,
+				"tls_cert_file":           cfg.TLSCertFile,
+				"allow_remote":            cfg.AllowRemote,
+				"allow_any_origin":        cfg.AllowAnyOrigin,
+				"allow_insecure_token":    cfg.AllowInsecureNoToken,
+				"allowed_origins":         cfg.AllowedOrigins,
+				"backend_verify_url":      cfg.BackendVerifyURL,
+				"backend_ca_cert_file":    cfg.BackendCACertFile,
+				"backend_verify_insecure": cfg.BackendVerifyInsecure,
 			},
 			"requirements": map[string]any{
 				"ok":                       len(missing) == 0,
@@ -307,10 +323,14 @@ func main() {
 
 	handler := withCORS(cfg.AllowedOrigins, cfg.AllowAnyOrigin, mux)
 	handler = withLocalhostOnly(cfg.AllowRemote, handler)
+	handler = withRecovery(handler)
 	server := &http.Server{
 		Addr:              cfg.Addr,
 		Handler:           withLogging(handler),
 		ReadHeaderTimeout: 5 * time.Second,
+		// Keep loopback connector transport on HTTP/1.1 for maximum browser
+		// compatibility with local/self-signed TLS interception environments.
+		TLSNextProto: map[string]func(*http.Server, *tls.Conn, http.Handler){},
 	}
 
 	if cfg.EnableTLS {
@@ -406,6 +426,22 @@ func withLogging(next http.Handler) http.Handler {
 	})
 }
 
+func withRecovery(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			if rec := recover(); rec != nil {
+				log.Printf("panic recovered method=%s path=%s panic=%v stack=%s", r.Method, r.URL.Path, rec, string(debug.Stack()))
+				writeJSON(w, http.StatusInternalServerError, map[string]string{
+					"error": "internal connector error",
+					"code":  "internal_error",
+					"hint":  "check connector logs for panic details",
+				})
+			}
+		}()
+		next.ServeHTTP(w, r)
+	})
+}
+
 func withCORS(allowedOrigins []string, allowAnyOrigin bool, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requestOrigin := strings.TrimSpace(r.Header.Get("Origin"))
@@ -419,7 +455,7 @@ func withCORS(allowedOrigins []string, allowAnyOrigin bool, next http.Handler) h
 			allowOrigin = requestOrigin
 		} else if requestOrigin != "" {
 			for _, allowed := range allowedOrigins {
-				if requestOrigin == allowed {
+				if originMatches(requestOrigin, allowed) {
 					allowOrigin = requestOrigin
 					break
 				}
@@ -468,6 +504,43 @@ func isLoopbackOrigin(origin string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
+func originMatches(requestOrigin, allowedOrigin string) bool {
+	req, reqOK := canonicalOrigin(requestOrigin)
+	allow, allowOK := canonicalOrigin(allowedOrigin)
+	if reqOK && allowOK {
+		return req == allow
+	}
+	return strings.TrimSpace(requestOrigin) == strings.TrimSpace(allowedOrigin)
+}
+
+func canonicalOrigin(raw string) (string, bool) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return "", false
+	}
+	u, err := url.Parse(trimmed)
+	if err != nil {
+		return "", false
+	}
+	scheme := strings.ToLower(strings.TrimSpace(u.Scheme))
+	if scheme != "http" && scheme != "https" {
+		return "", false
+	}
+	host := strings.ToLower(strings.TrimSpace(u.Hostname()))
+	if host == "" {
+		return "", false
+	}
+	port := strings.TrimSpace(u.Port())
+	if port == "" {
+		if scheme == "https" {
+			port = "443"
+		} else {
+			port = "80"
+		}
+	}
+	return scheme + "://" + host + ":" + port, true
+}
+
 func withLocalhostOnly(allowRemote bool, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if allowRemote {
@@ -496,6 +569,139 @@ func isLoopbackRequest(remoteAddr string) bool {
 	}
 	ip := net.ParseIP(trimmed)
 	return ip != nil && ip.IsLoopback()
+}
+
+func buildHealthDiagnostics(cfg config.Config, localVerifier *auth.Verifier, remoteVerifier *auth.RemoteVerifier) (map[string]any, []string) {
+	issues := make([]string, 0, 8)
+	mode := "disabled"
+	switch {
+	case localVerifier != nil && remoteVerifier != nil:
+		mode = "local_hmac+backend_online"
+	case localVerifier != nil:
+		mode = "local_hmac"
+	case remoteVerifier != nil:
+		mode = "backend_online"
+	}
+
+	backendURL := strings.TrimSpace(cfg.BackendVerifyURL)
+	backend := map[string]any{
+		"url": backendURL,
+	}
+	if strings.TrimSpace(backendURL) != "" {
+		host, resolveOK, resolveErr := resolveBackendVerifyHost(backendURL)
+		backend["host"] = host
+		backend["host_resolves"] = resolveOK
+		if resolveErr != "" {
+			backend["resolve_error"] = resolveErr
+		}
+		if isPlaceholderHost(host) {
+			backend["placeholder"] = true
+			issues = append(issues, "backend verify URL still points to placeholder host")
+		}
+		if !resolveOK {
+			issues = append(issues, "backend verify host does not resolve")
+		}
+	}
+
+	if localVerifier == nil && remoteVerifier == nil && !cfg.AllowInsecureNoToken {
+		issues = append(issues, "connector token verification is not configured")
+	}
+
+	appChecks := map[string]any{
+		"putty":     appHealth(cfg.Resolver, discovery.AppPuTTY, []string{"shell"}),
+		"filezilla": appHealth(cfg.Resolver, discovery.AppFileZilla, []string{"sftp"}),
+		"winscp":    appHealth(cfg.Resolver, discovery.AppWinSCP, []string{"sftp"}),
+		"dbeaver":   appHealth(cfg.Resolver, discovery.AppDBeaver, []string{"dbeaver"}),
+		"redis_cli": appHealth(cfg.Resolver, discovery.AppRedisCLI, []string{"redis"}),
+	}
+	if runtime.GOOS == "windows" {
+		if putty, ok := appChecks["putty"].(map[string]any); ok {
+			available, _ := putty["available"].(bool)
+			if !available {
+				issues = append(issues, "PuTTY not detected for Windows shell launch")
+			}
+		}
+	}
+
+	checks := map[string]any{
+		"token_verification": map[string]any{
+			"mode":                       mode,
+			"allow_insecure_no_token":    cfg.AllowInsecureNoToken,
+			"connector_secret_present":   localVerifier != nil,
+			"backend_verify_url_present": strings.TrimSpace(backendURL) != "",
+			"backend_ca_cert_file":       strings.TrimSpace(cfg.BackendCACertFile),
+			"backend_verify_insecure":    cfg.BackendVerifyInsecure,
+			"backend":                    backend,
+		},
+		"apps": appChecks,
+	}
+	if path := strings.TrimSpace(cfg.BackendCACertFile); path != "" {
+		if _, err := os.Stat(path); err != nil {
+			issues = append(issues, "backend CA cert file not readable")
+		}
+	}
+	if cfg.BackendVerifyInsecure {
+		issues = append(issues, "backend token verification TLS is running in insecure mode")
+	}
+	return checks, issues
+}
+
+func appHealth(resolver *discovery.Resolver, app discovery.AppName, requiredFor []string) map[string]any {
+	result := map[string]any{
+		"app":          string(app),
+		"required_for": requiredFor,
+		"available":    false,
+	}
+	if resolver == nil {
+		result["error"] = "resolver unavailable"
+		return result
+	}
+	resolution, err := resolver.ResolveApp(app)
+	if err != nil {
+		result["error"] = err.Error()
+		var derr *discovery.DiscoveryError
+		if errors.As(err, &derr) {
+			if strings.TrimSpace(derr.Hint) != "" {
+				result["hint"] = derr.Hint
+			}
+			if strings.TrimSpace(derr.Source) != "" {
+				result["source"] = derr.Source
+			}
+		}
+		return result
+	}
+	result["available"] = true
+	result["path"] = resolution.Path
+	result["source"] = resolution.Source
+	return result
+}
+
+func resolveBackendVerifyHost(verifyURL string) (host string, ok bool, errText string) {
+	parsed, err := url.Parse(strings.TrimSpace(verifyURL))
+	if err != nil {
+		return "", false, fmt.Sprintf("invalid verify URL: %v", err)
+	}
+	host = strings.TrimSpace(parsed.Hostname())
+	if host == "" {
+		return "", false, "missing host in verify URL"
+	}
+	if strings.EqualFold(host, "localhost") {
+		return host, true, ""
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return host, true, ""
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 1200*time.Millisecond)
+	defer cancel()
+	if _, err := net.DefaultResolver.LookupHost(ctx, host); err != nil {
+		return host, false, err.Error()
+	}
+	return host, true, ""
+}
+
+func isPlaceholderHost(host string) bool {
+	trimmed := strings.ToLower(strings.TrimSpace(host))
+	return trimmed == "accessd.example.internal" || strings.HasSuffix(trimmed, ".example.internal")
 }
 
 func writeJSON(w http.ResponseWriter, status int, body any) {

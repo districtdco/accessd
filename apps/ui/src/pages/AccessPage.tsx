@@ -8,6 +8,7 @@ import {
   getConnectorHealth,
   getConnectorReleaseMetadata,
   getConnectorVersion,
+  getSessionDetail,
   getMyAccess,
   handoffDBeaverToConnector,
   handoffRedisToConnector,
@@ -129,6 +130,9 @@ function installGuidanceForConnectorCode(
     default:
       break
   }
+  if (code) {
+    return null
+  }
   if (action === 'shell' && platform.os === 'windows') {
     return 'Shell launch requires PuTTY on Windows. Install PuTTY and retry.'
   }
@@ -163,6 +167,29 @@ type ConnectorStatus =
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+async function waitForLaunchMaterialization(sessionID: string, timeoutMs = 6000, intervalMs = 400): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    try {
+      const detail = await getSessionDetail(sessionID)
+      if (detail.lifecycle?.started || detail.lifecycle?.shell_started || detail.lifecycle?.connector_succeeded) {
+        return true
+      }
+      const status = (detail.status || '').trim().toLowerCase()
+      if (status === 'active' || status === 'completed') {
+        return true
+      }
+      if (detail.lifecycle?.connector_failed || status === 'failed' || status === 'terminated' || status === 'expired') {
+        return false
+      }
+    } catch {
+      // Keep polling until timeout for transient API race.
+    }
+    await sleep(intervalMs)
+  }
+  return false
 }
 
 function iconDownload() {
@@ -570,6 +597,37 @@ export function AccessPage() {
       setLaunchMessageKind('error')
       let message = err instanceof Error ? err.message : 'failed to launch asset'
       const connectorError = err instanceof ConnectorHandoffError ? err : null
+      const ambiguousConnectorTransportError =
+        message.includes('network/CORS')
+        || message.toLowerCase().includes('network connection was lost')
+        || message.includes('Load failed')
+
+      if (sessionID && ambiguousConnectorTransportError) {
+        const materialized = await waitForLaunchMaterialization(sessionID)
+        if (materialized) {
+          setLaunchMessageKind('success')
+          if (action === 'shell') {
+            setLaunchMessage(`Shell launch started for ${item.asset_name}. Recovered from a transient local connector response drop.`)
+          } else if (action === 'sftp') {
+            setLaunchMessage(`SFTP launch requested for ${item.asset_name}. Recovered from a transient local connector response drop.`)
+          } else if (action === 'dbeaver') {
+            setLaunchMessage(`DBeaver launch requested for ${item.asset_name}. Recovered from a transient local connector response drop.`)
+          } else {
+            setLaunchMessage(`Redis CLI launch requested for ${item.asset_name}. Recovered from a transient local connector response drop.`)
+          }
+          try {
+            await recordSessionEvent(sessionID, 'connector_launch_succeeded', {
+              connector_action: action,
+              recovered_after_handoff_error: true,
+              observed_error: message,
+            })
+          } catch {
+            // Keep success UX even if metadata write fails.
+          }
+          return
+        }
+      }
+
       if (message.includes('connector handoff failed') || message.includes('Connector rejected launch authorization')) {
         message += '. Ensure the local connector is running and reachable at https://127.0.0.1:9494.'
       }

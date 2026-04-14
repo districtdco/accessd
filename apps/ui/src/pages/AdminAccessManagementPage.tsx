@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   adminAddUserGrant,
   adminGetUserEffectiveAccess,
@@ -17,11 +17,9 @@ import {
   Checkbox,
   EmptyRow,
   ErrorState,
-  Input,
   LoadingState,
   PageHeader,
   PaginationControls,
-  Select,
   SuccessState,
   Table,
   TabNav,
@@ -50,6 +48,7 @@ export function AdminAccessManagementPage() {
   const [assets, setAssets] = useState<AdminAsset[]>([])
   const [selectedUserID, setSelectedUserID] = useState('')
   const [userSearch, setUserSearch] = useState('')
+  const [userPickerOpen, setUserPickerOpen] = useState(false)
   const [assetSearch, setAssetSearch] = useState('')
   const [grants, setGrants] = useState<AdminGrant[]>([])
   const [effective, setEffective] = useState<AdminEffectiveAccessItem[]>([])
@@ -63,6 +62,7 @@ export function AdminAccessManagementPage() {
   const [error, setError] = useState<string | null>(null)
   const [message, setMessage] = useState<string | null>(null)
   const pageSize = 10
+  const userPickerRef = useRef<HTMLDivElement | null>(null)
 
   const loadLists = async () => {
     setLoading(true)
@@ -71,9 +71,7 @@ export function AdminAccessManagementPage() {
       const [usersResp, assetsResp] = await Promise.all([adminListUsers(), adminListAssets()])
       setUsers(usersResp.items)
       setAssets(assetsResp.items)
-      if (usersResp.items.length > 0) {
-        setSelectedUserID((prev) => prev || usersResp.items[0].id)
-      }
+      setSelectedUserID((prev) => (usersResp.items.some((item) => item.id === prev) ? prev : ''))
     } catch (err) {
       setError(err instanceof Error ? err.message : 'failed to load admin data')
     } finally {
@@ -110,6 +108,26 @@ export function AdminAccessManagementPage() {
   }, [selectedUserID])
 
   useEffect(() => {
+    if (!userPickerOpen) return
+    const handleClickOutside = (event: MouseEvent) => {
+      if (userPickerRef.current && !userPickerRef.current.contains(event.target as Node)) {
+        setUserPickerOpen(false)
+      }
+    }
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setUserPickerOpen(false)
+      }
+    }
+    window.addEventListener('mousedown', handleClickOutside)
+    window.addEventListener('keydown', handleEscape)
+    return () => {
+      window.removeEventListener('mousedown', handleClickOutside)
+      window.removeEventListener('keydown', handleEscape)
+    }
+  }, [userPickerOpen])
+
+  useEffect(() => {
     setDirectPage(1)
     setEffectivePage(1)
   }, [selectedUserID, grants.length, effective.length])
@@ -125,6 +143,10 @@ export function AdminAccessManagementPage() {
   }, [userSearch, users])
 
   const selectedUser = useMemo(() => users.find((item) => item.id === selectedUserID) || null, [users, selectedUserID])
+
+  const selectedUserLabel = selectedUser
+    ? `${selectedUser.username}${selectedUser.is_active ? '' : ' (inactive)'}`
+    : 'Select a user'
 
   const filteredAssets = useMemo(() => {
     const q = assetSearch.trim().toLowerCase()
@@ -280,18 +302,60 @@ export function AdminAccessManagementPage() {
             </CardHeader>
             <CardBody>
               <div className="grid gap-4 md:grid-cols-3">
-                <Input label="Find user" value={userSearch} onChange={setUserSearch} placeholder="username, email, display name" />
-                <Select
-                  label="User"
-                  value={selectedUserID}
-                  onChange={setSelectedUserID}
-                  options={filteredUsers.length > 0
-                    ? filteredUsers.map((item) => ({
-                        value: item.id,
-                        label: `${item.username}${item.is_active ? '' : ' (inactive)'}`,
-                      }))
-                    : [{ value: '', label: 'No matching users' }]}
-                />
+                <div ref={userPickerRef} className="relative md:col-span-2">
+                  <span className="mb-1 block text-sm font-medium text-gray-700">User</span>
+                  <button
+                    type="button"
+                    onClick={() => setUserPickerOpen((prev) => !prev)}
+                    className="flex w-full items-center justify-between rounded-lg border border-gray-300 px-3 py-2 text-left text-sm text-gray-900 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                  >
+                    <span className="truncate">{selectedUserLabel}</span>
+                    <span className="ml-2 text-gray-400" aria-hidden>▾</span>
+                  </button>
+                  {userPickerOpen && (
+                    <div className="absolute z-20 mt-2 w-full rounded-lg border border-gray-200 bg-white p-2 shadow-lg">
+                      <input
+                        type="text"
+                        autoFocus
+                        value={userSearch}
+                        onChange={(e) => setUserSearch(e.target.value)}
+                        placeholder="Search username, email, display name"
+                        className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900 placeholder-gray-400 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                      />
+                      <div className="mt-2 max-h-52 overflow-auto rounded-lg border border-gray-100">
+                        {filteredUsers.length > 0 ? (
+                          <ul className="py-1">
+                            {filteredUsers.map((item) => {
+                              const isSelected = item.id === selectedUserID
+                              return (
+                                <li key={item.id}>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setSelectedUserID(item.id)
+                                      setUserPickerOpen(false)
+                                    }}
+                                    className={`flex w-full items-center justify-between px-3 py-2 text-left text-sm ${
+                                      isSelected ? 'bg-indigo-50 text-indigo-700' : 'text-gray-700 hover:bg-gray-50'
+                                    }`}
+                                  >
+                                    <span className="truncate">
+                                      {item.username}
+                                      {!item.is_active ? ' (inactive)' : ''}
+                                    </span>
+                                    <span className="ml-2 text-xs text-gray-500">{item.auth_provider}</span>
+                                  </button>
+                                </li>
+                              )
+                            })}
+                          </ul>
+                        ) : (
+                          <p className="px-3 py-3 text-sm text-gray-500">No matching users</p>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
                 <div className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-2">
                   <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">Selected User</p>
                   <p className="mt-1 text-sm font-medium text-gray-900">{selectedUser?.username || '-'}</p>
@@ -312,7 +376,16 @@ export function AdminAccessManagementPage() {
                     </div>
                   </div>
                   <div className="p-3">
-                    <Input label="Search servers" value={assetSearch} onChange={setAssetSearch} placeholder="name, host, type" />
+                    <label className="block">
+                      <span className="mb-1 block text-sm font-medium text-gray-700">Search servers</span>
+                      <input
+                        type="text"
+                        value={assetSearch}
+                        onChange={(e) => setAssetSearch(e.target.value)}
+                        placeholder="name, host, type"
+                        className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900 placeholder-gray-400 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                      />
+                    </label>
                     <div className="mt-3 max-h-56 overflow-auto rounded-lg border border-gray-100">
                       <table className="w-full text-sm">
                         <thead>

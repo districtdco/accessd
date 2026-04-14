@@ -148,6 +148,8 @@ For SFTP in this slice, connector launches FileZilla/WinSCP against the AccessD 
 | `ACCESSD_CONNECTOR_BOOTSTRAP_ENV_URL` | derived from UI domain | Installer helper override for auto-downloaded runtime env URL (`/downloads/bootstrap/accessd-connector.env`) |
 | `ACCESSD_CONNECTOR_BACKEND_VERIFY_URL` | derived from allowed origin | API endpoint for online connector-token verification (`/api/connector/token/verify`) |
 | `ACCESSD_CONNECTOR_BACKEND_VERIFY_TIMEOUT` | `5s` | HTTP timeout for backend online token verification |
+| `ACCESSD_CONNECTOR_BACKEND_CA_CERT_FILE` | derived (`~/.accessd-connector/certs/accessd-<host>.crt/.cer`) | Optional backend CA file for connector verify TLS trust (recommended for private/self-signed CA) |
+| `ACCESSD_CONNECTOR_BACKEND_VERIFY_INSECURE` | `false` | Emergency-only bypass for backend verify TLS chain validation |
 | `ACCESSD_CONNECTOR_AUTO_TRUST_SERVER_CERT` | `true` | Installer helper: auto-fetch and trust AccessD HTTPS cert on operator machine |
 | `ACCESSD_CONNECTOR_TRUST_CERT_URL` | derived from UI domain | Installer helper override for cert download URL |
 | `ACCESSD_CONNECTOR_PUTTY_PATH` | `putty` | PuTTY executable/path on Windows |

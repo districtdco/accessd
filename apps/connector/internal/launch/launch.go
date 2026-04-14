@@ -936,16 +936,14 @@ func launchWindows(ctx context.Context, req Request, puttyPath string, logger *s
 		return ShellLaunchDiagnostics{}, err
 	}
 	target := proxyUsernameForShell(req.Launch) + "@" + req.Launch.ProxyHost
-	cmd := exec.CommandContext(
-		ctx,
-		resolvedPuTTY,
-		"-ssh",
-		target,
-		"-P",
-		strconv.Itoa(req.Launch.ProxyPort),
-		"-pw",
-		req.Launch.Token,
-	)
+	// Do not bind GUI launcher process lifecycle to request context.
+	// HTTP handler returns immediately; request cancellation can otherwise
+	// terminate PuTTY right after spawn.
+	procCtx := context.WithoutCancel(ctx)
+	if procCtx == nil {
+		procCtx = context.Background()
+	}
+	cmd := exec.CommandContext(procCtx, resolvedPuTTY, "-ssh", target, "-P", strconv.Itoa(req.Launch.ProxyPort), "-pw", req.Launch.Token)
 	if err := cmd.Start(); err != nil {
 		return ShellLaunchDiagnostics{}, &LaunchError{
 			Code:    "terminal_launch_failed",
@@ -955,7 +953,9 @@ func launchWindows(ctx context.Context, req Request, puttyPath string, logger *s
 			Cause:   err,
 		}
 	}
-	logger.Debug("PuTTY launched", "path", resolvedPuTTY, "target", target)
+	if logger != nil {
+		logger.Debug("PuTTY launched", "path", resolvedPuTTY, "target", target)
+	}
 	return ShellLaunchDiagnostics{ResolvedPath: resolvedPuTTY}, nil
 }
 
@@ -1234,17 +1234,40 @@ func resolveFileZillaSiteManagerPath() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	paths := []string{
-		filepath.Join(home, ".config", "filezilla", "sitemanager.xml"),
-		filepath.Join(home, "Library", "Application Support", "FileZilla", "sitemanager.xml"),
-		filepath.Join(home, ".filezilla", "sitemanager.xml"),
-	}
+	paths := fileZillaSiteManagerCandidatePaths(home, os.Getenv("APPDATA"), runtime.GOOS)
 	for _, p := range paths {
 		if _, statErr := os.Stat(p); statErr == nil {
 			return p, nil
 		}
 	}
 	return paths[0], nil
+}
+
+func fileZillaSiteManagerCandidatePaths(home, appData, goos string) []string {
+	switch strings.ToLower(strings.TrimSpace(goos)) {
+	case "windows":
+		paths := make([]string, 0, 3)
+		if v := strings.TrimSpace(appData); v != "" {
+			paths = append(paths, filepath.Join(v, "FileZilla", "sitemanager.xml"))
+		}
+		if h := strings.TrimSpace(home); h != "" {
+			paths = append(paths, filepath.Join(h, "AppData", "Roaming", "FileZilla", "sitemanager.xml"))
+		}
+		paths = append(paths, filepath.Join(".config", "filezilla", "sitemanager.xml"))
+		return paths
+	case "darwin":
+		return []string{
+			filepath.Join(home, "Library", "Application Support", "FileZilla", "sitemanager.xml"),
+			filepath.Join(home, ".config", "filezilla", "sitemanager.xml"),
+			filepath.Join(home, ".filezilla", "sitemanager.xml"),
+		}
+	default:
+		return []string{
+			filepath.Join(home, ".config", "filezilla", "sitemanager.xml"),
+			filepath.Join(home, ".filezilla", "sitemanager.xml"),
+			filepath.Join(home, "Library", "Application Support", "FileZilla", "sitemanager.xml"),
+		}
+	}
 }
 
 func readFileZillaSiteFile(path string) (fileZillaSiteFile, error) {
@@ -1790,11 +1813,13 @@ func launchDBeaverWindows(ctx context.Context, spec, configuredPath string, logg
 	attempts := [][]string{}
 	trimmed := strings.TrimSpace(configuredPath)
 	if trimmed != "" {
-		attempts = append(attempts, []string{"cmd", "/C", "start", "", trimmed, "-con", spec})
+		attempts = append(attempts, []string{trimmed, "-con", spec})
 	} else {
 		attempts = append(attempts,
-			[]string{"cmd", "/C", "start", "", "dbeaver", "-con", spec},
-			[]string{"cmd", "/C", "start", "", "dbeaver.exe", "-con", spec},
+			[]string{"dbeaver", "-con", spec},
+			[]string{"dbeaver.exe", "-con", spec},
+			[]string{`C:\Program Files\DBeaver\dbeaver.exe`, "-con", spec},
+			[]string{`C:\Program Files (x86)\DBeaver\dbeaver.exe`, "-con", spec},
 		)
 	}
 	return launchFirstAvailable(ctx, attempts, launchAttemptOptions{

@@ -176,6 +176,23 @@ derive_verify_url_from_origin() {
   printf '%s/api/connector/token/verify' "${origin}"
 }
 
+derive_backend_ca_cert_file() {
+  local verify_url="$1"
+  local origin="$2"
+  local host=""
+  if [[ -n "${verify_url}" ]]; then
+    host="$(printf '%s' "${verify_url}" | sed -E 's#^[a-zA-Z]+://([^/:]+).*$#\1#')"
+  fi
+  if [[ -z "${host}" && -n "${origin}" ]]; then
+    host="$(origin_host "${origin}")"
+  fi
+  host="$(trim "${host}")"
+  if [[ -z "${host}" || "${host}" == "localhost" || "${host}" == "127.0.0.1" || "${host}" == "::1" || "${host}" == "accessd.example.internal" ]]; then
+    return 0
+  fi
+  printf '%s/.accessd-connector/certs/accessd-%s.crt' "${HOME}" "${host}"
+}
+
 is_placeholder_value() {
   local value="$1"
   value="$(trim "${value}")"
@@ -187,9 +204,10 @@ refresh_runtime_env_file() {
   local source_file="${1:-}"
   [[ -f "${ENV_FILE}" ]] || return 0
 
-  local existing_origin existing_verify source_origin source_verify desired_origin desired_verify
+  local existing_origin existing_verify existing_ca_cert source_origin source_verify desired_origin desired_verify desired_ca_cert
   existing_origin="$(trim "$(env_get_value "${ENV_FILE}" "ACCESSD_CONNECTOR_ALLOWED_ORIGIN" || true)")"
   existing_verify="$(trim "$(env_get_value "${ENV_FILE}" "ACCESSD_CONNECTOR_BACKEND_VERIFY_URL" || true)")"
+  existing_ca_cert="$(trim "$(env_get_value "${ENV_FILE}" "ACCESSD_CONNECTOR_BACKEND_CA_CERT_FILE" || true)")"
   source_origin=""
   source_verify=""
   if [[ -n "${source_file}" && -f "${source_file}" ]]; then
@@ -223,6 +241,17 @@ refresh_runtime_env_file() {
   if [[ -n "${desired_verify}" && "${desired_verify}" != "${existing_verify}" ]]; then
     env_set_value "${ENV_FILE}" "ACCESSD_CONNECTOR_BACKEND_VERIFY_URL" "${desired_verify}"
     echo "[accessd-connector] Updated ACCESSD_CONNECTOR_BACKEND_VERIFY_URL in ${ENV_FILE}"
+  fi
+
+  desired_ca_cert="${existing_ca_cert}"
+  if [[ -n "${ACCESSD_CONNECTOR_BACKEND_CA_CERT_FILE:-}" ]]; then
+    desired_ca_cert="$(trim "${ACCESSD_CONNECTOR_BACKEND_CA_CERT_FILE}")"
+  elif [[ -z "${existing_ca_cert}" ]]; then
+    desired_ca_cert="$(trim "$(derive_backend_ca_cert_file "${desired_verify}" "${desired_origin}")")"
+  fi
+  if [[ -n "${desired_ca_cert}" && "${desired_ca_cert}" != "${existing_ca_cert}" ]]; then
+    env_set_value "${ENV_FILE}" "ACCESSD_CONNECTOR_BACKEND_CA_CERT_FILE" "${desired_ca_cert}"
+    echo "[accessd-connector] Updated ACCESSD_CONNECTOR_BACKEND_CA_CERT_FILE in ${ENV_FILE}"
   fi
 }
 
@@ -357,6 +386,9 @@ write_runtime_env_file() {
     echo "# Optional backend online token verification endpoint."
     echo "# If unset, connector derives: <allowed_origin>/api/connector/token/verify"
     echo "# ACCESSD_CONNECTOR_BACKEND_VERIFY_URL=https://accessd.example.internal/api/connector/token/verify"
+    echo "# Optional explicit backend CA cert file used by connector token verify TLS."
+    echo "# Default auto path: ${HOME}/.accessd-connector/certs/accessd-<backend-host>.crt"
+    echo "# ACCESSD_CONNECTOR_BACKEND_CA_CERT_FILE=${HOME}/.accessd-connector/certs/accessd-accessd.example.internal.crt"
     echo "ACCESSD_CONNECTOR_ALLOW_ANY_ORIGIN=false"
     echo "ACCESSD_CONNECTOR_ALLOW_REMOTE=false"
     echo "# Optional bootstrap env URL. Default if unset:"
@@ -428,6 +460,30 @@ origin_host() {
 }
 
 ENV_FILE="${HOME}/.config/accessd/connector.env"
+env_set_value() {
+  local file="$1"
+  local key="$2"
+  local value="$3"
+  [[ -f "${file}" ]] || return 0
+  local tmp_file="${file}.tmp.$$"
+  awk -v key="${key}" -v value="${value}" '
+    BEGIN { done=0 }
+    {
+      if (!done && $0 !~ /^[[:space:]]*#/ && index($0, key "=") == 1) {
+        print key "=" value
+        done=1
+        next
+      }
+      print
+    }
+    END {
+      if (!done) {
+        print key "=" value
+      }
+    }
+  ' "${file}" > "${tmp_file}"
+  mv "${tmp_file}" "${file}"
+}
 if [[ -f "${ENV_FILE}" ]]; then
   set -a
   # shellcheck disable=SC1090
@@ -453,6 +509,9 @@ cert_dir="${HOME}/.accessd-connector/certs"
 cert_file="${cert_dir}/accessd-${host}.crt"
 cert_state="${cert_dir}/accessd-${host}.trusted.sha256"
 mkdir -p "${cert_dir}"
+if [[ -f "${ENV_FILE}" ]]; then
+  env_set_value "${ENV_FILE}" "ACCESSD_CONNECTOR_BACKEND_CA_CERT_FILE" "${cert_file}"
+fi
 
 if ! command -v curl >/dev/null 2>&1; then
   exit 0
@@ -666,6 +725,22 @@ env_get_value() {
     }
   ' "${ENV_FILE}"
 }
+derive_backend_ca_cert_file() {
+  local verify_url="$1"
+  local origin="$2"
+  local host=""
+  if [[ -n "${verify_url}" ]]; then
+    host="$(printf '%s' "${verify_url}" | sed -E 's#^[a-zA-Z]+://([^/:]+).*$#\1#')"
+  fi
+  if [[ -z "${host}" && -n "${origin}" ]]; then
+    host="$(printf '%s' "${origin}" | sed -E 's#^[a-zA-Z]+://([^/:]+).*$#\1#')"
+  fi
+  host="$(trim "${host}")"
+  if [[ -z "${host}" || "${host}" == "localhost" || "${host}" == "127.0.0.1" || "${host}" == "::1" || "${host}" == "accessd.example.internal" ]]; then
+    return 0
+  fi
+  printf '%s/.accessd-connector/certs/accessd-%s.crt' "${HOME}" "${host}"
+}
 env_set_value() {
   local key="$1"
   local value="$2"
@@ -690,7 +765,7 @@ env_set_value() {
 }
 maybe_refresh_origin_from_protocol_arg() {
   [[ -f "${ENV_FILE}" ]] || return 0
-  local incoming_origin current_origin current_verify desired_verify
+  local incoming_origin current_origin current_verify desired_verify desired_ca_cert
   incoming_origin="$(trim "$(origin_from_protocol_arg "${1:-}" || true)")"
   [[ "${incoming_origin}" == http://* || "${incoming_origin}" == https://* ]] || return 0
   current_origin="$(trim "$(env_get_value "ACCESSD_CONNECTOR_ALLOWED_ORIGIN" || true)")"
@@ -702,11 +777,15 @@ maybe_refresh_origin_from_protocol_arg() {
     desired_verify="${incoming_origin%/}/api/connector/token/verify"
     env_set_value "ACCESSD_CONNECTOR_BACKEND_VERIFY_URL" "${desired_verify}"
   fi
+  desired_ca_cert="$(trim "$(derive_backend_ca_cert_file "${incoming_origin%/}/api/connector/token/verify" "${incoming_origin}")")"
+  if [[ -n "${desired_ca_cert}" ]]; then
+    env_set_value "ACCESSD_CONNECTOR_BACKEND_CA_CERT_FILE" "${desired_ca_cert}"
+  fi
 }
 maybe_apply_signed_bootstrap() {
   [[ -f "${ENV_FILE}" ]] || return 0
   command -v curl >/dev/null 2>&1 || return 0
-  local arg="${1:-}" incoming_origin bootstrap_token verify_endpoint payload origin verify_url
+  local arg="${1:-}" incoming_origin bootstrap_token verify_endpoint payload origin verify_url desired_ca_cert
   incoming_origin="$(trim "$(origin_from_protocol_arg "${arg}" || true)")"
   bootstrap_token="$(trim "$(param_from_protocol_arg "bootstrap_token" "${arg}" || true)")"
   [[ -n "${incoming_origin}" && -n "${bootstrap_token}" ]] || return 0
@@ -728,6 +807,10 @@ maybe_apply_signed_bootstrap() {
   fi
   if [[ "${verify_url}" == http://* || "${verify_url}" == https://* ]]; then
     env_set_value "ACCESSD_CONNECTOR_BACKEND_VERIFY_URL" "${verify_url}"
+    desired_ca_cert="$(trim "$(derive_backend_ca_cert_file "${verify_url}" "${origin}")")"
+    if [[ -n "${desired_ca_cert}" ]]; then
+      env_set_value "ACCESSD_CONNECTOR_BACKEND_CA_CERT_FILE" "${desired_ca_cert}"
+    fi
   fi
 }
 maybe_apply_signed_bootstrap "${1:-}"

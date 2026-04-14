@@ -124,6 +124,61 @@ func TestBuildLDAPTLSConfig_LoadsCustomCACert(t *testing.T) {
 	}
 }
 
+func TestLDAPUsernameCandidates(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected []string
+	}{
+		{
+			name:     "plain username",
+			input:    "ankit",
+			expected: []string{"ankit"},
+		},
+		{
+			name:     "domain backslash username",
+			input:    "DISTRICTD\\ankit",
+			expected: []string{"DISTRICTD\\ankit", "ankit"},
+		},
+		{
+			name:     "upn username",
+			input:    "ankit@districtd.lan",
+			expected: []string{"ankit@districtd.lan", "ankit"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ldapUsernameCandidates(tt.input)
+			if len(got) != len(tt.expected) {
+				t.Fatalf("candidate count = %d, want %d (%#v)", len(got), len(tt.expected), got)
+			}
+			for i := range tt.expected {
+				if got[i] != tt.expected[i] {
+					t.Fatalf("candidate[%d] = %q, want %q", i, got[i], tt.expected[i])
+				}
+			}
+		})
+	}
+}
+
+func TestLDAPLookupUsernameAttributesIncludesFallbacks(t *testing.T) {
+	got := ldapLookupUsernameAttributes("sAMAccountName")
+	required := []string{"sAMAccountName", "uid", "userPrincipalName", "mail", "cn"}
+	for _, want := range required {
+		found := false
+		for _, attr := range got {
+			if attr == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("expected attribute %q in %#v", want, got)
+		}
+	}
+}
+
 func generateSelfSignedCACertPEM(t *testing.T) ([]byte, []byte) {
 	t.Helper()
 	priv, err := rsa.GenerateKey(rand.Reader, 2048)

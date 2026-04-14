@@ -127,7 +127,10 @@ func TestUpsertFileZillaSite_EnforcesSingleConnection(t *testing.T) {
 		t.Fatalf("siteRef = %q, want %q", siteRef, "0/pam local")
 	}
 
-	sitePath := filepath.Join(tempHome, ".config", "filezilla", "sitemanager.xml")
+	sitePath, err := resolveFileZillaSiteManagerPath()
+	if err != nil {
+		t.Fatalf("resolveFileZillaSiteManagerPath: %v", err)
+	}
 	doc, err := readFileZillaSiteFile(sitePath)
 	if err != nil {
 		t.Fatalf("readFileZillaSiteFile: %v", err)
@@ -206,5 +209,30 @@ func TestRedisCLICommandPreview_AutoInsecureFromEnv(t *testing.T) {
 	preview := redisCLICommandPreview(req)
 	if !strings.Contains(preview, "--tls") || !strings.Contains(preview, "--insecure") {
 		t.Fatalf("expected redis preview to include --tls and --insecure, got %q", preview)
+	}
+}
+
+func TestFileZillaSiteManagerCandidatePaths_WindowsPrefersAppData(t *testing.T) {
+	home := `C:\Users\ankit`
+	appData := `C:\Users\ankit\AppData\Roaming`
+	paths := fileZillaSiteManagerCandidatePaths(home, appData, "windows")
+	if len(paths) == 0 {
+		t.Fatalf("expected candidate paths")
+	}
+	wantPrefix := filepath.Join(appData, "FileZilla", "sitemanager.xml")
+	if paths[0] != wantPrefix {
+		t.Fatalf("first windows path = %q, want %q", paths[0], wantPrefix)
+	}
+}
+
+func TestFileZillaSiteManagerCandidatePaths_DarwinUsesLibraryPath(t *testing.T) {
+	home := "/Users/ankit"
+	paths := fileZillaSiteManagerCandidatePaths(home, "", "darwin")
+	if len(paths) == 0 {
+		t.Fatalf("expected candidate paths")
+	}
+	wantPrefix := filepath.Join(home, "Library", "Application Support", "FileZilla", "sitemanager.xml")
+	if paths[0] != wantPrefix {
+		t.Fatalf("first darwin path = %q, want %q", paths[0], wantPrefix)
 	}
 }

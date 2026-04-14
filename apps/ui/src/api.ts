@@ -195,9 +195,7 @@ async function connectorLaunchRequest<TResponse>(
   let response: Response | null = null
   let lastError: unknown = null
   const nonIdempotentLaunch = path.startsWith('/launch/')
-  const candidates = nonIdempotentLaunch && preferredConnectorBase
-    ? [preferredConnectorBase]
-    : connectorBaseCandidates()
+  const candidates = connectorBaseCandidates()
 
   for (const base of candidates) {
     lastConnectorLaunchBase = base

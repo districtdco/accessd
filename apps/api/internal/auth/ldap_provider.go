@@ -217,78 +217,92 @@ func (p *LDAPProvider) lookupUser(ctx context.Context, conn *ldap.Conn, username
 	attrs = appendAttribute(attrs, p.cfg.SurnameAttribute, "sn")
 	attrs = appendAttribute(attrs, p.cfg.EmailAttribute, "mail", "userPrincipalName")
 
-	filter := p.renderFilter(
+	baseFilter := p.renderFilter(
 		p.cfg.UserSearchFilter,
 		username,
 		"",
 		defaultLDAPUserSearchFilter,
 	)
-	search := ldap.NewSearchRequest(
-		p.cfg.BaseDN,
-		ldap.ScopeWholeSubtree,
-		ldap.NeverDerefAliases,
-		2,
-		10,
-		false,
-		filter,
-		attrs,
-		nil,
-	)
-
-	result, err := conn.Search(search)
-	if err != nil {
-		kind := ldapFailureBindSearchConfig
-		if isLDAPConnectivityError(err) {
-			kind = ldapFailureTLSOrConnectivity
+	filters := []string{baseFilter}
+	for _, candidate := range ldapUsernameCandidates(username) {
+		for _, attr := range ldapLookupUsernameAttributes(p.cfg.UsernameAttribute) {
+			fallbackFilter := fmt.Sprintf("(&(objectClass=user)(%s=%s))", ldap.EscapeFilter(attr), ldap.EscapeFilter(candidate))
+			if !containsString(filters, fallbackFilter) {
+				filters = append(filters, fallbackFilter)
+			}
 		}
-		p.logAuthFailure(kind, username, err)
-		return ldapUserProfile{}, &ldapAuthError{kind: kind, err: fmt.Errorf("ldap user search failed: %w", err)}
-	}
-	if len(result.Entries) == 0 {
-		p.logAuthFailure(ldapFailureUserNotFound, username, nil)
-		return ldapUserProfile{}, &ldapAuthError{kind: ldapFailureUserNotFound, err: ErrInvalidCredentials}
-	}
-	if len(result.Entries) > 1 {
-		err := fmt.Errorf("ldap user search returned %d entries for username %q", len(result.Entries), username)
-		p.logAuthFailure(ldapFailureBindSearchConfig, username, err)
-		return ldapUserProfile{}, &ldapAuthError{kind: ldapFailureBindSearchConfig, err: err}
 	}
 
-	entry := result.Entries[0]
-	firstName := firstNonEmptyAttributeValue(entry,
-		p.cfg.DisplayNameAttribute,
-		"displayName",
-		"cn",
-		"name",
-	)
-	lastName := firstNonEmptyAttributeValue(entry,
-		p.cfg.SurnameAttribute,
-		"sn",
-	)
-	displayName := strings.TrimSpace(firstName)
-	if displayName == "" {
-		displayName = strings.TrimSpace(lastName)
-	} else if strings.TrimSpace(lastName) != "" && !strings.EqualFold(strings.TrimSpace(lastName), strings.TrimSpace(firstName)) {
-		displayName = strings.TrimSpace(firstName + " " + lastName)
-	}
-	profile := ldapUserProfile{
-		DN:          entry.DN,
-		Username:    strings.TrimSpace(entry.GetAttributeValue(p.cfg.UsernameAttribute)),
-		DisplayName: displayName,
-		Email: firstNonEmptyAttributeValue(entry,
-			p.cfg.EmailAttribute,
-			"mail",
-			"userPrincipalName",
-		),
-	}
-	if profile.Username == "" {
-		profile.Username = username
+	for _, filter := range filters {
+		search := ldap.NewSearchRequest(
+			p.cfg.BaseDN,
+			ldap.ScopeWholeSubtree,
+			ldap.NeverDerefAliases,
+			2,
+			10,
+			false,
+			filter,
+			attrs,
+			nil,
+		)
+
+		result, err := conn.Search(search)
+		if err != nil {
+			kind := ldapFailureBindSearchConfig
+			if isLDAPConnectivityError(err) {
+				kind = ldapFailureTLSOrConnectivity
+			}
+			p.logAuthFailure(kind, username, err)
+			return ldapUserProfile{}, &ldapAuthError{kind: kind, err: fmt.Errorf("ldap user search failed: %w", err)}
+		}
+		if len(result.Entries) == 0 {
+			continue
+		}
+		if len(result.Entries) > 1 {
+			err := fmt.Errorf("ldap user search returned %d entries for username %q", len(result.Entries), username)
+			p.logAuthFailure(ldapFailureBindSearchConfig, username, err)
+			return ldapUserProfile{}, &ldapAuthError{kind: ldapFailureBindSearchConfig, err: err}
+		}
+
+		entry := result.Entries[0]
+		firstName := firstNonEmptyAttributeValue(entry,
+			p.cfg.DisplayNameAttribute,
+			"displayName",
+			"cn",
+			"name",
+		)
+		lastName := firstNonEmptyAttributeValue(entry,
+			p.cfg.SurnameAttribute,
+			"sn",
+		)
+		displayName := strings.TrimSpace(firstName)
+		if displayName == "" {
+			displayName = strings.TrimSpace(lastName)
+		} else if strings.TrimSpace(lastName) != "" && !strings.EqualFold(strings.TrimSpace(lastName), strings.TrimSpace(firstName)) {
+			displayName = strings.TrimSpace(firstName + " " + lastName)
+		}
+		profile := ldapUserProfile{
+			DN:          entry.DN,
+			Username:    strings.TrimSpace(entry.GetAttributeValue(p.cfg.UsernameAttribute)),
+			DisplayName: displayName,
+			Email: firstNonEmptyAttributeValue(entry,
+				p.cfg.EmailAttribute,
+				"mail",
+				"userPrincipalName",
+			),
+		}
+		if profile.Username == "" {
+			profile.Username = username
+		}
+
+		if err := ctx.Err(); err != nil {
+			return ldapUserProfile{}, err
+		}
+		return profile, nil
 	}
 
-	if err := ctx.Err(); err != nil {
-		return ldapUserProfile{}, err
-	}
-	return profile, nil
+	p.logAuthFailure(ldapFailureUserNotFound, username, nil)
+	return ldapUserProfile{}, &ldapAuthError{kind: ldapFailureUserNotFound, err: ErrInvalidCredentials}
 }
 
 func (p *LDAPProvider) resolveMappedRoles(ctx context.Context, conn *ldap.Conn, profile ldapUserProfile) ([]string, error) {
@@ -487,6 +501,55 @@ func (p *LDAPProvider) renderFilter(template, username, userDN, defaultFilter st
 		"{{user_dn}}", ldap.EscapeFilter(userDN),
 	)
 	return replacer.Replace(filter)
+}
+
+func ldapLookupUsernameAttributes(primary string) []string {
+	attrs := []string{}
+	attrs = appendAttribute(attrs, primary, "sAMAccountName", "uid", "userPrincipalName", "mail", "cn")
+	return attrs
+}
+
+func ldapUsernameCandidates(username string) []string {
+	candidates := []string{}
+	trimmed := strings.TrimSpace(username)
+	if trimmed == "" {
+		return candidates
+	}
+	candidates = append(candidates, trimmed)
+
+	if strings.Contains(trimmed, `\`) {
+		parts := strings.Split(trimmed, `\`)
+		if len(parts) > 1 {
+			last := strings.TrimSpace(parts[len(parts)-1])
+			if last != "" {
+				candidates = append(candidates, last)
+			}
+		}
+	}
+
+	if strings.Contains(trimmed, "@") {
+		localPart := strings.TrimSpace(strings.SplitN(trimmed, "@", 2)[0])
+		if localPart != "" {
+			candidates = append(candidates, localPart)
+		}
+	}
+
+	unique := make([]string, 0, len(candidates))
+	for _, value := range candidates {
+		if !containsString(unique, value) {
+			unique = append(unique, value)
+		}
+	}
+	return unique
+}
+
+func containsString(items []string, value string) bool {
+	for _, item := range items {
+		if item == value {
+			return true
+		}
+	}
+	return false
 }
 
 func parseGroupRoleMapping(raw string) (map[string][]string, error) {

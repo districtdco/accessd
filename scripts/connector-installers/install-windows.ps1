@@ -197,6 +197,9 @@ function Write-RuntimeEnvFile {
     '# Optional backend online token verification endpoint.'
     '# If unset, connector derives: <allowed_origin>/api/connector/token/verify'
     '# ACCESSD_CONNECTOR_BACKEND_VERIFY_URL=https://accessd.example.internal/api/connector/token/verify'
+    '# Optional explicit backend CA cert file used by connector token verify TLS.'
+    '# Default auto path: %USERPROFILE%/.accessd-connector/certs/accessd-<backend-host>.cer'
+    '# ACCESSD_CONNECTOR_BACKEND_CA_CERT_FILE=%USERPROFILE%/.accessd-connector/certs/accessd-accessd.example.internal.cer'
     'ACCESSD_CONNECTOR_ALLOW_ANY_ORIGIN=false'
     'ACCESSD_CONNECTOR_ALLOW_REMOTE=false'
     '# Optional bootstrap env URL. Default if unset:'
@@ -320,6 +323,29 @@ function Get-DerivedBackendVerifyURL {
   return "$trimmed/api/connector/token/verify"
 }
 
+function Get-DerivedBackendCACertPath {
+  param(
+    [string]$VerifyURL,
+    [string]$Origin,
+    [string]$ConfigDir
+  )
+  $host = $null
+  if (-not [string]::IsNullOrWhiteSpace($VerifyURL)) {
+    try {
+      $host = ([Uri]$VerifyURL).Host
+    } catch {
+      $host = $null
+    }
+  }
+  if ([string]::IsNullOrWhiteSpace($host)) {
+    $host = Get-OriginHost -Origin $Origin
+  }
+  if ([string]::IsNullOrWhiteSpace($host)) { return $null }
+  if ($host -in @('localhost', '127.0.0.1', '::1', 'accessd.example.internal')) { return $null }
+  $certDir = Join-Path $ConfigDir 'certs'
+  return (Join-Path $certDir ("accessd-{0}.cer" -f $host))
+}
+
 function Refresh-RuntimeEnvFile {
   param(
     [string]$EnvFile,
@@ -363,6 +389,18 @@ function Refresh-RuntimeEnvFile {
   if (-not [string]::IsNullOrWhiteSpace($desiredVerify) -and $desiredVerify -ne $existingVerify) {
     Set-EnvValueInFile -Path $EnvFile -Key 'ACCESSD_CONNECTOR_BACKEND_VERIFY_URL' -Value $desiredVerify
     Write-Host "[accessd-connector] Updated ACCESSD_CONNECTOR_BACKEND_VERIFY_URL in $EnvFile"
+  }
+
+  $existingCACert = if ($current.ContainsKey('ACCESSD_CONNECTOR_BACKEND_CA_CERT_FILE')) { "$($current['ACCESSD_CONNECTOR_BACKEND_CA_CERT_FILE'])".Trim() } else { '' }
+  $desiredCACert = $existingCACert
+  if (-not [string]::IsNullOrWhiteSpace($env:ACCESSD_CONNECTOR_BACKEND_CA_CERT_FILE)) {
+    $desiredCACert = $env:ACCESSD_CONNECTOR_BACKEND_CA_CERT_FILE.Trim()
+  } elseif ([string]::IsNullOrWhiteSpace($existingCACert)) {
+    $desiredCACert = Get-DerivedBackendCACertPath -VerifyURL $desiredVerify -Origin $desiredOrigin -ConfigDir $configDir
+  }
+  if (-not [string]::IsNullOrWhiteSpace($desiredCACert) -and $desiredCACert -ne $existingCACert) {
+    Set-EnvValueInFile -Path $EnvFile -Key 'ACCESSD_CONNECTOR_BACKEND_CA_CERT_FILE' -Value $desiredCACert
+    Write-Host "[accessd-connector] Updated ACCESSD_CONNECTOR_BACKEND_CA_CERT_FILE in $EnvFile"
   }
 }
 
@@ -469,10 +507,22 @@ function Trust-AccessDServerCert {
   New-Item -ItemType Directory -Force -Path $certDir | Out-Null
   $certFile = Join-Path $certDir ("accessd-{0}.cer" -f $originHost)
   $stateFile = Join-Path $certDir ("accessd-{0}.trusted.sha256" -f $originHost)
+  if (-not [string]::IsNullOrWhiteSpace($RuntimeEnvFile) -and (Test-Path $RuntimeEnvFile)) {
+    Set-EnvValueInFile -Path $RuntimeEnvFile -Key 'ACCESSD_CONNECTOR_BACKEND_CA_CERT_FILE' -Value $certFile
+  }
 
-  $saved = Save-RemoteServerCert -ServerHost $originHost -OutFile $certFile
+  $certUrl = if (-not [string]::IsNullOrWhiteSpace($env:ACCESSD_CONNECTOR_TRUST_CERT_URL)) {
+    $env:ACCESSD_CONNECTOR_TRUST_CERT_URL
+  } else {
+    "https://$originHost/downloads/certs/accessd-server.crt"
+  }
+
+  $saved = Download-EnvFileInsecure -Url $certUrl -OutFile $certFile
   if (-not $saved) {
-    Write-Host "[accessd-connector] WARNING: failed to fetch TLS certificate from $originHost:443"
+    $saved = Save-RemoteServerCert -ServerHost $originHost -OutFile $certFile
+  }
+  if (-not $saved) {
+    Write-Host "[accessd-connector] WARNING: failed to fetch TLS certificate from $certUrl and $originHost:443"
     return
   }
 
@@ -801,17 +851,29 @@ function Set-EnvValueInFile {
 if (-not [string]::IsNullOrWhiteSpace(`$incomingOrigin) -and (Test-Path `$envFile)) {
   `$existingOrigin = ''
   `$existingVerify = ''
+  `$existingCACert = ''
   Get-Content `$envFile | ForEach-Object {
     `$line = (`$_.Trim())
     if ([string]::IsNullOrWhiteSpace(`$line) -or `$line.StartsWith('#')) { return }
     if (`$line -like 'ACCESSD_CONNECTOR_ALLOWED_ORIGIN=*') { `$existingOrigin = `$line.Split('=', 2)[1].Trim() }
     if (`$line -like 'ACCESSD_CONNECTOR_BACKEND_VERIFY_URL=*') { `$existingVerify = `$line.Split('=', 2)[1].Trim() }
+    if (`$line -like 'ACCESSD_CONNECTOR_BACKEND_CA_CERT_FILE=*') { `$existingCACert = `$line.Split('=', 2)[1].Trim() }
   }
   if ([string]::IsNullOrWhiteSpace(`$existingOrigin) -or `$existingOrigin -like '*accessd.example.internal*') {
     Set-EnvValueInFile -Path `$envFile -Key 'ACCESSD_CONNECTOR_ALLOWED_ORIGIN' -Value `$incomingOrigin
   }
   if ([string]::IsNullOrWhiteSpace(`$existingVerify) -or `$existingVerify -like '*accessd.example.internal*') {
     Set-EnvValueInFile -Path `$envFile -Key 'ACCESSD_CONNECTOR_BACKEND_VERIFY_URL' -Value ("{0}/api/connector/token/verify" -f `$incomingOrigin)
+  }
+  if ([string]::IsNullOrWhiteSpace(`$existingCACert)) {
+    try {
+      `$originHost = ([Uri]`$incomingOrigin).Host
+      if (-not [string]::IsNullOrWhiteSpace(`$originHost) -and `$originHost -notin @('localhost', '127.0.0.1', '::1')) {
+        `$certPath = Join-Path (Join-Path `$env:USERPROFILE '.accessd-connector\certs') ("accessd-{0}.cer" -f `$originHost)
+        Set-EnvValueInFile -Path `$envFile -Key 'ACCESSD_CONNECTOR_BACKEND_CA_CERT_FILE' -Value `$certPath
+      }
+    } catch {
+    }
   }
 }
 if (-not [string]::IsNullOrWhiteSpace(`$incomingOrigin) -and -not [string]::IsNullOrWhiteSpace(`$bootstrapToken) -and (Test-Path `$envFile)) {
@@ -825,6 +887,14 @@ if (-not [string]::IsNullOrWhiteSpace(`$incomingOrigin) -and -not [string]::IsNu
       }
       if (`$resp.claims.backend_verify_url) {
         Set-EnvValueInFile -Path `$envFile -Key 'ACCESSD_CONNECTOR_BACKEND_VERIFY_URL' -Value ([string]`$resp.claims.backend_verify_url)
+        try {
+          `$verifyHost = ([Uri]([string]`$resp.claims.backend_verify_url)).Host
+          if (-not [string]::IsNullOrWhiteSpace(`$verifyHost) -and `$verifyHost -notin @('localhost', '127.0.0.1', '::1')) {
+            `$certPath = Join-Path (Join-Path `$env:USERPROFILE '.accessd-connector\certs') ("accessd-{0}.cer" -f `$verifyHost)
+            Set-EnvValueInFile -Path `$envFile -Key 'ACCESSD_CONNECTOR_BACKEND_CA_CERT_FILE' -Value `$certPath
+          }
+        } catch {
+        }
       }
     }
   } catch {
@@ -864,7 +934,7 @@ Set-ItemProperty -Path $protocolRoot -Name 'URL Protocol' -Value '' -Force
 New-Item -Path "$protocolRoot\\DefaultIcon" -Force | Out-Null
 Set-ItemProperty -Path "$protocolRoot\\DefaultIcon" -Name '(default)' -Value "`"$targetBin`",0" -Force
 New-Item -Path "$protocolRoot\\shell\\open\\command" -Force | Out-Null
-$command = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$handlerScript`" `"%1`""
+$command = "powershell.exe -NoLogo -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$handlerScript`" `"%1`""
 Set-ItemProperty -Path "$protocolRoot\\shell\\open\\command" -Name '(default)' -Value $command -Force
 
 $dbeaverDetected = Resolve-CandidatePath @(
