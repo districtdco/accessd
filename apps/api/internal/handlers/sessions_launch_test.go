@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -103,6 +104,51 @@ func TestBuildLaunchResponse_IncludesConnectorTokenAcrossLaunchTypes(t *testing.
 			}
 			if resp.LaunchType != tt.result.LaunchType {
 				t.Fatalf("expected launch type %q, got %q", tt.result.LaunchType, resp.LaunchType)
+			}
+		})
+	}
+}
+
+func TestParseDBMetadata_MSSQLSSLModeNormalization(t *testing.T) {
+	tests := []struct {
+		name    string
+		raw     string
+		wantSSL string
+	}{
+		{
+			name:    "empty mode defaults to disable",
+			raw:     `{"engine":"mssql"}`,
+			wantSSL: "disable",
+		},
+		{
+			name:    "require coerced to disable",
+			raw:     `{"engine":"mssql","ssl_mode":"require"}`,
+			wantSSL: "disable",
+		},
+		{
+			name:    "verify full coerced to disable",
+			raw:     `{"engine":"sqlserver","ssl_mode":"verify-full"}`,
+			wantSSL: "disable",
+		},
+		{
+			name:    "allow preserved",
+			raw:     `{"engine":"mssql","ssl_mode":"allow"}`,
+			wantSSL: "allow",
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			meta, err := parseDBMetadata(json.RawMessage(tt.raw))
+			if err != nil {
+				t.Fatalf("parseDBMetadata returned error: %v", err)
+			}
+			if got := meta.SSLMode; got != tt.wantSSL {
+				t.Fatalf("ssl mode mismatch: got %q want %q", got, tt.wantSSL)
+			}
+			if got := meta.Engine; got != "mssql" {
+				t.Fatalf("engine mismatch: got %q want mssql", got)
 			}
 		})
 	}

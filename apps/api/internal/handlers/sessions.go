@@ -1344,10 +1344,24 @@ func parseDBMetadata(raw json.RawMessage) (dbAssetMetadata, error) {
 	case "sqlserver", "sql_server":
 		meta.Engine = "mssql"
 	}
-	if meta.Engine == "mssql" && meta.SSLMode == "" {
-		meta.SSLMode = "disable"
+	if meta.Engine == "mssql" {
+		meta.SSLMode = normalizeMSSQLSSLMode(meta.SSLMode)
 	}
 	return meta, nil
+}
+
+func normalizeMSSQLSSLMode(raw string) string {
+	mode := strings.ToLower(strings.TrimSpace(raw))
+	switch mode {
+	case "":
+		return "disable"
+	case "require", "required", "true", "encrypt", "verify-ca", "verify-full", "verify_ca", "verify_identity":
+		// MSSQL proxy currently does not support required TLS tunneling to upstream.
+		// Coerce to disable to keep launch UX working until MSSQL TLS support is added.
+		return "disable"
+	default:
+		return mode
+	}
 }
 
 func parseRedisMetadata(raw json.RawMessage) (redisAssetMetadata, error) {
