@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/districtd/pam/api/internal/config"
+	"github.com/districtdco/accessd/api/internal/config"
 )
 
 type VersionHandler struct {

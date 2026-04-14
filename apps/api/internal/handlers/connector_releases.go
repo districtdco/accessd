@@ -10,7 +10,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/districtd/pam/api/internal/config"
+	"github.com/districtdco/accessd/api/internal/config"
 )
 
 type ConnectorReleasesHandler struct {
@@ -75,7 +75,7 @@ func (h *ConnectorReleasesHandler) Latest(w http.ResponseWriter, _ *http.Request
 		MinimumVersion:  normalizeVersion(h.cfg.MinimumVersion),
 		ReleaseChannel:  strings.TrimSpace(h.cfg.ReleaseChannel),
 		RuntimeModel:    "on-demand",
-		InstallDocsURL:  "https://github.com/districtd/accessd/blob/main/docs/CONNECTOR_DISTRIBUTION.md",
+		InstallDocsURL:  "https://github.com/districtdco/accessd/blob/main/docs/CONNECTOR_DISTRIBUTION.md",
 		ChecksumFileURL: checksumURL,
 		ChecksumSigURL:  checksumSigURL,
 		Artifacts:       publishedArtifacts,

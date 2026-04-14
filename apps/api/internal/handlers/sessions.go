@@ -14,16 +14,16 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/districtd/pam/api/internal/access"
-	"github.com/districtd/pam/api/internal/assets"
-	"github.com/districtd/pam/api/internal/auth"
-	"github.com/districtd/pam/api/internal/credentials"
-	"github.com/districtd/pam/api/internal/mssqlproxy"
-	"github.com/districtd/pam/api/internal/mysqlproxy"
-	"github.com/districtd/pam/api/internal/pgproxy"
-	"github.com/districtd/pam/api/internal/redisproxy"
-	"github.com/districtd/pam/api/internal/requestctx"
-	"github.com/districtd/pam/api/internal/sessions"
+	"github.com/districtdco/accessd/api/internal/access"
+	"github.com/districtdco/accessd/api/internal/assets"
+	"github.com/districtdco/accessd/api/internal/auth"
+	"github.com/districtdco/accessd/api/internal/credentials"
+	"github.com/districtdco/accessd/api/internal/mssqlproxy"
+	"github.com/districtdco/accessd/api/internal/mysqlproxy"
+	"github.com/districtdco/accessd/api/internal/pgproxy"
+	"github.com/districtdco/accessd/api/internal/redisproxy"
+	"github.com/districtdco/accessd/api/internal/requestctx"
+	"github.com/districtdco/accessd/api/internal/sessions"
 )
 
 type SessionsHandler struct {

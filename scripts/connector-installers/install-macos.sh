@@ -855,7 +855,7 @@ cat > "${APP_PLIST}" <<'PLIST'
     <key>CFBundleDisplayName</key>
     <string>AccessD Connector URL Handler</string>
     <key>CFBundleIdentifier</key>
-    <string>co.districtd.accessd.connector.urlhandler</string>
+    <string>io.accessd.connector.urlhandler</string>
     <key>CFBundleVersion</key>
     <string>1.0.0</string>
     <key>CFBundleShortVersionString</key>

@@ -1,6 +1,6 @@
 [Unit]
 Description=AccessD — Infrastructure Access Gateway
-Documentation=https://github.com/districtd/accessd
+Documentation=https://github.com/districtdco/accessd
 After=network-online.target
 Wants=network-online.target
 # If PostgreSQL runs on the same host, add:

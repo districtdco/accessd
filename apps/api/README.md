@@ -328,16 +328,16 @@ Paste launch token when prompted. Password auth also works as first-pass fallbac
 
 Configure these in Admin UI (`Admin -> Directory & LDAP`):
 - Provider mode: `hybrid`
-- Host/port or URL: `dc1.corp.example.com:636` or `ldaps://dc1.corp.example.com:636`
-- Base DN: `DC=corp,DC=example,DC=com`
+- Host/port or URL: `dc1.example.internal:636` or `ldaps://dc1.example.internal:636`
+- Base DN: `DC=example,DC=internal`
 - Bind DN/password: service account with read permissions
 - TLS: enabled, and CA certificate PEM pasted in the UI when private CA is used
-- Group-role mapping: `AccessD Operators=operator,CN=AccessD Admins,OU=Groups,DC=corp,DC=example,DC=com=admin|auditor`
+- Group-role mapping: `AccessD Operators=operator,CN=AccessD Admins,OU=Groups,DC=example,DC=internal=admin|auditor`
 
 - Typical DN/base DN examples:
-  - Domain base DN: `DC=corp,DC=example,DC=com`
-  - Users OU base DN: `OU=Users,DC=corp,DC=example,DC=com`
-  - Groups OU base DN: `OU=Groups,DC=corp,DC=example,DC=com`
+  - Domain base DN: `DC=example,DC=internal`
+  - Users OU base DN: `OU=Users,DC=example,DC=internal`
+  - Groups OU base DN: `OU=Groups,DC=example,DC=internal`
 
 ## Deferred Intentionally
 

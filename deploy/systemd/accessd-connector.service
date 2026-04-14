@@ -1,6 +1,6 @@
 [Unit]
 Description=AccessD Connector (optional managed-desktop background mode)
-Documentation=https://github.com/districtd/accessd
+Documentation=https://github.com/districtdco/accessd
 After=network.target
 
 [Service]

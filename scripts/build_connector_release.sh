@@ -504,7 +504,7 @@ POSTINSTALL
   local pkg_name="accessd-connector-${VERSION}-darwin-${goarch}.pkg"
   local pkg_path="${OUT_DIR}/${pkg_name}"
   pkgbuild \
-    --identifier "co.districtd.accessd.connector.${goarch}" \
+    --identifier "io.accessd.connector.${goarch}" \
     --version "${VERSION}" \
     --root "${pkg_root}" \
     --scripts "${pkg_scripts}" \
@@ -685,7 +685,7 @@ build_windows_msi() {
   cat > "${wxs_path}" <<WXS
 <?xml version="1.0" encoding="UTF-8"?>
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
-  <Product Id="*" Name="AccessD Connector" Language="1033" Version="${VERSION}" Manufacturer="DistrictD" UpgradeCode="D7A5827A-89E9-4F9C-9AF2-8A1223E16541">
+  <Product Id="*" Name="AccessD Connector" Language="1033" Version="${VERSION}" Manufacturer="AccessD" UpgradeCode="D7A5827A-89E9-4F9C-9AF2-8A1223E16541">
     <Package InstallerVersion="200" Compressed="yes" InstallScope="perUser" />
     <MajorUpgrade
       AllowSameVersionUpgrades="yes"

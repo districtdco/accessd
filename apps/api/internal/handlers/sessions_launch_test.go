@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/districtd/pam/api/internal/sessions"
+	"github.com/districtdco/accessd/api/internal/sessions"
 )
 
 func TestBuildLaunchResponse_IncludesConnectorTokenAcrossLaunchTypes(t *testing.T) {

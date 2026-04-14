@@ -18,10 +18,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/districtd/pam/connector/internal/auth"
-	"github.com/districtd/pam/connector/internal/config"
-	"github.com/districtd/pam/connector/internal/discovery"
-	"github.com/districtd/pam/connector/internal/launch"
+	"github.com/districtdco/accessd/connector/internal/auth"
+	"github.com/districtdco/accessd/connector/internal/config"
+	"github.com/districtdco/accessd/connector/internal/discovery"
+	"github.com/districtdco/accessd/connector/internal/launch"
 )
 
 var (

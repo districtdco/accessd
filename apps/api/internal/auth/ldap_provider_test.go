@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/districtd/pam/api/internal/config"
+	"github.com/districtdco/accessd/api/internal/config"
 	"github.com/go-ldap/ldap/v3"
 )
 
@@ -46,7 +46,7 @@ func TestParseGroupRoleMappingMergesDuplicateEntries(t *testing.T) {
 
 func TestGroupMappingKeysIncludesDNAndConfiguredAttribute(t *testing.T) {
 	entry := &ldap.Entry{
-		DN: "CN=PAM Operators,OU=Groups,DC=corp,DC=example,DC=com",
+		DN: "CN=PAM Operators,OU=Groups,DC=example,DC=internal",
 		Attributes: []*ldap.EntryAttribute{
 			{
 				Name:   "cn",
@@ -142,8 +142,8 @@ func TestLDAPUsernameCandidates(t *testing.T) {
 		},
 		{
 			name:     "upn username",
-			input:    "ankit@districtd.lan",
-			expected: []string{"ankit@districtd.lan", "ankit"},
+			input:    "ankit@example.internal",
+			expected: []string{"ankit@example.internal", "ankit"},
 		},
 	}
 

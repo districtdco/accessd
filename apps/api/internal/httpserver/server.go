@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/districtd/pam/api/internal/requestctx"
+	"github.com/districtdco/accessd/api/internal/requestctx"
 )
 
 type Config struct {

@@ -18,7 +18,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/districtd/pam/connector/internal/discovery"
+	"github.com/districtdco/accessd/connector/internal/discovery"
 )
 
 type Request struct {

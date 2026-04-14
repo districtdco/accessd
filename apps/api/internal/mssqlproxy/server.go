@@ -23,10 +23,10 @@ import (
 	"unicode/utf16"
 	"unicode/utf8"
 
-	"github.com/districtd/pam/api/internal/assets"
-	"github.com/districtd/pam/api/internal/connutil"
-	"github.com/districtd/pam/api/internal/credentials"
-	"github.com/districtd/pam/api/internal/sessions"
+	"github.com/districtdco/accessd/api/internal/assets"
+	"github.com/districtdco/accessd/api/internal/connutil"
+	"github.com/districtdco/accessd/api/internal/credentials"
+	"github.com/districtdco/accessd/api/internal/sessions"
 )
 
 const (

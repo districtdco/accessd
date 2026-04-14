@@ -12,9 +12,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/districtd/pam/api/internal/app"
-	"github.com/districtd/pam/api/internal/config"
-	"github.com/districtd/pam/api/internal/db"
+	"github.com/districtdco/accessd/api/internal/app"
+	"github.com/districtdco/accessd/api/internal/config"
+	"github.com/districtdco/accessd/api/internal/db"
 )
 
 var (

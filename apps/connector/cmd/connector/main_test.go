@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/districtd/pam/connector/internal/auth"
+	"github.com/districtdco/accessd/connector/internal/auth"
 )
 
 type stubVerifier struct {

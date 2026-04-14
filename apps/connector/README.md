@@ -60,7 +60,7 @@ DBeaver request shape:
   "connector_token": "base64-body.base64-sig",
   "launch": {
     "engine": "postgres",
-    "host": "pam.example.internal",
+    "host": "accessd.example.internal",
     "port": 45432,
     "database": "app",
     "username": "app_user",
@@ -79,7 +79,7 @@ Redis request shape:
   "asset_name": "redis-cache",
   "connector_token": "base64-body.base64-sig",
   "launch": {
-    "redis_host": "pam.example.internal",
+    "redis_host": "accessd.example.internal",
     "redis_port": 46379,
     "redis_username": "default",
     "redis_password": "short-lived-launch-token",

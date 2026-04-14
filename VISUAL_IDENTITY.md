@@ -3,8 +3,7 @@
 ## Brand
 
 **Full name:** AccessD  
-**Tagline:** Infrastructure Access Gateway  
-**Developed by:** [DistrictD](https://districtd.co.in)
+**Tagline:** Infrastructure Access Gateway
 
 ---
 
@@ -107,7 +106,7 @@ font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
 │ ─────────────────────────────  │
 │ AccessD                        │
 │ Infrastructure Access Gateway  │
-│ DistrictD ↗                   │
+│ Project Repository ↗          │
 └────────────────────────────────┘
 ```
 
@@ -128,7 +127,7 @@ font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
 │                             │
 │  AccessD • Infrastructure   │
 │   Access Gateway            │
-│   Developed by DistrictD ↗  │
+│   Project Repository ↗      │
 └─────────────────────────────┘
 ```
 
@@ -156,7 +155,7 @@ Use Tailwind's `dark:` variant prefix when implementing.
 - Use "AccessD" (capital A, capital D, no space)
 - Use the `#4f46e5` indigo as the primary identity color
 - Keep the wordmark + tagline together in marketing contexts
-- Always link "DistrictD" to `https://districtd.co.in` in UI footers
+- Link footer branding to the project repository (`https://github.com/districtdco/accessd`)
 
 **Don't:**
 - Write "Accessd", "ACCESSD", "Access D", or "access-d" in user-facing text

@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/districtd/pam/api/internal/auth"
+	"github.com/districtdco/accessd/api/internal/auth"
 )
 
 type AuthHandler struct {

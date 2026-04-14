@@ -66,7 +66,7 @@ func TestRemoteVerifier_AcceptsCustomCACertFile_DER(t *testing.T) {
 }
 
 func TestRemoteVerifier_InvalidCACertFileReported(t *testing.T) {
-	verifier := NewRemoteVerifier("https://accessd.districtd.lan/api/connector/token/verify", 2*time.Second, RemoteVerifierOptions{
+	verifier := NewRemoteVerifier("https://accessd.example.internal/api/connector/token/verify", 2*time.Second, RemoteVerifierOptions{
 		CACertFile: filepath.Join(t.TempDir(), "missing.cer"),
 	})
 	_, err := verifier.Verify("token")

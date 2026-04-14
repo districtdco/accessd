@@ -3,8 +3,8 @@ package httpserver
 import (
 	"net/http"
 
-	"github.com/districtd/pam/api/internal/auth"
-	"github.com/districtd/pam/api/internal/handlers"
+	"github.com/districtdco/accessd/api/internal/auth"
+	"github.com/districtdco/accessd/api/internal/handlers"
 )
 
 type RouteHandlers struct {

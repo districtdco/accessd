@@ -87,14 +87,14 @@ export function LoginPage() {
             AccessD &bull; Infrastructure Access Gateway
           </p>
           <p className="mt-1 text-center text-xs text-gray-400">
-            Developed by{' '}
+            Project{' '}
             <a
-              href="https://districtd.co.in"
+              href="https://github.com/districtdco/accessd"
               target="_blank"
               rel="noopener noreferrer"
               className="hover:text-gray-600 transition-colors"
             >
-              DistrictD
+              Repository
             </a>
           </p>
         </form>

@@ -19,9 +19,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/districtd/pam/api/internal/connutil"
-	"github.com/districtd/pam/api/internal/credentials"
-	"github.com/districtd/pam/api/internal/sessions"
+	"github.com/districtdco/accessd/api/internal/connutil"
+	"github.com/districtdco/accessd/api/internal/credentials"
+	"github.com/districtdco/accessd/api/internal/sessions"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/knownhosts"
 )

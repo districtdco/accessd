@@ -11,10 +11,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/districtd/pam/api/internal/admin"
-	"github.com/districtd/pam/api/internal/assets"
-	"github.com/districtd/pam/api/internal/auth"
-	"github.com/districtd/pam/api/internal/credentials"
+	"github.com/districtdco/accessd/api/internal/admin"
+	"github.com/districtdco/accessd/api/internal/assets"
+	"github.com/districtdco/accessd/api/internal/auth"
+	"github.com/districtdco/accessd/api/internal/credentials"
 )
 
 type AdminHandler struct {

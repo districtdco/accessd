@@ -1,4 +1,4 @@
-module github.com/districtd/pam/api
+module github.com/districtdco/accessd/api
 
 go 1.22.0
 

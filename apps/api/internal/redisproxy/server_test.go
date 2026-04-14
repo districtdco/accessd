@@ -5,8 +5,8 @@ import (
 	"bytes"
 	"testing"
 
-	"github.com/districtd/pam/api/internal/assets"
-	"github.com/districtd/pam/api/internal/sessions"
+	"github.com/districtdco/accessd/api/internal/assets"
+	"github.com/districtdco/accessd/api/internal/sessions"
 )
 
 func TestReadRESPCommandCapturesCommandAndArgs(t *testing.T) {

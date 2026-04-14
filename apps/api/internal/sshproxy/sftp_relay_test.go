@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/districtd/pam/api/internal/sessions"
+	"github.com/districtdco/accessd/api/internal/sessions"
 	"golang.org/x/crypto/ssh"
 )
 

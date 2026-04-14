@@ -146,12 +146,12 @@ export function Sidebar({ open, onClose }: SidebarProps) {
           <p className="text-xs font-medium text-gray-500">AccessD</p>
           <p className="text-xs text-gray-400">Infrastructure Access Gateway</p>
           <a
-            href="https://districtd.co.in"
+            href="https://github.com/districtdco/accessd"
             target="_blank"
             rel="noopener noreferrer"
             className="block text-xs text-gray-400 hover:text-gray-600 transition-colors"
           >
-            DistrictD
+            Project Repository
           </a>
         </div>
       </aside>

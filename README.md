@@ -4,8 +4,6 @@
 
 AccessD is an open-source infrastructure access gateway that provides secure, audited access to servers, databases, and services — without giving operators raw credentials.
 
-Developed by [DistrictD](https://districtd.co.in)
-
 ---
 
 ## What is AccessD?
@@ -111,7 +109,7 @@ Placeholders for OSS launch (replace with real captures):
 **Prerequisites:** Go 1.22+, Node.js 20+, Docker
 
 ```bash
-git clone https://github.com/districtd/accessd
+git clone https://github.com/districtdco/accessd
 cd accessd
 
 # Start PostgreSQL
@@ -333,9 +331,8 @@ make test-matrix       # Multi-protocol launch matrix test (requires dev-up-targ
 
 ## License
 
-<!-- License TBD — see LICENSE file when added -->
+MIT. See [LICENSE](LICENSE).
 
 ---
 
 *AccessD — Infrastructure Access Gateway*
-*Developed by [DistrictD](https://districtd.co.in)*

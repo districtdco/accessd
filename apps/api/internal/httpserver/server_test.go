@@ -7,7 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/districtd/pam/api/internal/requestctx"
+	"github.com/districtdco/accessd/api/internal/requestctx"
 )
 
 func TestWithRequestLogging_GeneratesRequestID(t *testing.T) {

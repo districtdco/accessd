@@ -1,4 +1,4 @@
-module github.com/districtd/pam/connector
+module github.com/districtdco/accessd/connector
 
 go 1.22.0
 

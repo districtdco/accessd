@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/districtd/pam/api/internal/access"
+	"github.com/districtdco/accessd/api/internal/access"
 )
 
 func TestSessionDetail_OwnerCanAccess(t *testing.T) {

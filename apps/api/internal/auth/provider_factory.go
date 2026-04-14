@@ -7,7 +7,7 @@ import (
 	"log/slog"
 	"strings"
 
-	"github.com/districtd/pam/api/internal/config"
+	"github.com/districtdco/accessd/api/internal/config"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 

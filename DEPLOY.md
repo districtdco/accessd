@@ -361,7 +361,7 @@ required changes are:
 | `ACCESSD_LAUNCH_TOKEN_SECRET` | `openssl rand -base64 32` output      |
 | `ACCESSD_CONNECTOR_SECRET`    | `openssl rand -base64 32` output      |
 | `ACCESSD_DEV_ADMIN_PASSWORD`  | Strong bootstrap admin password       |
-| `ACCESSD_CORS_ALLOWED_ORIGINS`| Your actual domain (`https://pam.example.internal`) |
+| `ACCESSD_CORS_ALLOWED_ORIGINS`| Your actual domain (`https://accessd.example.internal`) |
 | `ACCESSD_SSH_PROXY_PUBLIC_HOST`| Internal hostname operators use for SSH |
 | `ACCESSD_*_PROXY_PUBLIC_HOST` | Internal hostname operators use for DB proxies |
 | LDAP variables            | Your AD/LDAP server details           |
@@ -380,7 +380,7 @@ that must match what's in `accessd.env`:
 
 ```
 ACCESSD_CONNECTOR_SECRET=<same value as ACCESSD_CONNECTOR_SECRET in accessd.env>
-ACCESSD_CONNECTOR_ALLOWED_ORIGIN=https://pam.example.internal
+ACCESSD_CONNECTOR_ALLOWED_ORIGIN=https://accessd.example.internal
 ```
 
 ---
@@ -521,13 +521,13 @@ curl -fs http://127.0.0.1:8080/health/ready && echo "API ready"
 ### UI via nginx
 
 ```bash
-curl -fsk https://pam.example.internal/ | grep -o '<title>[^<]*</title>'
+curl -fsk https://accessd.example.internal/ | grep -o '<title>[^<]*</title>'
 # Expected: <title>AccessD</title> (or similar)
 ```
 
 ### Admin login
 
-Navigate to `https://pam.example.internal/login` in a browser and sign in with
+Navigate to `https://accessd.example.internal/login` in a browser and sign in with
 the bootstrap admin credentials you set in `ACCESSD_DEV_ADMIN_USERNAME` /
 `ACCESSD_DEV_ADMIN_PASSWORD`.
 
@@ -549,7 +549,7 @@ the bootstrap admin credentials you set in `ACCESSD_DEV_ADMIN_USERNAME` /
 From an operator machine:
 
 ```bash
-ssh -p 2222 -o "StrictHostKeyChecking=no" pam@pam.example.internal
+ssh -p 2222 -o "StrictHostKeyChecking=no" pam@accessd.example.internal
 # Expect: connection refused or auth failure (not "connection refused" at network level)
 # The proxy responds to SSH connections even before a session is launched.
 ```
@@ -620,7 +620,7 @@ Wait for `http server listening` in the logs.
 
 ```bash
 curl -fs http://127.0.0.1:8080/health/ready && echo "API healthy"
-curl -fsk https://pam.example.internal/api/version
+curl -fsk https://accessd.example.internal/api/version
 ```
 
 ### Step 6 — Cleanup
@@ -669,7 +669,7 @@ After every deployment, verify the following before declaring it healthy:
 
 ### UI access
 
-- [ ] `https://pam.example.internal/` loads the login page in a browser
+- [ ] `https://accessd.example.internal/` loads the login page in a browser
 - [ ] Browser console shows no CSP violations or mixed-content warnings
 - [ ] HTTPS certificate is valid and trusted by the operator's browser
 
@@ -957,7 +957,7 @@ any client to trigger native application launches on the server.
 - Deploy the connector only on operator machines.
 - Distribute connector builds directly to operators.
 - The connector CORS setting (`ACCESSD_CONNECTOR_ALLOWED_ORIGIN`) should match the AccessD
-  web UI origin. Operators set this to `https://pam.example.internal`, not `localhost`.
+  web UI origin. Operators set this to `https://accessd.example.internal`, not `localhost`.
 
 **Don't:**
 - Add a `/connector/` nginx location on the server.
@@ -1200,7 +1200,7 @@ This means the SSH proxy host key was regenerated (server rebuilt, key file dele
 
 ```bash
 # Operator removes old entry from their known_hosts:
-ssh-keygen -R [pam.example.internal]:2222 ~/.ssh/known_hosts
+ssh-keygen -R [accessd.example.internal]:2222 ~/.ssh/known_hosts
 ```
 
 To prevent this: back up `/var/lib/accessd/ssh/accessd_proxy_host_key` and restore it after
