@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -663,6 +664,13 @@ func (h *SessionsHandler) RecordEvent(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
 		}
+		slog.Error("failed to record connector launch event",
+			"session_id", sessionID,
+			"user_id", currentUser.ID,
+			"event_type", req.EventType,
+			"request_id", requestctx.FromContext(r.Context()),
+			"error", err,
+		)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to record session event"})
 		return
 	}

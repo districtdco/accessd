@@ -599,6 +599,17 @@ func (s *Service) forwardCommands(reg SessionRegistration, client io.ReadWriter,
 		case comQuery:
 			query := strings.TrimRight(string(payload[1:]), "\x00")
 			if q := strings.TrimSpace(query); q != "" {
+				// MySQL 8 removed query cache variables, but some JDBC clients still
+				// send SET query_cache_size=... as an init query. Treat it as no-op
+				// so login succeeds without weakening other query handling.
+				if shouldIgnoreLegacyQueryCacheSet(q) {
+					s.logger.Debug("ignoring legacy mysql init variable", "session_id", reg.SessionID, "query", q)
+					okPayload := buildOKPacket(0, 0, 0x0002, 0)
+					if err := writePacket(client, okPayload, seq+1); err != nil {
+						return err
+					}
+					continue
+				}
 				s.enqueueQueryLog(queryLogEvent{
 					SessionID:    reg.SessionID,
 					UserID:       reg.UserID,
@@ -1365,6 +1376,20 @@ func truncate(v string, max int) string {
 		return v
 	}
 	return v[:max]
+}
+
+func shouldIgnoreLegacyQueryCacheSet(query string) bool {
+	q := strings.ToLower(strings.TrimSpace(query))
+	if q == "" || !strings.HasPrefix(q, "set") {
+		return false
+	}
+	// Handle common variants:
+	//   SET query_cache_size=...
+	//   SET SESSION query_cache_size=...
+	//   SET @@session.query_cache_size=...
+	//   SET @@query_cache_size=...
+	q = strings.ReplaceAll(q, "`", "")
+	return strings.Contains(q, "query_cache_size")
 }
 
 type sslModeConfig struct {

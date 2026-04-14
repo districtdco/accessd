@@ -397,6 +397,70 @@ func TestSimpleQueryCapture(t *testing.T) {
 	}
 }
 
+func TestIgnoreLegacyQueryCacheSet(t *testing.T) {
+	svc := &Service{
+		cfg:        Config{QueryMaxBytes: 4096},
+		logger:     discardLogger(),
+		queryLogCh: make(chan queryLogEvent, 16),
+	}
+
+	var clientRead bytes.Buffer
+	writeTestPacket(&clientRead, []byte{comQuery, 'S', 'E', 'T', ' ', 'S', 'E', 'S', 'S', 'I', 'O', 'N', ' ', 'q', 'u', 'e', 'r', 'y', '_', 'c', 'a', 'c', 'h', 'e', '_', 's', 'i', 'z', 'e', '=', '0'}, 0)
+	writeTestPacket(&clientRead, []byte{comQuery, 'S', 'E', 'L', 'E', 'C', 'T', ' ', '1'}, 0)
+	writeTestPacket(&clientRead, []byte{comQuit}, 0)
+
+	var upstreamRead bytes.Buffer
+	writeTestPacket(&upstreamRead, buildOKPacket(0, 0, 0x0002, 0), 1)
+
+	var clientWrite bytes.Buffer
+	var upstreamWrite bytes.Buffer
+	client := &readWriter{Reader: &clientRead, Writer: &clientWrite}
+	upstream := &readWriter{Reader: &upstreamRead, Writer: &upstreamWrite}
+
+	reg := SessionRegistration{SessionID: "s-compat", UserID: "u1", AssetID: "a1", Engine: "mysql"}
+	if err := svc.forwardCommands(reg, client, upstream); err != nil {
+		t.Fatalf("forwardCommands: %v", err)
+	}
+
+	close(svc.queryLogCh)
+	var events []queryLogEvent
+	for evt := range svc.queryLogCh {
+		events = append(events, evt)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected only real query to be logged, got %d events", len(events))
+	}
+	if events[0].Query != "SELECT 1" {
+		t.Fatalf("logged query = %q, want SELECT 1", events[0].Query)
+	}
+
+	var forwarded [][]byte
+	for upstreamWrite.Len() > 0 {
+		p, _, err := readPacket(&upstreamWrite)
+		if err != nil {
+			t.Fatalf("read forwarded packet: %v", err)
+		}
+		forwarded = append(forwarded, p)
+	}
+	if len(forwarded) != 2 {
+		t.Fatalf("expected 2 forwarded packets (SELECT + QUIT), got %d", len(forwarded))
+	}
+	if len(forwarded[0]) == 0 || forwarded[0][0] != comQuery || !bytes.Contains(forwarded[0], []byte("SELECT 1")) {
+		t.Fatalf("first forwarded payload mismatch: %q", forwarded[0])
+	}
+	if len(forwarded[1]) == 0 || forwarded[1][0] != comQuit {
+		t.Fatalf("second forwarded packet should be COM_QUIT, got %v", forwarded[1])
+	}
+
+	okPayload, _, err := readPacket(&clientWrite)
+	if err != nil {
+		t.Fatalf("read first client response: %v", err)
+	}
+	if len(okPayload) == 0 || okPayload[0] != iOK {
+		t.Fatalf("expected synthetic OK for ignored init query, got %v", okPayload)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Prepared statement capture
 // ---------------------------------------------------------------------------
@@ -554,7 +618,7 @@ func TestResultSetRelay(t *testing.T) {
 
 	// Result set: column_count=1 → col_def → EOF → row → EOF.
 	var upstreamRead bytes.Buffer
-	writeTestPacket(&upstreamRead, []byte{0x01}, 1)          // column_count = 1
+	writeTestPacket(&upstreamRead, []byte{0x01}, 1)                // column_count = 1
 	writeTestPacket(&upstreamRead, []byte{0x03, 'd', 'e', 'f'}, 2) // column definition (simplified)
 	writeTestPacket(&upstreamRead, []byte{0xfe, 0, 0, 0, 0}, 3)    // EOF
 	writeTestPacket(&upstreamRead, []byte{0x01, '1'}, 4)           // row: "1"

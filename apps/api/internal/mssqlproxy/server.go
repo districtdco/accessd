@@ -325,8 +325,10 @@ func (s *Service) runProxyFlow(reg SessionRegistration, client net.Conn) error {
 	}
 
 	// First pass: explicit plaintext client-proxy path for practical query visibility.
-	proxyPreloginResp := buildPreloginMessage(tdsEncryptNotSup)
-	if err := writeTDSPayload(client, tdsPacketPreLogin, proxyPreloginResp); err != nil {
+	// TDS pre-login responses are emitted as server response packets.
+	// Returning ENCRYPT_OFF keeps plaintext mode explicit for this proxy slice.
+	proxyPreloginResp := buildPreloginMessage(tdsEncryptOff)
+	if err := writeTDSPayload(client, tdsPacketResponse, proxyPreloginResp); err != nil {
 		return fmt.Errorf("write prelogin response: %w", err)
 	}
 
@@ -446,7 +448,9 @@ func (s *Service) negotiateUpstreamPrelogin(reg SessionRegistration, upstream ne
 	if err != nil {
 		return 0, fmt.Errorf("read upstream prelogin response: %w", err)
 	}
-	if resp.PacketType != tdsPacketPreLogin {
+	// Real SQL Server instances commonly answer pre-login with response packets.
+	// Accept both to stay interoperable across server builds/proxies.
+	if resp.PacketType != tdsPacketPreLogin && resp.PacketType != tdsPacketResponse {
 		return 0, fmt.Errorf("unexpected upstream prelogin response type: 0x%02x", resp.PacketType)
 	}
 	enc, _ := parsePreloginEncryption(resp.Payload)

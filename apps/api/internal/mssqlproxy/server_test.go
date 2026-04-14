@@ -124,6 +124,28 @@ func TestRewriteLogin7WithManagedCreds(t *testing.T) {
 	}
 }
 
+func TestPreloginResponsePacketTypeCompatibility(t *testing.T) {
+	var buf bytes.Buffer
+	payload := buildPreloginMessage(tdsEncryptOff)
+	if err := writeTDSPayload(&buf, tdsPacketResponse, payload); err != nil {
+		t.Fatalf("writeTDSPayload: %v", err)
+	}
+	msg, err := readTDSMessage(&buf)
+	if err != nil {
+		t.Fatalf("readTDSMessage: %v", err)
+	}
+	if msg.PacketType != tdsPacketResponse {
+		t.Fatalf("packet type = 0x%02x, want 0x%02x", msg.PacketType, tdsPacketResponse)
+	}
+	enc, ok := parsePreloginEncryption(msg.Payload)
+	if !ok {
+		t.Fatalf("expected encryption token in prelogin payload")
+	}
+	if enc != tdsEncryptOff {
+		t.Fatalf("encryption = 0x%02x, want 0x%02x", enc, tdsEncryptOff)
+	}
+}
+
 func collectEvents(ch <-chan queryLogEvent) []queryLogEvent {
 	out := make([]queryLogEvent, 0)
 	for evt := range ch {
