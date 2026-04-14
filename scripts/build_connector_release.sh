@@ -687,6 +687,9 @@ build_windows_msi() {
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
   <Product Id="*" Name="AccessD Connector" Language="1033" Version="${VERSION}" Manufacturer="DistrictD" UpgradeCode="D7A5827A-89E9-4F9C-9AF2-8A1223E16541">
     <Package InstallerVersion="200" Compressed="yes" InstallScope="perUser" />
+    <MajorUpgrade
+      AllowSameVersionUpgrades="yes"
+      DowngradeErrorMessage="A newer AccessD Connector version is already installed." />
     <MediaTemplate EmbedCab="yes" />
     <Directory Id="TARGETDIR" Name="SourceDir">
       <Directory Id="LocalAppDataFolder">

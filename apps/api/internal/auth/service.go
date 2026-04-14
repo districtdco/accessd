@@ -308,17 +308,6 @@ func (s *Service) resolveProviderForLogin(ctx context.Context, username string) 
 		mode = "local"
 	}
 
-	// Local-only mode is explicit and bypasses LDAP.
-	if mode == "local" {
-		return localProvider
-	}
-
-	ldapProvider, err := NewLDAPProvider(s.pool, resolvedCfg.LDAP, s.logger)
-	if err != nil {
-		s.logger.Warn("failed to build ldap provider; using local provider", "error", err)
-		return localProvider
-	}
-
 	mappedProvider, mapped, lookupErr := s.lookupMappedAuthProvider(ctx, username)
 	if lookupErr != nil {
 		s.logger.Warn("failed to lookup mapped auth provider; using mode defaults", "username", username, "error", lookupErr)
@@ -332,6 +321,11 @@ func (s *Service) resolveProviderForLogin(ctx context.Context, username string) 
 		case "local":
 			return localProvider
 		case "ldap":
+			ldapProvider, ldapErr := NewLDAPProvider(s.pool, resolvedCfg.LDAP, s.logger)
+			if ldapErr != nil {
+				s.logger.Warn("failed to build ldap provider for mapped ldap user; using local provider", "username", username, "error", ldapErr)
+				return localProvider
+			}
 			return ldapProvider
 		default:
 			return localProvider
@@ -341,8 +335,18 @@ func (s *Service) resolveProviderForLogin(ctx context.Context, username string) 
 	// Unknown user: follow configured mode behavior.
 	switch mode {
 	case "ldap":
+		ldapProvider, ldapErr := NewLDAPProvider(s.pool, resolvedCfg.LDAP, s.logger)
+		if ldapErr != nil {
+			s.logger.Warn("failed to build ldap provider; using local provider", "error", ldapErr)
+			return localProvider
+		}
 		return ldapProvider
 	case "hybrid":
+		ldapProvider, ldapErr := NewLDAPProvider(s.pool, resolvedCfg.LDAP, s.logger)
+		if ldapErr != nil {
+			s.logger.Warn("failed to build ldap provider; using local provider", "error", ldapErr)
+			return localProvider
+		}
 		return &FallbackProvider{
 			primary:  ldapProvider,
 			fallback: localProvider,
@@ -357,7 +361,8 @@ func (s *Service) lookupMappedAuthProvider(ctx context.Context, username string)
 	const q = `
 SELECT COALESCE(auth_provider, 'local')
 FROM users
-WHERE username = $1
+WHERE lower(username) = lower($1)
+ORDER BY username
 LIMIT 1;`
 	var provider string
 	err := s.pool.QueryRow(ctx, q, strings.TrimSpace(username)).Scan(&provider)
@@ -584,12 +589,32 @@ SET description = EXCLUDED.description,
 
 func (s *Service) storeSession(ctx context.Context, userID, sessionToken string, expiresAt time.Time) error {
 	tokenHash := hashSessionToken(sessionToken)
+	const revokeSQL = `
+UPDATE auth_sessions
+SET revoked_at = NOW()
+WHERE user_id = $1
+  AND revoked_at IS NULL
+  AND expires_at > NOW();`
 	const insertSQL = `
 INSERT INTO auth_sessions (user_id, session_token_hash, expires_at, last_seen_at)
 VALUES ($1, $2, $3, NOW());`
 
-	if _, err := s.pool.Exec(ctx, insertSQL, userID, tokenHash[:], expiresAt); err != nil {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin auth session tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	if _, err := tx.Exec(ctx, revokeSQL, userID); err != nil {
+		return fmt.Errorf("revoke prior auth sessions: %w", err)
+	}
+
+	if _, err := tx.Exec(ctx, insertSQL, userID, tokenHash[:], expiresAt); err != nil {
 		return fmt.Errorf("store auth session: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit auth session tx: %w", err)
 	}
 
 	return nil

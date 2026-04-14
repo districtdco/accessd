@@ -549,6 +549,42 @@ function Start-ConnectorProcess {
   }
 }
 
+function Test-BoolEnv {
+  param(
+    [string]$Raw,
+    [bool]$Default = $true
+  )
+  if ([string]::IsNullOrWhiteSpace($Raw)) { return $Default }
+  if ($Raw -match '^(?i:true|1|yes|on)$') { return $true }
+  if ($Raw -match '^(?i:false|0|no|off)$') { return $false }
+  return $Default
+}
+
+function Reset-ManagedConnectorState {
+  param(
+    [string]$ConfigFile,
+    [string]$RuntimeEnvFile,
+    [string]$ConfigDir
+  )
+  $managedPaths = @(
+    $ConfigFile,
+    $RuntimeEnvFile,
+    (Join-Path $ConfigDir 'certs'),
+    (Join-Path $ConfigDir 'tls')
+  )
+  foreach ($path in $managedPaths) {
+    if ([string]::IsNullOrWhiteSpace($path)) { continue }
+    try {
+      if (Test-Path $path) {
+        Remove-Item -Path $path -Recurse -Force -ErrorAction SilentlyContinue
+        Write-Host "[accessd-connector] Removed previous managed state: $path"
+      }
+    } catch {
+      Write-Host "[accessd-connector] WARNING: failed to remove previous managed state ${path}: $($_.Exception.Message)"
+    }
+  }
+}
+
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 Test-ReleasePayloadIntegrity -ScriptDir $scriptDir
 $sourceBin = Join-Path $scriptDir 'accessd-connector.exe'
@@ -560,6 +596,10 @@ if (-not (Test-Path $sourceBin)) {
 }
 
 $installDir = if ($env:ACCESSD_CONNECTOR_INSTALL_DIR) { $env:ACCESSD_CONNECTOR_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA 'AccessD\\bin' }
+$legacyInstallDirs = @(
+  (Join-Path $env:LOCALAPPDATA 'AccessD Connector\\bin'),
+  (Join-Path $env:LOCALAPPDATA 'Programs\\AccessD Connector')
+)
 $configDir = Join-Path $env:USERPROFILE '.accessd-connector'
 $configFile = Join-Path $configDir 'config.yaml'
 $helperDir = Join-Path $configDir 'bin'
@@ -567,6 +607,7 @@ $runtimeEnvFile = Join-Path (Join-Path $env:USERPROFILE '.config\accessd') 'conn
 $targetBin = Join-Path $installDir 'accessd-connector.exe'
 $handlerScript = Join-Path $helperDir 'url-handler-windows.ps1'
 $trustHelperScript = Join-Path $helperDir 'trust-refresh-windows.ps1'
+$cleanInstall = Test-BoolEnv -Raw $env:ACCESSD_CONNECTOR_CLEAN_INSTALL -Default $true
 
 New-Item -ItemType Directory -Force -Path $installDir | Out-Null
 New-Item -ItemType Directory -Force -Path $helperDir | Out-Null
@@ -589,6 +630,26 @@ if ($sourceResolved -ieq $targetResolved) {
   Write-Host "[accessd-connector] Source and target binary paths are identical; skipping copy."
 } else {
   Copy-Item -Force $sourceBin $targetBin
+}
+
+foreach ($legacyDir in $legacyInstallDirs) {
+  if ([string]::IsNullOrWhiteSpace($legacyDir)) { continue }
+  $legacyResolved = [System.IO.Path]::GetFullPath($legacyDir)
+  if ($legacyResolved -ieq [System.IO.Path]::GetFullPath($installDir)) { continue }
+  try {
+    if (Test-Path $legacyDir) {
+      Remove-Item -Path $legacyDir -Recurse -Force -ErrorAction SilentlyContinue
+      Write-Host "[accessd-connector] Removed legacy install directory: $legacyDir"
+    }
+  } catch {
+    Write-Host "[accessd-connector] WARNING: failed to remove legacy install directory ${legacyDir}: $($_.Exception.Message)"
+  }
+}
+
+if ($cleanInstall) {
+  Reset-ManagedConnectorState -ConfigFile $configFile -RuntimeEnvFile $runtimeEnvFile -ConfigDir $configDir
+} else {
+  Write-Host '[accessd-connector] Preserving prior config/cert state (ACCESSD_CONNECTOR_CLEAN_INSTALL=false).'
 }
 
 @"

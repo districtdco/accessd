@@ -156,7 +156,7 @@ func main() {
 		}
 		if err := verifyConnectorToken(verifier, req.ConnectorToken, req.SessionID); err != nil {
 			log.Printf("launch/shell rejected: %v session_id=%s", err, req.SessionID)
-			writeJSON(w, http.StatusForbidden, map[string]string{"error": "invalid or missing connector token"})
+			writeConnectorTokenError(w, err)
 			return
 		}
 		launchKey := "shell:" + strings.TrimSpace(req.SessionID)
@@ -196,7 +196,7 @@ func main() {
 		}
 		if err := verifyConnectorToken(verifier, req.ConnectorToken, req.SessionID); err != nil {
 			log.Printf("launch/dbeaver rejected: %v session_id=%s", err, req.SessionID)
-			writeJSON(w, http.StatusForbidden, map[string]string{"error": "invalid or missing connector token"})
+			writeConnectorTokenError(w, err)
 			return
 		}
 		launchKey := "dbeaver:" + strings.TrimSpace(req.SessionID)
@@ -236,7 +236,7 @@ func main() {
 		}
 		if err := verifyConnectorToken(verifier, req.ConnectorToken, req.SessionID); err != nil {
 			log.Printf("launch/redis rejected: %v session_id=%s", err, req.SessionID)
-			writeJSON(w, http.StatusForbidden, map[string]string{"error": "invalid or missing connector token"})
+			writeConnectorTokenError(w, err)
 			return
 		}
 		launchKey := "redis:" + strings.TrimSpace(req.SessionID)
@@ -276,7 +276,7 @@ func main() {
 		}
 		if err := verifyConnectorToken(verifier, req.ConnectorToken, req.SessionID); err != nil {
 			log.Printf("launch/sftp rejected: %v session_id=%s", err, req.SessionID)
-			writeJSON(w, http.StatusForbidden, map[string]string{"error": "invalid or missing connector token"})
+			writeConnectorTokenError(w, err)
 			return
 		}
 		launchKey := "sftp:" + strings.TrimSpace(req.SessionID)
@@ -515,6 +515,20 @@ type connectorTokenVerifier interface {
 	Verify(token string) (auth.ConnectorClaims, error)
 }
 
+type connectorTokenError struct {
+	message string
+	code    string
+	hint    string
+	details string
+}
+
+func (e *connectorTokenError) Error() string {
+	if e == nil {
+		return "invalid connector token"
+	}
+	return e.message
+}
+
 type fallbackConnectorTokenVerifier struct {
 	verifiers []connectorTokenVerifier
 }
@@ -618,16 +632,74 @@ func verifyConnectorToken(v connectorTokenVerifier, token, sessionID string) err
 	}
 	token = strings.TrimSpace(token)
 	if token == "" {
-		return fmt.Errorf("missing connector_token")
+		return &connectorTokenError{
+			message: "missing connector token",
+			code:    "connector_token_missing",
+			hint:    "ensure connector_token from /sessions/launch is forwarded unchanged to the connector",
+			details: "launch request did not include connector_token",
+		}
 	}
 	claims, err := v.Verify(token)
 	if err != nil {
-		return err
+		return classifyConnectorTokenVerifyError(err)
 	}
-	if claims.SessionID != sessionID {
-		return fmt.Errorf("connector token session_id mismatch")
+	if strings.TrimSpace(claims.SessionID) != strings.TrimSpace(sessionID) {
+		return &connectorTokenError{
+			message: "connector token does not match requested session",
+			code:    "connector_token_session_mismatch",
+			hint:    "request a fresh launch and ensure session_id and connector_token belong to the same launch response",
+			details: fmt.Sprintf("token sid=%q request sid=%q", strings.TrimSpace(claims.SessionID), strings.TrimSpace(sessionID)),
+		}
 	}
 	return nil
+}
+
+func classifyConnectorTokenVerifyError(err error) error {
+	if err == nil {
+		return nil
+	}
+	msg := strings.TrimSpace(err.Error())
+	lower := strings.ToLower(msg)
+	switch {
+	case strings.Contains(lower, "expired"):
+		return &connectorTokenError{
+			message: "connector token expired",
+			code:    "connector_token_expired",
+			hint:    "start a new launch from AccessD and retry immediately",
+			details: msg,
+		}
+	case strings.Contains(lower, "invalid") || strings.Contains(lower, "malformed"):
+		return &connectorTokenError{
+			message: "connector token verification failed",
+			code:    "connector_token_invalid",
+			hint:    "verify ACCESSD_CONNECTOR_SECRET matches backend ACCESSD_CONNECTOR_SECRET, or set ACCESSD_CONNECTOR_BACKEND_VERIFY_URL",
+			details: msg,
+		}
+	default:
+		return &connectorTokenError{
+			message: "connector token verification unavailable",
+			code:    "connector_token_verify_unavailable",
+			hint:    "check connector backend verification connectivity and local secret configuration",
+			details: msg,
+		}
+	}
+}
+
+func writeConnectorTokenError(w http.ResponseWriter, err error) {
+	var tokenErr *connectorTokenError
+	if errors.As(err, &tokenErr) {
+		body := map[string]string{
+			"error": tokenErr.message,
+			"code":  tokenErr.code,
+			"hint":  tokenErr.hint,
+		}
+		if strings.TrimSpace(tokenErr.details) != "" {
+			body["details"] = tokenErr.details
+		}
+		writeJSON(w, http.StatusForbidden, body)
+		return
+	}
+	writeJSON(w, http.StatusForbidden, map[string]string{"error": "invalid or missing connector token"})
 }
 
 func writeLaunchError(w http.ResponseWriter, err error) {

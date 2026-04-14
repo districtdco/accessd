@@ -245,7 +245,7 @@ async function connectorLaunchRequest<TResponse>(
     } catch {
       // ignore
     }
-    if (response.status === 403) {
+    if (response.status === 403 && !code) {
       message = `${message}. Connector rejected launch authorization (403); verify connector secret alignment and connector_token forwarding.`
     }
     throw new ConnectorHandoffError(message, response.status, code, hint, details)

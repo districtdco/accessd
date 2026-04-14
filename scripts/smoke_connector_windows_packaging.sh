@@ -52,6 +52,10 @@ if ! awk -F'\t' '{gsub(/\r/,"",$0)} $1=="RunBootstrapScript" && $2=="NOT REMOVE"
 fi
 pass "RunBootstrapScript condition is NOT REMOVE"
 
+upgrade_export="$(msiinfo export "${MSI_PATH}" Upgrade)"
+grep -q 'D7A5827A-89E9-4F9C-9AF2-8A1223E16541' <<<"${upgrade_export}" || fail "MSI Upgrade table missing expected UpgradeCode"
+pass "MSI Upgrade table contains AccessD Connector UpgradeCode"
+
 zip_listing="$(unzip -l "${ZIP_PATH}")"
 for required in accessd-connector.exe install.ps1 uninstall.ps1 bootstrap-runner.exe release-files-sha256.txt; do
   grep -q "${required}" <<<"${zip_listing}" || fail "ZIP missing ${required}"

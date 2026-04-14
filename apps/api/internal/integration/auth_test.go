@@ -131,6 +131,23 @@ func TestAuthLogin_MultipleUsersIndependent(t *testing.T) {
 	}
 }
 
+func TestAuthLogin_RevokesPreviousSessionForSameUser(t *testing.T) {
+	h := newTestHarness(t)
+
+	firstCookie := h.login(h.seed.operatorName, h.seed.operatorPass)
+	secondCookie := h.login(h.seed.operatorName, h.seed.operatorPass)
+
+	firstMe := h.requestJSON(http.MethodGet, "/me", nil, firstCookie)
+	if firstMe.Code != http.StatusUnauthorized {
+		t.Fatalf("expected first session to be revoked after second login, got %d", firstMe.Code)
+	}
+
+	secondMe := h.requestJSON(http.MethodGet, "/me", nil, secondCookie)
+	if secondMe.Code != http.StatusOK {
+		t.Fatalf("expected second session to remain valid, got %d: %s", secondMe.Code, secondMe.Body.String())
+	}
+}
+
 func TestAuthChangePassword_Success(t *testing.T) {
 	h := newTestHarness(t)
 	cookie := h.login(h.seed.operatorName, h.seed.operatorPass)

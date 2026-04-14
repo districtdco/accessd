@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -43,8 +44,12 @@ func TestVerifyConnectorToken_RequiresTokenWhenVerifierEnabled(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected missing token error")
 	}
-	if err.Error() != "missing connector_token" {
-		t.Fatalf("expected missing connector_token error, got %q", err.Error())
+	tokenErr := &connectorTokenError{}
+	if ok := errors.As(err, &tokenErr); !ok {
+		t.Fatalf("expected connectorTokenError, got %T (%v)", err, err)
+	}
+	if tokenErr.code != "connector_token_missing" {
+		t.Fatalf("expected connector_token_missing code, got %q", tokenErr.code)
 	}
 }
 
@@ -65,6 +70,36 @@ func TestVerifyConnectorToken_AcceptsValidTokenAndRejectsSessionMismatch(t *test
 	}
 	if err := verifyConnectorToken(verifier, token, "session-2"); err == nil {
 		t.Fatalf("expected session mismatch error")
+	} else {
+		tokenErr := &connectorTokenError{}
+		if ok := errors.As(err, &tokenErr); !ok {
+			t.Fatalf("expected connectorTokenError, got %T (%v)", err, err)
+		}
+		if tokenErr.code != "connector_token_session_mismatch" {
+			t.Fatalf("expected connector_token_session_mismatch code, got %q", tokenErr.code)
+		}
+	}
+}
+
+func TestClassifyConnectorTokenVerifyError_InvalidSignature(t *testing.T) {
+	err := classifyConnectorTokenVerifyError(fmt.Errorf("invalid connector token signature"))
+	tokenErr := &connectorTokenError{}
+	if ok := errors.As(err, &tokenErr); !ok {
+		t.Fatalf("expected connectorTokenError, got %T (%v)", err, err)
+	}
+	if tokenErr.code != "connector_token_invalid" {
+		t.Fatalf("expected connector_token_invalid code, got %q", tokenErr.code)
+	}
+}
+
+func TestClassifyConnectorTokenVerifyError_Expired(t *testing.T) {
+	err := classifyConnectorTokenVerifyError(fmt.Errorf("connector token expired"))
+	tokenErr := &connectorTokenError{}
+	if ok := errors.As(err, &tokenErr); !ok {
+		t.Fatalf("expected connectorTokenError, got %T (%v)", err, err)
+	}
+	if tokenErr.code != "connector_token_expired" {
+		t.Fatalf("expected connector_token_expired code, got %q", tokenErr.code)
 	}
 }
 

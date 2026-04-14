@@ -89,12 +89,23 @@ ENV_DIR="${HOME}/.config/accessd"
 ENV_FILE="${ENV_DIR}/connector.env"
 HELPER_DIR="${CONFIG_DIR}/bin"
 APP_DIR="${HOME}/Applications/AccessD Connector.app"
+SYSTEM_APP_DIR="/Applications/AccessD Connector.app"
 APP_CONTENTS="${APP_DIR}/Contents"
 APP_MACOS="${APP_CONTENTS}/MacOS"
 APP_PLIST="${APP_CONTENTS}/Info.plist"
 LAUNCHER_SCRIPT="${HELPER_DIR}/url-handler-macos.sh"
 TRUST_SCRIPT="${HELPER_DIR}/trust-refresh-macos.sh"
 TARGET_BIN="${INSTALL_DIR}/accessd-connector"
+
+should_clean_install() {
+  local raw="${ACCESSD_CONNECTOR_CLEAN_INSTALL:-true}"
+  local normalized
+  normalized="$(printf '%s' "${raw}" | tr '[:upper:]' '[:lower:]')"
+  case "${normalized}" in
+    0|false|no|off) return 1 ;;
+    *) return 0 ;;
+  esac
+}
 
 verify_release_payload_integrity
 
@@ -524,6 +535,42 @@ stop_running_connector() {
   return 1
 }
 
+cleanup_legacy_install_locations() {
+  local legacy_paths=(
+    "/Applications/AccessD Connector URL Handler.app"
+    "${HOME}/Applications/AccessD Connector URL Handler.app"
+  )
+
+  if [[ "${SYSTEM_APP_DIR}" != "${APP_DIR}" && -d "${SYSTEM_APP_DIR}" ]]; then
+    rm -rf "${SYSTEM_APP_DIR}" || true
+    echo "[accessd-connector] Removed legacy app location: ${SYSTEM_APP_DIR}"
+  fi
+
+  local legacy_path
+  for legacy_path in "${legacy_paths[@]}"; do
+    if [[ -d "${legacy_path}" ]]; then
+      rm -rf "${legacy_path}" || true
+      echo "[accessd-connector] Removed legacy app location: ${legacy_path}"
+    fi
+  done
+}
+
+reset_managed_connector_state() {
+  local managed_paths=(
+    "${CONFIG_FILE}"
+    "${ENV_FILE}"
+    "${CONFIG_DIR}/certs"
+    "${CONFIG_DIR}/tls"
+  )
+  local path
+  for path in "${managed_paths[@]}"; do
+    if [[ -e "${path}" ]]; then
+      rm -rf "${path}" || true
+      echo "[accessd-connector] Removed previous managed state: ${path}"
+    fi
+  done
+}
+
 start_connector() {
   if [[ -f "${ENV_FILE}" ]]; then
     set -a
@@ -541,6 +588,13 @@ if is_connector_running; then
   if ! stop_running_connector; then
     echo "[accessd-connector] WARNING: connector process did not stop cleanly; continuing install."
   fi
+fi
+
+cleanup_legacy_install_locations
+if should_clean_install; then
+  reset_managed_connector_state
+else
+  echo "[accessd-connector] Preserving prior config/cert state (ACCESSD_CONNECTOR_CLEAN_INSTALL=false)."
 fi
 
 mkdir -p "${INSTALL_DIR}" "${HELPER_DIR}" "${APP_MACOS}"

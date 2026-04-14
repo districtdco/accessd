@@ -5,6 +5,9 @@ INSTALL_DIR="${ACCESSD_CONNECTOR_INSTALL_DIR:-${HOME}/.local/bin}"
 CONFIG_DIR="${HOME}/.accessd-connector"
 TARGET_BIN="${INSTALL_DIR}/accessd-connector"
 APP_DIR="${HOME}/Applications/AccessD Connector.app"
+SYSTEM_APP_DIR="/Applications/AccessD Connector.app"
+LEGACY_APP_DIR_USER="${HOME}/Applications/AccessD Connector URL Handler.app"
+LEGACY_APP_DIR_SYSTEM="/Applications/AccessD Connector URL Handler.app"
 REMOVE_CONFIG="${ACCESSD_CONNECTOR_REMOVE_CONFIG:-0}"
 
 stop_connector() {
@@ -24,6 +27,9 @@ stop_connector
 rm -f "${TARGET_BIN}"
 rm -f "${CONFIG_DIR}/bin/url-handler-macos.sh"
 rm -rf "${APP_DIR}"
+rm -rf "${SYSTEM_APP_DIR}"
+rm -rf "${LEGACY_APP_DIR_USER}"
+rm -rf "${LEGACY_APP_DIR_SYSTEM}"
 
 if [[ "${REMOVE_CONFIG}" == "1" ]]; then
   rm -rf "${CONFIG_DIR}"
