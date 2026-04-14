@@ -18,6 +18,7 @@ type AppName string
 
 const (
 	AppDBeaver   AppName = "dbeaver"
+	AppRoboMongo AppName = "robomongo"
 	AppFileZilla AppName = "filezilla"
 	AppWinSCP    AppName = "winscp"
 	AppPuTTY     AppName = "putty"
@@ -43,6 +44,7 @@ const (
 // envKeys maps each app to its environment variable override.
 var envKeys = map[AppName]string{
 	AppDBeaver:   "ACCESSD_CONNECTOR_DBEAVER_PATH",
+	AppRoboMongo: "ACCESSD_CONNECTOR_ROBOMONGO_PATH",
 	AppFileZilla: "ACCESSD_CONNECTOR_FILEZILLA_PATH",
 	AppWinSCP:    "ACCESSD_CONNECTOR_WINSCP_PATH",
 	AppPuTTY:     "ACCESSD_CONNECTOR_PUTTY_PATH",
@@ -230,6 +232,8 @@ func autoDetectCandidates(app AppName) []string {
 	switch app {
 	case AppDBeaver:
 		return dbeaverCandidates()
+	case AppRoboMongo:
+		return roboMongoCandidates()
 	case AppFileZilla:
 		return filezillaCandidates()
 	case AppWinSCP:
@@ -271,6 +275,35 @@ func dbeaverCandidates() []string {
 		}
 	default:
 		return []string{"dbeaver"}
+	}
+}
+
+func roboMongoCandidates() []string {
+	switch runtime.GOOS {
+	case "darwin":
+		return []string{
+			"/Applications/Robo 3T.app",
+			"/Applications/Robomongo.app",
+			"robo3t",
+			"robomongo",
+		}
+	case "linux":
+		return []string{
+			"robo3t",
+			"robomongo",
+			"/usr/bin/robo3t",
+			"/usr/local/bin/robo3t",
+		}
+	case "windows":
+		return []string{
+			"robo3t",
+			"robo3t.exe",
+			"robomongo.exe",
+			`C:\Program Files\Robo 3T\robo3t.exe`,
+			`C:\Program Files\Robomongo\robomongo.exe`,
+		}
+	default:
+		return []string{"robo3t", "robomongo"}
 	}
 }
 
@@ -369,6 +402,8 @@ func buildInstallHint(app AppName, envKey string) string {
 	switch app {
 	case AppDBeaver:
 		parts = append(parts, "install DBeaver from https://dbeaver.io/download/")
+	case AppRoboMongo:
+		parts = append(parts, "install Robo 3T from https://robomongo.org/download")
 	case AppFileZilla:
 		parts = append(parts, "install FileZilla from https://filezilla-project.org/download.php")
 	case AppWinSCP:

@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"log"
@@ -335,7 +337,14 @@ func main() {
 
 	if cfg.EnableTLS {
 		if err := ensureLocalTLSFiles(cfg.TLSCertFile, cfg.TLSKeyFile); err != nil {
-			log.Fatalf("prepare local tls cert: %v", err)
+			if canServeWithExistingTLSFiles(cfg.TLSCertFile, cfg.TLSKeyFile) {
+				log.Printf("WARNING: prepare local tls cert failed (%v); continuing with existing cert/key files", err)
+			} else {
+				if os.IsPermission(err) {
+					log.Fatalf("prepare local tls cert: %v (macOS fix: sudo chown -R $(id -un):staff ~/.accessd-connector ~/.config/accessd)", err)
+				}
+				log.Fatalf("prepare local tls cert: %v", err)
+			}
 		}
 		log.Printf("accessd-connector listening on https://%s", cfg.Addr)
 		if err := server.ListenAndServeTLS(cfg.TLSCertFile, cfg.TLSKeyFile); err != nil && err != http.ErrServerClosed {
@@ -367,6 +376,41 @@ func tlsPathsFromEnv() (certFile, keyFile string) {
 		keyFile = home + "/.accessd-connector/tls/localhost.key"
 	}
 	return certFile, keyFile
+}
+
+func canServeWithExistingTLSFiles(certFile, keyFile string) bool {
+	certFile = strings.TrimSpace(certFile)
+	keyFile = strings.TrimSpace(keyFile)
+	if certFile == "" || keyFile == "" {
+		return false
+	}
+	if !fileExists(certFile) || !fileExists(keyFile) {
+		return false
+	}
+	pair, err := tls.LoadX509KeyPair(certFile, keyFile)
+	if err != nil || len(pair.Certificate) == 0 {
+		return false
+	}
+	leafDER := pair.Certificate[0]
+	if parsed, parseErr := x509.ParseCertificate(leafDER); parseErr == nil {
+		if parsed.NotAfter.Before(time.Now().Add(24 * time.Hour)) {
+			return false
+		}
+		return true
+	}
+	raw, readErr := os.ReadFile(certFile)
+	if readErr != nil {
+		return false
+	}
+	block, _ := pem.Decode(raw)
+	if block == nil || block.Type != "CERTIFICATE" {
+		return false
+	}
+	leaf, parseErr := x509.ParseCertificate(block.Bytes)
+	if parseErr != nil {
+		return false
+	}
+	return leaf.NotAfter.After(time.Now().Add(24 * time.Hour))
 }
 
 func isProtocolAutostartArg(arg string) bool {

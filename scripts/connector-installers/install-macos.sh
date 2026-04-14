@@ -1,6 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+if [[ "${EUID}" -eq 0 ]]; then
+  if [[ "${ACCESSD_CONNECTOR_ALLOW_ROOT_INSTALL:-false}" != "true" && -n "${SUDO_USER:-}" ]]; then
+    echo "[accessd-connector] Re-running installer as ${SUDO_USER} to avoid root-owned connector state."
+    exec sudo -u "${SUDO_USER}" -H bash "$0" "$@"
+  fi
+  if [[ "${ACCESSD_CONNECTOR_ALLOW_ROOT_INSTALL:-false}" != "true" ]]; then
+    echo "[accessd-connector] Do not run installer as root. Run as the operator user."
+    echo "[accessd-connector] If you must run as root, set ACCESSD_CONNECTOR_ALLOW_ROOT_INSTALL=true."
+    exit 1
+  fi
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SOURCE_BIN="${SCRIPT_DIR}/accessd-connector"
 if [[ ! -f "${SOURCE_BIN}" ]]; then
@@ -174,6 +186,20 @@ derive_verify_url_from_origin() {
   [[ -n "${origin}" ]] || return 0
   origin="${origin%/}"
   printf '%s/api/connector/token/verify' "${origin}"
+}
+
+origin_from_url() {
+  local raw="$1"
+  raw="$(trim "${raw}")"
+  [[ -n "${raw}" ]] || return 0
+  local scheme host
+  scheme="$(printf '%s' "${raw}" | sed -E 's#^([a-zA-Z]+)://.*$#\1#')"
+  host="$(printf '%s' "${raw}" | sed -E 's#^[a-zA-Z]+://([^/:]+).*$#\1#')"
+  scheme="$(trim "${scheme}")"
+  host="$(trim "${host}")"
+  if [[ -n "${scheme}" && -n "${host}" && "${scheme}" != "${raw}" ]]; then
+    printf '%s://%s' "${scheme}" "${host}"
+  fi
 }
 
 derive_backend_ca_cert_file() {
@@ -367,7 +393,13 @@ write_installer_config() {
 }
 
 write_runtime_env_file() {
-  local default_origin="${ACCESSD_CONNECTOR_ALLOWED_ORIGIN:-https://accessd.example.internal}"
+  local default_origin="${ACCESSD_CONNECTOR_ALLOWED_ORIGIN:-}"
+  if [[ -z "${default_origin}" && -n "${ACCESSD_CONNECTOR_BOOTSTRAP_ENV_URL:-}" ]]; then
+    default_origin="$(origin_from_url "${ACCESSD_CONNECTOR_BOOTSTRAP_ENV_URL}")"
+  fi
+  if [[ -z "${default_origin}" ]]; then
+    default_origin="https://accessd.example.internal"
+  fi
   mkdir -p "${ENV_DIR}"
   if [[ -f "${ENV_FILE}" ]]; then
     echo "[accessd-connector] Keeping existing runtime env: ${ENV_FILE}"
@@ -407,13 +439,16 @@ write_runtime_env_file() {
 bootstrap_runtime_env_from_server() {
   mkdir -p "${ENV_DIR}"
 
-  local origin="${ACCESSD_CONNECTOR_ALLOWED_ORIGIN:-https://accessd.example.internal}"
-  local host
-  host="$(origin_host "${origin}")"
-  if [[ -z "${host}" || "${host}" == "accessd.example.internal" ]]; then
-    return 0
+  local env_url="${ACCESSD_CONNECTOR_BOOTSTRAP_ENV_URL:-}"
+  if [[ -z "${env_url}" ]]; then
+    local origin="${ACCESSD_CONNECTOR_ALLOWED_ORIGIN:-https://accessd.example.internal}"
+    local host
+    host="$(origin_host "${origin}")"
+    if [[ -z "${host}" || "${host}" == "accessd.example.internal" ]]; then
+      return 0
+    fi
+    env_url="https://${host}/downloads/bootstrap/accessd-connector.env"
   fi
-  local env_url="${ACCESSD_CONNECTOR_BOOTSTRAP_ENV_URL:-https://${host}/downloads/bootstrap/accessd-connector.env}"
   local tmp_env="${ENV_FILE}.tmp.$$"
 
   if ! command -v curl >/dev/null 2>&1; then
@@ -640,6 +675,19 @@ start_connector() {
   nohup "${TARGET_BIN}" >/tmp/accessd-connector.out 2>/tmp/accessd-connector.err < /dev/null &
 }
 
+repair_state_permissions() {
+  mkdir -p "${CONFIG_DIR}" "${ENV_DIR}" "${HELPER_DIR}"
+  chmod 0700 "${CONFIG_DIR}" "${HELPER_DIR}" 2>/dev/null || true
+  chmod 0700 "${ENV_DIR}" 2>/dev/null || true
+  if [[ -d "${CONFIG_DIR}/tls" ]]; then
+    chmod 0700 "${CONFIG_DIR}/tls" 2>/dev/null || true
+    chmod 0600 "${CONFIG_DIR}/tls"/*.crt "${CONFIG_DIR}/tls"/*.key 2>/dev/null || true
+  fi
+  if [[ -f "${ENV_FILE}" ]]; then
+    chmod 0600 "${ENV_FILE}" 2>/dev/null || true
+  fi
+}
+
 WAS_RUNNING="0"
 if is_connector_running; then
   WAS_RUNNING="1"
@@ -658,6 +706,7 @@ fi
 
 mkdir -p "${INSTALL_DIR}" "${HELPER_DIR}" "${APP_MACOS}"
 install -m 0755 "${SOURCE_BIN}" "${TARGET_BIN}"
+repair_state_permissions
 write_trust_refresh_script
 
 cat > "${LAUNCHER_SCRIPT}" <<'LAUNCHER'
@@ -695,6 +744,16 @@ origin_from_protocol_arg() {
       return 0
     fi
   done
+}
+protocol_arg_from_args() {
+  local candidate
+  for candidate in "$@"; do
+    if [[ "${candidate}" == accessd-connector://* ]]; then
+      printf '%s' "${candidate}"
+      return 0
+    fi
+  done
+  return 0
 }
 param_from_protocol_arg() {
   local want_key="$1"
@@ -813,8 +872,9 @@ maybe_apply_signed_bootstrap() {
     fi
   fi
 }
-maybe_apply_signed_bootstrap "${1:-}"
-maybe_refresh_origin_from_protocol_arg "${1:-}"
+PROTOCOL_ARG="$(trim "$(protocol_arg_from_args "$@" || true)")"
+maybe_apply_signed_bootstrap "${PROTOCOL_ARG}"
+maybe_refresh_origin_from_protocol_arg "${PROTOCOL_ARG}"
 if [[ -f "${ENV_FILE}" ]]; then
   set -a
   # shellcheck disable=SC1090

@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/url"
 	"os"
 	"os/exec"
@@ -109,6 +110,7 @@ type LauncherConfig struct {
 	WinSCPPath     string
 	FileZillaPath  string
 	DBeaverPath    string
+	RoboMongoPath  string
 	RedisCLIPath   string
 	DBeaverTempTTL time.Duration
 	Logger         *slog.Logger
@@ -120,6 +122,7 @@ type Launcher struct {
 	WinSCPPath     string
 	FileZillaPath  string
 	DBeaverPath    string
+	RoboMongoPath  string
 	RedisCLIPath   string
 	DBeaverTempTTL time.Duration
 
@@ -143,6 +146,7 @@ func NewLauncher(cfg LauncherConfig) *Launcher {
 		WinSCPPath:     cfg.WinSCPPath,
 		FileZillaPath:  cfg.FileZillaPath,
 		DBeaverPath:    cfg.DBeaverPath,
+		RoboMongoPath:  cfg.RoboMongoPath,
 		RedisCLIPath:   cfg.RedisCLIPath,
 		DBeaverTempTTL: cfg.DBeaverTempTTL,
 		Resolver:       nil, // Set via SetResolver
@@ -380,6 +384,10 @@ func (l *Launcher) LaunchShell(ctx context.Context, req Request) (ShellLaunchDia
 }
 
 func (l *Launcher) LaunchDBeaver(ctx context.Context, req DBeaverRequest) (DBeaverLaunchDiagnostics, error) {
+	if isMongoEngine(req.Launch.Engine) {
+		return l.launchRoboMongo(ctx, req)
+	}
+
 	l.log().Info("dbeaver launch: starting",
 		"session_id", req.SessionID,
 		"engine", req.Launch.Engine,
@@ -525,6 +533,67 @@ func (l *Launcher) LaunchDBeaver(ctx context.Context, req DBeaverRequest) (DBeav
 		_ = os.RemoveAll(path)
 	}(tempDir, cleanupTTL)
 	return diagnostics, nil
+}
+
+func (l *Launcher) launchRoboMongo(ctx context.Context, req DBeaverRequest) (DBeaverLaunchDiagnostics, error) {
+	l.log().Info("robomongo launch: starting",
+		"session_id", req.SessionID,
+		"engine", req.Launch.Engine,
+		"host", req.Launch.Host,
+		"port", req.Launch.Port,
+		"database", req.Launch.Database,
+		"os", runtime.GOOS)
+
+	uri := mongoConnectionURI(req.Launch)
+	if strings.TrimSpace(uri) == "" {
+		return DBeaverLaunchDiagnostics{}, &LaunchError{
+			Code:    "invalid_mongo_uri",
+			Message: "failed to build mongo connection uri",
+			Hint:    "verify mongo launch host/port/username/password payload",
+		}
+	}
+
+	roboPath := strings.TrimSpace(l.RoboMongoPath)
+	if l.Resolver != nil {
+		res, err := l.Resolver.ResolveApp(discovery.AppRoboMongo)
+		if err != nil {
+			return DBeaverLaunchDiagnostics{}, mapDiscoveryError(err, "robomongo_not_installed", "failed to launch Robo 3T")
+		}
+		roboPath = res.Path
+	} else {
+		var err error
+		roboPath, err = resolveRoboMongoPath(roboPath)
+		if err != nil {
+			return DBeaverLaunchDiagnostics{}, err
+		}
+	}
+
+	var launchErr error
+	var launchMode string
+	switch runtime.GOOS {
+	case "darwin":
+		launchErr, launchMode = launchRoboMongoMacOS(ctx, uri, roboPath, l.logger)
+	case "linux":
+		launchErr = launchRoboMongoLinux(ctx, uri, roboPath, l.logger)
+		launchMode = "direct_binary"
+	case "windows":
+		launchErr = launchRoboMongoWindows(ctx, uri, roboPath, l.logger)
+		launchMode = "direct_binary"
+	default:
+		launchErr = &LaunchError{
+			Code:    "unsupported_os",
+			Message: fmt.Sprintf("unsupported OS: %s", runtime.GOOS),
+			Hint:    "use darwin/linux/windows for connector mongo launch",
+		}
+	}
+	if launchErr != nil {
+		return DBeaverLaunchDiagnostics{}, launchErr
+	}
+
+	return DBeaverLaunchDiagnostics{
+		ResolvedPath: roboPath,
+		LaunchMode:   launchMode,
+	}, nil
 }
 
 func (l *Launcher) LaunchRedisCLI(ctx context.Context, req RedisRequest) (RedisLaunchDiagnostics, error) {
@@ -1591,6 +1660,40 @@ func resolveDBeaverPath(configured string) (string, error) {
 	}
 }
 
+func resolveRoboMongoPath(configured string) (string, error) {
+	fallbacks := []string{"robo3t", "robomongo", "robo3t.exe", "robomongo.exe"}
+	switch runtime.GOOS {
+	case "darwin":
+		fallbacks = append(fallbacks,
+			"/Applications/Robo 3T.app/Contents/MacOS/robo3t",
+			"/Applications/Robomongo.app/Contents/MacOS/robomongo",
+		)
+	case "windows":
+		fallbacks = append(fallbacks,
+			`C:\Program Files\Robo 3T\robo3t.exe`,
+			`C:\Program Files\Robomongo\robomongo.exe`,
+		)
+	}
+	path, fromOverride, err := resolveBinaryPath(configured, fallbacks)
+	if err == nil {
+		return path, nil
+	}
+	if fromOverride {
+		return "", &LaunchError{
+			Code:    "invalid_configured_path",
+			Message: "configured Robo 3T path is invalid",
+			Hint:    "verify ACCESSD_CONNECTOR_ROBOMONGO_PATH points to a valid Robo 3T executable",
+			Cause:   err,
+		}
+	}
+	return "", &LaunchError{
+		Code:    "robomongo_not_installed",
+		Message: "Robo 3T is not installed",
+		Hint:    "install Robo 3T or set ACCESSD_CONNECTOR_ROBOMONGO_PATH",
+		Cause:   err,
+	}
+}
+
 func resolveBinaryPath(configured string, fallbacks []string) (string, bool, error) {
 	trimmed := strings.TrimSpace(configured)
 	if trimmed != "" {
@@ -1831,6 +1934,80 @@ func launchDBeaverWindows(ctx context.Context, spec, configuredPath string, logg
 	})
 }
 
+func launchRoboMongoMacOS(ctx context.Context, uri, configuredPath string, logger *slog.Logger) (error, string) {
+	attempts := [][]string{}
+	trimmed := strings.TrimSpace(configuredPath)
+	if trimmed != "" {
+		if strings.HasSuffix(strings.ToLower(trimmed), ".app") {
+			attempts = append(attempts, []string{"open", "-a", trimmed, "--args", "--uri", uri})
+		} else {
+			attempts = append(attempts, []string{trimmed, "--uri", uri})
+		}
+	} else {
+		attempts = append(attempts,
+			[]string{"open", "-a", "Robo 3T", "--args", "--uri", uri},
+			[]string{"open", "-a", "Robomongo", "--args", "--uri", uri},
+			[]string{"/Applications/Robo 3T.app/Contents/MacOS/robo3t", "--uri", uri},
+			[]string{"/Applications/Robomongo.app/Contents/MacOS/robomongo", "--uri", uri},
+			[]string{"robo3t", "--uri", uri},
+			[]string{"robomongo", "--uri", uri},
+		)
+	}
+	if err := launchFirstAvailable(ctx, attempts, launchAttemptOptions{
+		Code:          "robomongo_launch_failed",
+		MissingCode:   "robomongo_not_installed",
+		BaseErr:       "failed to launch Robo 3T on macOS",
+		Hint:          "ensure Robo 3T is installed or set ACCESSD_CONNECTOR_ROBOMONGO_PATH",
+		ConfiguredEnv: "ACCESSD_CONNECTOR_ROBOMONGO_PATH",
+	}); err != nil {
+		return err, "direct_binary"
+	}
+	return nil, "direct_binary"
+}
+
+func launchRoboMongoLinux(ctx context.Context, uri, configuredPath string, logger *slog.Logger) error {
+	attempts := [][]string{}
+	trimmed := strings.TrimSpace(configuredPath)
+	if trimmed != "" {
+		attempts = append(attempts, []string{trimmed, "--uri", uri})
+	} else {
+		attempts = append(attempts,
+			[]string{"robo3t", "--uri", uri},
+			[]string{"robomongo", "--uri", uri},
+		)
+	}
+	return launchFirstAvailable(ctx, attempts, launchAttemptOptions{
+		Code:          "robomongo_launch_failed",
+		MissingCode:   "robomongo_not_installed",
+		BaseErr:       "failed to launch Robo 3T on Linux",
+		Hint:          "ensure Robo 3T is installed or set ACCESSD_CONNECTOR_ROBOMONGO_PATH",
+		ConfiguredEnv: "ACCESSD_CONNECTOR_ROBOMONGO_PATH",
+	})
+}
+
+func launchRoboMongoWindows(ctx context.Context, uri, configuredPath string, logger *slog.Logger) error {
+	attempts := [][]string{}
+	trimmed := strings.TrimSpace(configuredPath)
+	if trimmed != "" {
+		attempts = append(attempts, []string{trimmed, "--uri", uri})
+	} else {
+		attempts = append(attempts,
+			[]string{"robo3t", "--uri", uri},
+			[]string{"robo3t.exe", "--uri", uri},
+			[]string{"robomongo.exe", "--uri", uri},
+			[]string{`C:\Program Files\Robo 3T\robo3t.exe`, "--uri", uri},
+			[]string{`C:\Program Files\Robomongo\robomongo.exe`, "--uri", uri},
+		)
+	}
+	return launchFirstAvailable(ctx, attempts, launchAttemptOptions{
+		Code:          "robomongo_launch_failed",
+		MissingCode:   "robomongo_not_installed",
+		BaseErr:       "failed to launch Robo 3T on Windows",
+		Hint:          "ensure Robo 3T is installed or set ACCESSD_CONNECTOR_ROBOMONGO_PATH",
+		ConfiguredEnv: "ACCESSD_CONNECTOR_ROBOMONGO_PATH",
+	})
+}
+
 type launchAttemptOptions struct {
 	Code          string
 	MissingCode   string
@@ -1991,6 +2168,17 @@ func sanitizeCommandArgs(args []string) string {
 }
 
 func sanitizeCommandArg(arg string) string {
+	if strings.HasPrefix(strings.ToLower(arg), "mongodb://") {
+		if parsed, err := url.Parse(arg); err == nil && parsed != nil {
+			if parsed.User != nil {
+				username := parsed.User.Username()
+				if username != "" {
+					parsed.User = url.UserPassword(username, "<redacted>")
+				}
+			}
+			return parsed.String()
+		}
+	}
 	if strings.HasPrefix(arg, "sftp://") {
 		if scheme := strings.Index(arg, "://"); scheme >= 0 {
 			rest := arg[scheme+3:]
@@ -2030,12 +2218,41 @@ func normalizeEngine(engine string) string {
 		return "mariadb"
 	case "sqlserver", "mssql":
 		return "sqlserver"
+	case "mongo", "mongodb":
+		return "mongodb"
 	default:
 		if normalized == "" {
 			return "postgresql"
 		}
 		return normalized
 	}
+}
+
+func isMongoEngine(engine string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(engine))
+	return normalized == "mongo" || normalized == "mongodb"
+}
+
+func mongoConnectionURI(payload DBeaverPayload) string {
+	host := strings.TrimSpace(payload.Host)
+	if host == "" || payload.Port <= 0 {
+		return ""
+	}
+	u := &url.URL{
+		Scheme: "mongodb",
+		Host:   net.JoinHostPort(host, strconv.Itoa(payload.Port)),
+	}
+	if db := strings.TrimSpace(payload.Database); db != "" {
+		u.Path = "/" + db
+	}
+	user := strings.TrimSpace(payload.Username)
+	pass := strings.TrimSpace(payload.Password)
+	if user != "" && pass != "" {
+		u.User = url.UserPassword(user, pass)
+	} else if user != "" {
+		u.User = url.User(user)
+	}
+	return u.String()
 }
 
 func specValue(v string) string {

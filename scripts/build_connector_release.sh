@@ -451,6 +451,8 @@ build_macos_pkg() {
   local goarch="$1"
   local work_dir="$2"
   local bin_name="$3"
+  local pkg_allowed_origin="${ACCESSD_CONNECTOR_ALLOWED_ORIGIN:-${CONNECTOR_ALLOWED_ORIGIN:-}}"
+  local pkg_bootstrap_env_url="${ACCESSD_CONNECTOR_BOOTSTRAP_ENV_URL:-${CONNECTOR_BOOTSTRAP_ENV_URL:-}}"
   if ! has_cmd pkgbuild; then
     warnings+=("pkgbuild not found; skipped macOS pkg for ${goarch}")
     return 0
@@ -466,37 +468,47 @@ build_macos_pkg() {
   cp "${work_dir}/install.sh" "${pkg_root}/usr/local/lib/accessd-connector/"
   cp "${work_dir}/uninstall.sh" "${pkg_root}/usr/local/lib/accessd-connector/"
   cp "${work_dir}/release-files-sha256.txt" "${pkg_root}/usr/local/lib/accessd-connector/"
-  cat > "${pkg_scripts}/postinstall" <<'POSTINSTALL'
+  cat > "${pkg_scripts}/postinstall" <<POSTINSTALL
 #!/bin/bash
 set -euo pipefail
 
-target_root="${3:-/}"
-bootstrap="${target_root%/}/usr/local/lib/accessd-connector/install.sh"
-if [[ ! -f "${bootstrap}" ]]; then
+pkg_allowed_origin="${pkg_allowed_origin}"
+pkg_bootstrap_env_url="${pkg_bootstrap_env_url}"
+
+target_root="\${3:-/}"
+bootstrap="\${target_root%/}/usr/local/lib/accessd-connector/install.sh"
+if [[ ! -f "\${bootstrap}" ]]; then
   exit 0
 fi
-chmod +x "${bootstrap}" || true
+chmod +x "\${bootstrap}" || true
 
-console_user="$(stat -f %Su /dev/console 2>/dev/null || true)"
-if [[ -z "${console_user}" || "${console_user}" == "root" || "${console_user}" == "loginwindow" ]]; then
-  exit 0
-fi
-
-user_home="$(dscl . -read "/Users/${console_user}" NFSHomeDirectory 2>/dev/null | awk '{print $2}' || true)"
-if [[ -z "${user_home}" ]]; then
-  user_home="/Users/${console_user}"
-fi
-
-uid="$(id -u "${console_user}" 2>/dev/null || true)"
-if [[ -z "${uid}" ]]; then
+console_user="\$(stat -f %Su /dev/console 2>/dev/null || true)"
+if [[ -z "\${console_user}" || "\${console_user}" == "root" || "\${console_user}" == "loginwindow" ]]; then
   exit 0
 fi
 
-run_cmd=(/usr/bin/sudo -u "${console_user}" env HOME="${user_home}" "${bootstrap}")
+user_home="\$(dscl . -read "/Users/\${console_user}" NFSHomeDirectory 2>/dev/null | awk '{print \$2}' || true)"
+if [[ -z "\${user_home}" ]]; then
+  user_home="/Users/\${console_user}"
+fi
+
+uid="\$(id -u "\${console_user}" 2>/dev/null || true)"
+if [[ -z "\${uid}" ]]; then
+  exit 0
+fi
+
+run_cmd=(/usr/bin/sudo -u "\${console_user}" env HOME="\${user_home}")
+if [[ -n "\${pkg_allowed_origin}" ]]; then
+  run_cmd+=("ACCESSD_CONNECTOR_ALLOWED_ORIGIN=\${pkg_allowed_origin}")
+fi
+if [[ -n "\${pkg_bootstrap_env_url}" ]]; then
+  run_cmd+=("ACCESSD_CONNECTOR_BOOTSTRAP_ENV_URL=\${pkg_bootstrap_env_url}")
+fi
+run_cmd+=("\${bootstrap}")
 if command -v launchctl >/dev/null 2>&1; then
-  launchctl asuser "${uid}" "${run_cmd[@]}" || true
+  launchctl asuser "\${uid}" "\${run_cmd[@]}" || true
 else
-  "${run_cmd[@]}" || true
+  "\${run_cmd[@]}" || true
 fi
 POSTINSTALL
   chmod 0755 "${pkg_scripts}/postinstall"

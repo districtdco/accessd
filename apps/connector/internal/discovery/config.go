@@ -119,6 +119,7 @@ func EnsureDefaultConfigFile() (string, bool, error) {
 #
 # apps:
 #   dbeaver: "/Applications/DBeaver.app"
+#   robomongo: "/Applications/Robo 3T.app"
 #   filezilla: "/Applications/FileZilla.app"
 #   redis_cli: "/usr/local/bin/redis-cli"
 #

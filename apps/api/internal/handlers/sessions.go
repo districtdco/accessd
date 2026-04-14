@@ -393,6 +393,8 @@ func (h *SessionsHandler) Launch(w http.ResponseWriter, r *http.Request) {
 
 		var proxyHost string
 		var proxyPort int
+		clientUsername := "accessd"
+		clientPassword := dbeaverClientPassword(meta.Engine, launch.ConnectorToken, launch.SessionID)
 
 		switch meta.Engine {
 		case "mysql", "mariadb":
@@ -431,6 +433,11 @@ func (h *SessionsHandler) Launch(w http.ResponseWriter, r *http.Request) {
 				Username:     strings.TrimSpace(cred.Username),
 				RequestID:    requestctx.FromContext(r.Context()),
 			})
+		case "mongo", "mongodb":
+			// Secure mode: never hand upstream Mongo credentials to the client.
+			// A managed Mongo proxy path is required before Mongo launches are enabled.
+			writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "mongo launch requires managed proxy support and is not available yet"})
+			return
 		default:
 			if h.pgProxyService == nil {
 				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "database proxy is not configured"})
@@ -454,19 +461,12 @@ func (h *SessionsHandler) Launch(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to allocate database proxy endpoint"})
 			return
 		}
-		// Never send upstream DB credentials to local client apps.
-		// DB proxies authenticate upstream using managed credentials server-side.
-		// We provide a proxy-facing identity/password for client UX only.
-		clientPassword := strings.TrimSpace(launch.ConnectorToken)
-		if clientPassword == "" {
-			clientPassword = strings.TrimSpace(launch.SessionID)
-		}
 		launch = h.sessionsService.AttachDBeaverPayload(launch, sessions.DBeaverLaunchPayload{
 			Engine:           meta.Engine,
 			Host:             proxyHost,
 			Port:             proxyPort,
 			Database:         meta.Database,
-			Username:         "accessd",
+			Username:         clientUsername,
 			UpstreamUsername: strings.TrimSpace(cred.Username),
 			TargetAssetName:  strings.TrimSpace(asset.Name),
 			TargetHost:       strings.TrimSpace(asset.Host),
@@ -605,6 +605,24 @@ func (h *SessionsHandler) Launch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+func dbeaverClientPassword(engine, connectorToken, sessionID string) string {
+	fallback := strings.TrimSpace(sessionID)
+	if fallback == "" {
+		fallback = "accessd"
+	}
+
+	token := strings.TrimSpace(connectorToken)
+	if token == "" {
+		return fallback
+	}
+	// Keep client-leg credentials safe across strict JDBC/ODBC clients.
+	// Some drivers (for example MSSQL) enforce password length limits around 128 chars.
+	if len(token) > 128 {
+		return fallback
+	}
+	return token
 }
 
 func (h *SessionsHandler) RecordEvent(w http.ResponseWriter, r *http.Request) {
@@ -1339,10 +1357,24 @@ func parseDBMetadata(raw json.RawMessage) (dbAssetMetadata, error) {
 		meta.Engine = "postgres"
 	}
 	switch strings.ToLower(meta.Engine) {
+	case "postgres":
+		meta.Engine = "postgres"
 	case "postgresql":
 		meta.Engine = "postgres"
+	case "mysql":
+		meta.Engine = "mysql"
+	case "mariadb":
+		meta.Engine = "mariadb"
+	case "mssql":
+		meta.Engine = "mssql"
 	case "sqlserver", "sql_server":
 		meta.Engine = "mssql"
+	case "mongo":
+		meta.Engine = "mongo"
+	case "mongodb":
+		meta.Engine = "mongo"
+	default:
+		meta.Engine = strings.ToLower(meta.Engine)
 	}
 	if meta.Engine == "mssql" {
 		meta.SSLMode = normalizeMSSQLSSLMode(meta.SSLMode)

@@ -21,6 +21,8 @@ VM_DOWNLOADS_DIR="${VM_DOWNLOADS_DIR:-/var/www/accessd-downloads}"
 VM_SYSTEMD_DIR="${VM_SYSTEMD_DIR:-/etc/systemd/system}"
 VM_NGINX_SITES_AVAILABLE_DIR="${VM_NGINX_SITES_AVAILABLE_DIR:-/etc/nginx/sites-available}"
 VM_NGINX_SITES_ENABLED_DIR="${VM_NGINX_SITES_ENABLED_DIR:-/etc/nginx/sites-enabled}"
+CONNECTOR_ALLOWED_ORIGIN="${ACCESSD_CONNECTOR_ALLOWED_ORIGIN:-${CONNECTOR_ALLOWED_ORIGIN:-}}"
+CONNECTOR_BOOTSTRAP_ENV_URL="${ACCESSD_CONNECTOR_BOOTSTRAP_ENV_URL:-${CONNECTOR_BOOTSTRAP_ENV_URL:-}}"
 
 BUNDLE_DIR="${ROOT_DIR}/deploy/artifacts/accessd-${VERSION}"
 BUNDLE_TARBALL="${ROOT_DIR}/deploy/artifacts/accessd-${VERSION}.tar.gz"
@@ -56,7 +58,21 @@ cp -R "${ROOT_DIR}/apps/api/migrations/." "${BUNDLE_DIR}/migrations/"
 
 echo "[bundle] building connector release artifacts"
 CONNECTOR_DIST_DIR="${ROOT_DIR}/dist/connector/${TAG}"
-"${ROOT_DIR}/scripts/build_connector_release.sh" "${VERSION}"
+if [[ -n "${CONNECTOR_ALLOWED_ORIGIN}" && -z "${CONNECTOR_BOOTSTRAP_ENV_URL}" ]]; then
+  trimmed_origin="${CONNECTOR_ALLOWED_ORIGIN%/}"
+  CONNECTOR_BOOTSTRAP_ENV_URL="${trimmed_origin}/downloads/bootstrap/accessd-connector.env"
+fi
+if [[ -n "${CONNECTOR_ALLOWED_ORIGIN}" ]]; then
+  echo "[bundle] connector allowed origin: ${CONNECTOR_ALLOWED_ORIGIN}"
+fi
+if [[ -n "${CONNECTOR_BOOTSTRAP_ENV_URL}" ]]; then
+  echo "[bundle] connector bootstrap env url: ${CONNECTOR_BOOTSTRAP_ENV_URL}"
+fi
+ACCESSD_CONNECTOR_ALLOWED_ORIGIN="${CONNECTOR_ALLOWED_ORIGIN}" \
+ACCESSD_CONNECTOR_BOOTSTRAP_ENV_URL="${CONNECTOR_BOOTSTRAP_ENV_URL}" \
+CONNECTOR_ALLOWED_ORIGIN="${CONNECTOR_ALLOWED_ORIGIN}" \
+CONNECTOR_BOOTSTRAP_ENV_URL="${CONNECTOR_BOOTSTRAP_ENV_URL}" \
+  "${ROOT_DIR}/scripts/build_connector_release.sh" "${VERSION}"
 mkdir -p "${CONNECTOR_OUT_DIR}"
 cp -R "${CONNECTOR_DIST_DIR}/." "${CONNECTOR_OUT_DIR}/"
 

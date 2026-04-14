@@ -45,6 +45,7 @@ function defaultPortForAssetType(type: string): string {
 function suggestedDBPort(engine: string): string {
   if (engine === 'mysql' || engine === 'mariadb') return '3306'
   if (engine === 'mssql') return '1433'
+  if (engine === 'mongo') return '27017'
   return '5432'
 }
 
@@ -308,6 +309,7 @@ export function AdminAssetsPage() {
                     { value: 'mysql', label: 'MySQL' },
                     { value: 'mariadb', label: 'MariaDB' },
                     { value: 'mssql', label: 'SQL Server' },
+                    { value: 'mongo', label: 'MongoDB (Robo 3T)' },
                   ]}
                 />
                 <Input label="Database Name (optional)" value={dbName} onChange={setDbName} placeholder="appdb" />

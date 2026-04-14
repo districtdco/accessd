@@ -135,6 +135,16 @@ func TestParseDBMetadata_MSSQLSSLModeNormalization(t *testing.T) {
 			raw:     `{"engine":"mssql","ssl_mode":"allow"}`,
 			wantSSL: "allow",
 		},
+		{
+			name:    "mongodb normalized to mongo",
+			raw:     `{"engine":"mongodb","ssl_mode":"disable"}`,
+			wantSSL: "disable",
+		},
+		{
+			name:    "mysql mixed-case normalized to mysql",
+			raw:     `{"engine":"MySQL","ssl_mode":"prefer"}`,
+			wantSSL: "prefer",
+		},
 	}
 
 	for _, tt := range tests {
@@ -147,8 +157,62 @@ func TestParseDBMetadata_MSSQLSSLModeNormalization(t *testing.T) {
 			if got := meta.SSLMode; got != tt.wantSSL {
 				t.Fatalf("ssl mode mismatch: got %q want %q", got, tt.wantSSL)
 			}
+			if tt.name == "mongodb normalized to mongo" {
+				if got := meta.Engine; got != "mongo" {
+					t.Fatalf("engine mismatch: got %q want mongo", got)
+				}
+				return
+			}
+			if tt.name == "mysql mixed-case normalized to mysql" {
+				if got := meta.Engine; got != "mysql" {
+					t.Fatalf("engine mismatch: got %q want mysql", got)
+				}
+				return
+			}
 			if got := meta.Engine; got != "mssql" {
 				t.Fatalf("engine mismatch: got %q want mssql", got)
+			}
+		})
+	}
+}
+
+func TestDBeaverClientPassword(t *testing.T) {
+	tests := []struct {
+		name           string
+		engine         string
+		connectorToken string
+		sessionID      string
+		want           string
+	}{
+		{
+			name:           "postgres prefers connector token",
+			engine:         "postgres",
+			connectorToken: "connector-token",
+			sessionID:      "session-1",
+			want:           "connector-token",
+		},
+		{
+			name:           "postgres falls back to session id",
+			engine:         "postgres",
+			connectorToken: "",
+			sessionID:      "session-2",
+			want:           "session-2",
+		},
+		{
+			name:           "any engine uses session id when token too long",
+			engine:         "mssql",
+			connectorToken: "this-is-a-very-long-connector-token-that-should-not-be-used-as-an-mssql-password-because-password-limits-can-be-strict-in-some-client-drivers-12345678901234567890",
+			sessionID:      "141950e0-7908-4cf9-b9e1-5d8cbd8a9e59",
+			want:           "141950e0-7908-4cf9-b9e1-5d8cbd8a9e59",
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			got := dbeaverClientPassword(tt.engine, tt.connectorToken, tt.sessionID)
+			if got != tt.want {
+				t.Fatalf("password mismatch: got %q want %q", got, tt.want)
 			}
 		})
 	}

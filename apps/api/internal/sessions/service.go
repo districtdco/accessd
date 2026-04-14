@@ -52,7 +52,7 @@ const (
 
 var materializationEventsByAction = map[string][]string{
 	"shell":   {EventProxyConnected},
-	"dbeaver": {EventProxyConnected, EventDBQuery},
+	"dbeaver": {EventConnectorSuccess, EventProxyConnected, EventDBQuery},
 	"sftp":    {EventProxyConnected, EventFileOperation},
 	"redis":   {EventProxyConnected, EventRedisCommand},
 }
@@ -644,6 +644,17 @@ func (s *Service) RecordConnectorLaunchEvent(
 	if err := s.WriteEvent(ctx, lctx.SessionID, eventType, &lctx.UserID, payload); err != nil {
 		return err
 	}
+	if eventType == EventConnectorSuccess {
+		const query = `
+UPDATE sessions
+SET status = $2,
+    started_at = COALESCE(started_at, NOW())
+WHERE id = $1
+  AND status = $3;`
+		if _, err := s.pool.Exec(ctx, lctx.SessionID, StatusActive, StatusPending); err != nil {
+			return fmt.Errorf("mark connector-launched session active: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -776,7 +787,7 @@ func expectedMaterialization(action string) string {
 	case "shell":
 		return EventProxyConnected
 	case "dbeaver":
-		return EventProxyConnected + " or " + EventDBQuery
+		return EventConnectorSuccess + " or " + EventProxyConnected + " or " + EventDBQuery
 	case "sftp":
 		return EventProxyConnected + " or " + EventFileOperation
 	case "redis":

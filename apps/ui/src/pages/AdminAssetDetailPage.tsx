@@ -31,6 +31,7 @@ function defaultPortForAssetType(type: string): string {
 function suggestedDBPort(engine: string): string {
   if (engine === 'mysql' || engine === 'mariadb') return '3306'
   if (engine === 'mssql') return '1433'
+  if (engine === 'mongo') return '27017'
   return '5432'
 }
 
@@ -93,9 +94,10 @@ export function AdminAssetDetailPage() {
       } else if (detailResp.asset_type === 'database') {
         const engineRaw = typeof metadata.engine === 'string' ? metadata.engine.trim().toLowerCase() : ''
         let normalizedEngine = 'postgres'
-        if (engineRaw === 'mysql' || engineRaw === 'mariadb' || engineRaw === 'mssql') normalizedEngine = engineRaw
+        if (engineRaw === 'mysql' || engineRaw === 'mariadb' || engineRaw === 'mssql' || engineRaw === 'mongo') normalizedEngine = engineRaw
         if (engineRaw === 'postgresql') normalizedEngine = 'postgres'
         if (engineRaw === 'sqlserver' || engineRaw === 'sql_server') normalizedEngine = 'mssql'
+        if (engineRaw === 'mongodb') normalizedEngine = 'mongo'
         setDbEngine(normalizedEngine)
         setDbName(typeof metadata.database === 'string' ? metadata.database : '')
         const sslMode = typeof metadata.ssl_mode === 'string' && metadata.ssl_mode.trim() ? metadata.ssl_mode : (normalizedEngine === 'mssql' ? 'disable' : 'prefer')
@@ -300,6 +302,7 @@ export function AdminAssetDetailPage() {
                       { value: 'mysql', label: 'MySQL' },
                       { value: 'mariadb', label: 'MariaDB' },
                       { value: 'mssql', label: 'SQL Server' },
+                      { value: 'mongo', label: 'MongoDB (Robo 3T)' },
                     ]}
                   />
                   <Input label="Database Name (optional)" value={dbName} onChange={setDbName} placeholder="appdb" />
