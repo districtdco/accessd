@@ -41,7 +41,7 @@ type Server struct {
 	cfg         Config
 	logger      *slog.Logger
 	sessionsSvc *sessions.Service
-	credSvc     *credentials.Service
+	credSvc     credentialResolver
 
 	listener net.Listener
 	wg       sync.WaitGroup
@@ -50,6 +50,10 @@ type Server struct {
 	mu              sync.Mutex
 	active          map[net.Conn]struct{}
 	knownHostsMu    sync.Mutex
+}
+
+type credentialResolver interface {
+	ResolveForAsset(ctx context.Context, assetID, credentialType string) (credentials.ResolvedCredential, error)
 }
 
 func New(cfg Config, sessionsSvc *sessions.Service, credSvc *credentials.Service, logger *slog.Logger) (*Server, error) {
@@ -389,17 +393,9 @@ func (s *Server) handleConn(rawConn net.Conn, cfg *ssh.ServerConfig) {
 }
 
 func (s *Server) connectUpstream(ctx context.Context, launch sessions.LaunchContext) (*ssh.Client, *ssh.Session, string, error) {
-	credType := credentials.TypePassword
-	cred, err := s.credSvc.ResolveForAsset(ctx, launch.AssetID, credentials.TypePassword)
+	cred, credType, err := s.resolveLinuxUpstreamCredential(ctx, launch.AssetID)
 	if err != nil {
-		if !errors.Is(err, credentials.ErrCredentialNotFound) {
-			return nil, nil, "", fmt.Errorf("resolve password credential: %w", err)
-		}
-		cred, err = s.credSvc.ResolveForAsset(ctx, launch.AssetID, credentials.TypeSSHKey)
-		if err != nil {
-			return nil, nil, "", fmt.Errorf("resolve ssh credential: %w", err)
-		}
-		credType = credentials.TypeSSHKey
+		return nil, nil, "", err
 	}
 	launch.UpstreamUsername = strings.TrimSpace(cred.Username)
 	if err := s.sessionsSvc.RecordCredentialUsage(ctx, launch, credType, "proxy_upstream_auth", launch.RequestID); err != nil {
@@ -470,6 +466,22 @@ func (s *Server) connectUpstream(ctx context.Context, launch sessions.LaunchCont
 		"session_id", launch.SessionID, "request_id", launch.RequestID,
 		"endpoint", endpoint)
 	return client, session, strings.TrimSpace(cred.Username), nil
+}
+
+func (s *Server) resolveLinuxUpstreamCredential(ctx context.Context, assetID string) (credentials.ResolvedCredential, string, error) {
+	cred, err := s.credSvc.ResolveForAsset(ctx, assetID, credentials.TypeSSHKey)
+	if err == nil {
+		return cred, credentials.TypeSSHKey, nil
+	}
+	if !errors.Is(err, credentials.ErrCredentialNotFound) {
+		return credentials.ResolvedCredential{}, "", fmt.Errorf("resolve ssh credential: %w", err)
+	}
+
+	cred, err = s.credSvc.ResolveForAsset(ctx, assetID, credentials.TypePassword)
+	if err != nil {
+		return credentials.ResolvedCredential{}, "", fmt.Errorf("resolve password credential: %w", err)
+	}
+	return cred, credentials.TypePassword, nil
 }
 
 func (s *Server) dialUpstreamSSH(endpoint string, clientCfg *ssh.ClientConfig) (*ssh.Client, error) {

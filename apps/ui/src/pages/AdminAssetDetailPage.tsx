@@ -406,8 +406,25 @@ export function AdminAssetDetailPage() {
                 <Input label="Username (optional)" value={credentialUsername} onChange={setCredentialUsername} />
               </div>
               <div className="mt-4">
-                <Input label="Secret" value={credentialSecret} onChange={setCredentialSecret} type="password" placeholder="enter new credential secret" />
+                {credentialType === 'ssh_key' ? (
+                  <TextArea
+                    label="SSH Private Key (PEM)"
+                    value={credentialSecret}
+                    onChange={setCredentialSecret}
+                    rows={10}
+                    placeholder={`-----BEGIN RSA PRIVATE KEY-----
+...
+-----END RSA PRIVATE KEY-----`}
+                  />
+                ) : (
+                  <Input label="Secret" value={credentialSecret} onChange={setCredentialSecret} type="password" placeholder="enter new credential secret" />
+                )}
               </div>
+              {credentialType === 'ssh_key' && (
+                <p className="mt-2 text-xs text-gray-500">
+                  Paste the full PEM block, including BEGIN/END lines, with original line breaks.
+                </p>
+              )}
               <div className="mt-4">
                 <Checkbox
                   label="Show credential metadata JSON (optional)"

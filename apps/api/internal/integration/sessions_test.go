@@ -1,6 +1,10 @@
 package integration
 
 import (
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"encoding/pem"
 	"net/http"
 	"strings"
 	"testing"
@@ -181,6 +185,102 @@ func TestSessionLaunch_SFTPIncludesConnectorToken(t *testing.T) {
 	if asString(payload["connector_token"]) == "" {
 		t.Fatalf("expected connector_token in sftp launch payload")
 	}
+}
+
+func TestSessionLaunch_PrefersSSHKeyCredentialForShell(t *testing.T) {
+	h := newTestHarness(t)
+
+	adminCookie := h.login(h.seed.adminUsername, h.seed.adminPassword)
+	operatorCookie := h.login(h.seed.operatorName, h.seed.operatorPass)
+
+	keyPEM := testPrivateKeyPEM(t)
+	passwordUpsert := h.requestJSON(http.MethodPut, "/admin/assets/"+h.seed.allowedAssetID+"/credentials/password", map[string]any{
+		"username": "password-user",
+		"secret":   "incorrect-password",
+	}, adminCookie)
+	if passwordUpsert.Code != http.StatusOK {
+		t.Fatalf("expected password credential upsert 200, got %d: %s", passwordUpsert.Code, passwordUpsert.Body.String())
+	}
+	keyUpsert := h.requestJSON(http.MethodPut, "/admin/assets/"+h.seed.allowedAssetID+"/credentials/ssh_key", map[string]any{
+		"username": "sshkey-user",
+		"secret":   keyPEM,
+	}, adminCookie)
+	if keyUpsert.Code != http.StatusOK {
+		t.Fatalf("expected ssh_key credential upsert 200, got %d: %s", keyUpsert.Code, keyUpsert.Body.String())
+	}
+
+	launchResp := h.requestJSON(http.MethodPost, "/sessions/launch", map[string]any{
+		"asset_id": h.seed.allowedAssetID,
+		"action":   "shell",
+	}, operatorCookie)
+	if launchResp.Code != http.StatusOK {
+		t.Fatalf("expected shell launch 200, got %d: %s", launchResp.Code, launchResp.Body.String())
+	}
+	payload := h.responseJSON(t, launchResp)
+	launchObj, ok := payload["launch"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected launch object, got %#v", payload["launch"])
+	}
+	if got := asString(launchObj["upstream_username"]); got != "sshkey-user" {
+		t.Fatalf("expected upstream_username=sshkey-user, got %q", got)
+	}
+}
+
+func TestSessionLaunch_PrefersSSHKeyCredentialForSFTP(t *testing.T) {
+	h := newTestHarness(t)
+
+	adminCookie := h.login(h.seed.adminUsername, h.seed.adminPassword)
+	operatorCookie := h.login(h.seed.operatorName, h.seed.operatorPass)
+	createdBy := &h.seed.adminID
+	if err := h.access.GrantUserAction(h.ctx, h.seed.operatorID, h.seed.allowedAssetID, access.ActionSFTP, createdBy); err != nil {
+		t.Fatalf("grant operator sftp access: %v", err)
+	}
+
+	keyPEM := testPrivateKeyPEM(t)
+	passwordUpsert := h.requestJSON(http.MethodPut, "/admin/assets/"+h.seed.allowedAssetID+"/credentials/password", map[string]any{
+		"username": "password-user",
+		"secret":   "incorrect-password",
+	}, adminCookie)
+	if passwordUpsert.Code != http.StatusOK {
+		t.Fatalf("expected password credential upsert 200, got %d: %s", passwordUpsert.Code, passwordUpsert.Body.String())
+	}
+	keyUpsert := h.requestJSON(http.MethodPut, "/admin/assets/"+h.seed.allowedAssetID+"/credentials/ssh_key", map[string]any{
+		"username": "sshkey-user",
+		"secret":   keyPEM,
+	}, adminCookie)
+	if keyUpsert.Code != http.StatusOK {
+		t.Fatalf("expected ssh_key credential upsert 200, got %d: %s", keyUpsert.Code, keyUpsert.Body.String())
+	}
+
+	launchResp := h.requestJSON(http.MethodPost, "/sessions/launch", map[string]any{
+		"asset_id": h.seed.allowedAssetID,
+		"action":   "sftp",
+	}, operatorCookie)
+	if launchResp.Code != http.StatusOK {
+		t.Fatalf("expected sftp launch 200, got %d: %s", launchResp.Code, launchResp.Body.String())
+	}
+	payload := h.responseJSON(t, launchResp)
+	launchObj, ok := payload["launch"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected launch object, got %#v", payload["launch"])
+	}
+	if got := asString(launchObj["upstream_username"]); got != "sshkey-user" {
+		t.Fatalf("expected upstream_username=sshkey-user, got %q", got)
+	}
+}
+
+func testPrivateKeyPEM(t *testing.T) string {
+	t.Helper()
+
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate test rsa key: %v", err)
+	}
+	keyBytes := x509.MarshalPKCS1PrivateKey(key)
+	return string(pem.EncodeToMemory(&pem.Block{
+		Type:  "RSA PRIVATE KEY",
+		Bytes: keyBytes,
+	}))
 }
 
 func TestSessionLaunch_MissingAssetID(t *testing.T) {
