@@ -543,14 +543,16 @@ function Trust-AccessDServerCert {
   }
 
   try {
-    if (Import-CertificateToCurrentUserRoot -CertFile $certFile -Quiet) {
-      Write-Host "[accessd-connector] Installed server cert into CurrentUser Root trust store: $certFile"
+    if (Import-CertificateToCurrentUserRoot -CertFile $certFile) {
+      Write-Host "[accessd-connector] Server cert trusted in Windows certificate store: $certFile"
+      Write-Host "[accessd-connector] IMPORTANT: Restart Chrome for the cert trust to take effect."
       if ($certHash) {
         Set-Content -Path $stateFile -Value $certHash -Encoding ASCII
       }
       return
     }
     Write-Host "[accessd-connector] Saved cert at: $certFile"
+    Write-Host "[accessd-connector] WARNING: Could not auto-trust server cert. Restart Chrome if SSL errors persist."
   } catch {
     Write-Host "[accessd-connector] WARNING: failed to trust server cert: $($_.Exception.Message)"
   }
@@ -568,8 +570,14 @@ function Trust-LocalConnectorTLSCert {
   if ([string]::IsNullOrWhiteSpace($certFile)) { return }
   $certPath = "$certFile".Trim()
   if (-not (Test-Path $certPath)) { return }
-  if (-not (Import-CertificateToCurrentUserRoot -CertFile $certPath -Quiet)) {
+  if (Import-CertificateToCurrentUserRoot -CertFile $certPath) {
+    Write-Host "[accessd-connector] Local connector TLS cert trusted in Windows certificate store."
+    Write-Host "[accessd-connector] IMPORTANT: Restart Chrome for the cert trust to take effect."
+  } else {
     Write-Host "[accessd-connector] WARNING: failed to trust local connector TLS cert: $certPath"
+    Write-Host "[accessd-connector]   If Chrome shows SSL errors for https://127.0.0.1:9494:"
+    Write-Host "[accessd-connector]   1. Open Chrome and go to: https://127.0.0.1:9494"
+    Write-Host "[accessd-connector]   2. Click Advanced then Proceed (or re-run this installer)"
   }
 }
 
@@ -924,7 +932,9 @@ try {
   exit 0
 } catch {
 }
-Start-Process -FilePath '$targetBin' -WindowStyle Hidden
+`$logOut = Join-Path `$env:TEMP 'accessd-connector.out'
+`$logErr = Join-Path `$env:TEMP 'accessd-connector.err'
+Start-Process -FilePath '$targetBin' -NoNewWindow -RedirectStandardOutput `$logOut -RedirectStandardError `$logErr
 "@ | Set-Content -Path $handlerScript -Encoding UTF8
 
 $protocolRoot = 'HKCU:\Software\Classes\accessd-connector'

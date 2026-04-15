@@ -457,8 +457,58 @@ func spawnBackgroundServe() error {
 		return err
 	}
 	cmd := exec.Command(exePath, "serve")
-	cmd.Env = os.Environ()
+	// Load env file so the spawned server inherits config even when this process
+	// was launched by the OS URL handler (Chrome/Windows) with a minimal environment
+	// that has no ACCESSD_* variables set (e.g. MSI-registered URL handler on Windows).
+	cmd.Env = envWithConnectorEnvFile()
 	return cmd.Start()
+}
+
+// envWithConnectorEnvFile returns os.Environ() merged with values from the
+// connector env file (~/.config/accessd/connector.env). Env file values fill
+// in missing variables but do not override values already present in the
+// process environment.
+func envWithConnectorEnvFile() []string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return os.Environ()
+	}
+	envFilePath := home + "/.config/accessd/connector.env"
+	data, err := os.ReadFile(envFilePath)
+	if err != nil {
+		return os.Environ()
+	}
+
+	// Index current environment so we can fill gaps without overwriting.
+	current := os.Environ()
+	set := make(map[string]struct{}, len(current))
+	for _, kv := range current {
+		if i := strings.Index(kv, "="); i > 0 {
+			set[kv[:i]] = struct{}{}
+		}
+	}
+
+	extra := current
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		i := strings.Index(line, "=")
+		if i <= 0 {
+			continue
+		}
+		key := strings.TrimSpace(line[:i])
+		if key == "" {
+			continue
+		}
+		if _, already := set[key]; already {
+			continue // don't override env vars already set
+		}
+		extra = append(extra, line)
+		set[key] = struct{}{}
+	}
+	return extra
 }
 
 func withLogging(next http.Handler) http.Handler {

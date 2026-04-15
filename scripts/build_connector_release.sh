@@ -299,6 +299,8 @@ func runCertTrust(certPath string, log io.Writer) {
 		logLine(log, "[accessd-connector] WARNING: cert trust skipped: cert file not found "+certPath)
 		return
 	}
+	// Import-Certificate to CurrentUser\Root triggers a Windows security dialog
+	// where the user must click Yes. certutil is a fallback that also triggers it.
 	cmd := exec.Command("certutil.exe", "-user", "-f", "-addstore", "Root", certPath)
 	var out bytes.Buffer
 	cmd.Stdout = &out
@@ -310,7 +312,53 @@ func runCertTrust(certPath string, log io.Writer) {
 		}
 		return
 	}
-	logLine(log, "[accessd-connector] Trusted local TLS cert: "+certPath)
+	logLine(log, "[accessd-connector] Trusted local TLS cert in Windows certificate store: "+certPath)
+	logLine(log, "[accessd-connector] IMPORTANT: Restart Chrome for the cert trust to take effect.")
+}
+
+func writeURLHandlerScript(connectorPath string, log io.Writer) string {
+	userProfile := os.Getenv("USERPROFILE")
+	if userProfile == "" {
+		if home, err := os.UserHomeDir(); err == nil {
+			userProfile = home
+		}
+	}
+	helperDir := filepath.Join(userProfile, ".accessd-connector", "bin")
+	_ = os.MkdirAll(helperDir, 0o755)
+	handlerPath := filepath.Join(helperDir, "url-handler-windows.ps1")
+
+	envFile := filepath.Join(userProfile, ".config", "accessd", "connector.env")
+	logOut := filepath.Join(os.TempDir(), "accessd-connector.out")
+	logErr := filepath.Join(os.TempDir(), "accessd-connector.err")
+
+	script := `$ErrorActionPreference = 'SilentlyContinue'
+$envFile = '` + envFile + `'
+if (Test-Path $envFile) {
+  Get-Content $envFile | ForEach-Object {
+    $line = $_.Trim()
+    if ([string]::IsNullOrWhiteSpace($line) -or $line.StartsWith('#')) { return }
+    if ($line -notmatch '^[A-Za-z_][A-Za-z0-9_]*=') { return }
+    $parts = $line.Split('=', 2)
+    if ($parts.Count -ne 2) { return }
+    [System.Environment]::SetEnvironmentVariable($parts[0].Trim(), $parts[1].Trim(), 'Process')
+  }
+}
+$connectorAddr = if ([string]::IsNullOrWhiteSpace($env:ACCESSD_CONNECTOR_ADDR)) { '127.0.0.1:9494' } else { $env:ACCESSD_CONNECTOR_ADDR }
+try {
+  [System.Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
+  try { Invoke-WebRequest -UseBasicParsing -Uri ("https://{0}/version" -f $connectorAddr) -TimeoutSec 1 | Out-Null; exit 0 } catch {}
+  Invoke-WebRequest -UseBasicParsing -Uri ("http://{0}/version" -f $connectorAddr) -TimeoutSec 1 | Out-Null
+  exit 0
+} catch {}
+$logOut = '` + logOut + `'
+$logErr = '` + logErr + `'
+Start-Process -FilePath '` + connectorPath + `' -NoNewWindow -RedirectStandardOutput $logOut -RedirectStandardError $logErr
+`
+	if err := os.WriteFile(handlerPath, []byte(script), 0o644); err != nil {
+		logLine(log, "[accessd-connector] WARNING: failed to write URL handler script: "+err.Error())
+		return ""
+	}
+	return handlerPath
 }
 
 func registerProtocol(connectorPath string, log io.Writer) {
@@ -318,7 +366,18 @@ func registerProtocol(connectorPath string, log io.Writer) {
 	_ = exec.Command("reg.exe", "add", root, "/ve", "/d", "URL:AccessD Connector Protocol", "/f").Run()
 	_ = exec.Command("reg.exe", "add", root, "/v", "URL Protocol", "/d", "", "/f").Run()
 	_ = exec.Command("reg.exe", "add", root+`\DefaultIcon`, "/ve", "/d", `"`+connectorPath+`",0`, "/f").Run()
-	commandValue := `"` + connectorPath + `" "%1"`
+
+	// Register a PowerShell handler that loads the env file before starting the connector.
+	// This ensures ACCESSD_* config vars are available even when Chrome invokes the URL
+	// handler with a minimal environment (no ACCESSD_* vars set).
+	handlerPath := writeURLHandlerScript(connectorPath, log)
+	var commandValue string
+	if handlerPath != "" {
+		commandValue = `powershell.exe -NoLogo -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "` + handlerPath + `" "%1"`
+	} else {
+		// Fallback: run connector directly (will load env file via envWithConnectorEnvFile in spawnBackgroundServe)
+		commandValue = `"` + connectorPath + `" "%1"`
+	}
 	_ = exec.Command("reg.exe", "add", root+`\shell\open\command`, "/ve", "/d", commandValue, "/f").Run()
 	logLine(log, "[accessd-connector] Registered URL scheme: accessd-connector://")
 }
@@ -339,6 +398,77 @@ func startConnector(connectorPath string, log io.Writer) {
 		return
 	}
 	logLine(log, "[accessd-connector] Started connector process (msi bootstrap).")
+}
+
+func downloadAndTrustServerCert(log io.Writer) {
+	origin := strings.TrimSpace(os.Getenv("ACCESSD_CONNECTOR_ALLOWED_ORIGIN"))
+	if origin == "" || strings.Contains(origin, "accessd.example.internal") {
+		return
+	}
+	host := strings.TrimPrefix(origin, "https://")
+	host = strings.TrimPrefix(host, "http://")
+	if idx := strings.IndexAny(host, "/:"); idx >= 0 {
+		host = host[:idx]
+	}
+	if host == "" || host == "localhost" || host == "127.0.0.1" {
+		return
+	}
+
+	certURL := strings.TrimSpace(os.Getenv("ACCESSD_CONNECTOR_TRUST_CERT_URL"))
+	if certURL == "" {
+		certURL = "https://" + host + "/downloads/certs/accessd-server.crt"
+	}
+
+	userProfile := os.Getenv("USERPROFILE")
+	if userProfile == "" {
+		if home, err := os.UserHomeDir(); err == nil {
+			userProfile = home
+		}
+	}
+	certDir := filepath.Join(userProfile, ".accessd-connector", "certs")
+	_ = os.MkdirAll(certDir, 0o755)
+	certFile := filepath.Join(certDir, "accessd-"+host+".crt")
+
+	client := &http.Client{
+		Timeout: 10 * time.Second,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // downloading cert to trust it
+		},
+	}
+	resp, err := client.Get(certURL)
+	if err != nil {
+		logLine(log, "[accessd-connector] WARNING: server cert download failed: "+err.Error())
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		logLine(log, "[accessd-connector] WARNING: server cert download status: "+resp.Status)
+		return
+	}
+	var buf bytes.Buffer
+	if _, err := io.Copy(&buf, resp.Body); err != nil {
+		logLine(log, "[accessd-connector] WARNING: server cert read failed: "+err.Error())
+		return
+	}
+	if err := os.WriteFile(certFile, buf.Bytes(), 0o644); err != nil {
+		logLine(log, "[accessd-connector] WARNING: server cert write failed: "+err.Error())
+		return
+	}
+	logLine(log, "[accessd-connector] Downloaded server cert: "+certFile)
+
+	cmd := exec.Command("certutil.exe", "-user", "-f", "-addstore", "Root", certFile)
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+	if err := cmd.Run(); err != nil {
+		logLine(log, "[accessd-connector] WARNING: server cert trust failed: "+err.Error())
+		if out.Len() > 0 {
+			logLine(log, strings.TrimSpace(out.String()))
+		}
+		return
+	}
+	logLine(log, "[accessd-connector] Trusted server TLS cert in Windows certificate store: "+certFile)
+	logLine(log, "[accessd-connector] IMPORTANT: Restart Chrome for the cert trust to take effect.")
 }
 
 func main() {
@@ -393,6 +523,7 @@ func main() {
 	}
 	certPath := firstNonEmptyLine(ensureOut.String())
 	runCertTrust(certPath, logFile)
+	downloadAndTrustServerCert(logFile)
 
 	startConnector(connectorPath, logFile)
 
@@ -403,6 +534,13 @@ func main() {
 	}
 }
 GO
+    # Bake the allowed origin into bootstrap-runner.go so the MSI env file has the correct
+    # origin at install time — no manual env setup required on the user's machine.
+    _baked_origin="${ACCESSD_CONNECTOR_ALLOWED_ORIGIN:-${CONNECTOR_ALLOWED_ORIGIN:-}}"
+    if [[ -n "${_baked_origin}" ]]; then
+      sed -i.bak "s|https://accessd.example.internal|${_baked_origin}|g" "${work_dir}/bootstrap-runner.go"
+      rm -f "${work_dir}/bootstrap-runner.go.bak"
+    fi
     (
       cd "${ROOT_DIR}/apps/connector"
       CGO_ENABLED=0 GOOS="${goos}" GOARCH="${goarch}" \
@@ -510,6 +648,39 @@ if command -v launchctl >/dev/null 2>&1; then
 else
   "\${run_cmd[@]}" || true
 fi
+
+# Trust certs in System keychain as root (PKG postinstall runs as root — no sudo needed).
+# Chrome requires certs in System keychain; login keychain is not accessible from
+# Chrome's sandboxed Network Service process on macOS Ventura/Sonoma.
+connector_bin="\${target_root%/}/usr/local/lib/accessd-connector/accessd-connector"
+if [[ -x "\${connector_bin}" ]] && command -v security >/dev/null 2>&1; then
+  # Local connector TLS cert (127.0.0.1:9494)
+  local_cert="\$(sudo -u "\${console_user}" env HOME="\${user_home}" "\${connector_bin}" ensure-local-tls 2>/dev/null | head -1 || true)"
+  local_cert="\${local_cert%$'\r'}"
+  if [[ -n "\${local_cert}" && -f "\${local_cert}" ]]; then
+    security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain "\${local_cert}" 2>/dev/null && \
+      echo "[accessd-connector] Trusted local connector TLS cert in System keychain." || \
+      echo "[accessd-connector] WARNING: Failed to trust local connector TLS cert in System keychain."
+  fi
+
+  # Server TLS cert for the AccessD UI origin
+  env_file="\${user_home}/.config/accessd/connector.env"
+  if [[ -f "\${env_file}" ]]; then
+    allowed_origin="\$(grep -E '^ACCESSD_CONNECTOR_ALLOWED_ORIGIN=' "\${env_file}" | tail -1 | cut -d= -f2- | tr -d '[:space:]' || true)"
+    if [[ -n "\${allowed_origin}" && "\${allowed_origin}" != *"accessd.example.internal"* ]]; then
+      host="\${allowed_origin#http://}"
+      host="\${host#https://}"
+      host="\${host%%/*}"
+      host="\${host%%:*}"
+      server_cert="\${user_home}/.accessd-connector/certs/accessd-\${host}.crt"
+      if [[ -f "\${server_cert}" ]]; then
+        security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain "\${server_cert}" 2>/dev/null && \
+          echo "[accessd-connector] Trusted server TLS cert in System keychain." || \
+          echo "[accessd-connector] WARNING: Failed to trust server TLS cert in System keychain."
+      fi
+    fi
+  fi
+fi
 POSTINSTALL
   chmod 0755 "${pkg_scripts}/postinstall"
 
@@ -544,6 +715,7 @@ build_linux_deb() {
   fi
 
   local deb_root="${TMP_DIR}/debroot-${goarch}"
+  local deb_allowed_origin="${ACCESSD_CONNECTOR_ALLOWED_ORIGIN:-${CONNECTOR_ALLOWED_ORIGIN:-}}"
   rm -rf "${deb_root}"
   mkdir -p "${deb_root}/DEBIAN" "${deb_root}/usr/local/lib/accessd-connector"
 
@@ -565,6 +737,14 @@ if [[ ! -x "${bootstrap}" ]]; then
   exit 0
 fi
 
+# Source installer defaults (origin baked in at build time)
+defaults_file="/usr/local/lib/accessd-connector/installer-defaults.env"
+if [[ -f "${defaults_file}" ]]; then
+  # shellcheck disable=SC1090
+  . "${defaults_file}"
+  export ACCESSD_CONNECTOR_ALLOWED_ORIGIN ACCESSD_CONNECTOR_BOOTSTRAP_ENV_URL 2>/dev/null || true
+fi
+
 run_as="${SUDO_USER:-}"
 if [[ -z "${run_as}" && -t 0 ]]; then
   run_as="$(logname 2>/dev/null || true)"
@@ -575,7 +755,10 @@ if [[ -n "${run_as}" && "${run_as}" != "root" ]]; then
   if [[ -z "${user_home}" ]]; then
     user_home="/home/${run_as}"
   fi
-  /usr/bin/sudo -u "${run_as}" env HOME="${user_home}" "${bootstrap}" || true
+  /usr/bin/sudo -u "${run_as}" env HOME="${user_home}" \
+    ${ACCESSD_CONNECTOR_ALLOWED_ORIGIN:+ACCESSD_CONNECTOR_ALLOWED_ORIGIN="${ACCESSD_CONNECTOR_ALLOWED_ORIGIN}"} \
+    ${ACCESSD_CONNECTOR_BOOTSTRAP_ENV_URL:+ACCESSD_CONNECTOR_BOOTSTRAP_ENV_URL="${ACCESSD_CONNECTOR_BOOTSTRAP_ENV_URL}"} \
+    "${bootstrap}" || true
   exit 0
 fi
 
@@ -587,6 +770,12 @@ POSTINST
   cp "${work_dir}/install.sh" "${deb_root}/usr/local/lib/accessd-connector/"
   cp "${work_dir}/uninstall.sh" "${deb_root}/usr/local/lib/accessd-connector/"
   cp "${work_dir}/release-files-sha256.txt" "${deb_root}/usr/local/lib/accessd-connector/"
+  # Write baked-in defaults (origin, bootstrap env URL) for the postinst to source
+  {
+    [[ -n "${deb_allowed_origin}" ]] && printf 'ACCESSD_CONNECTOR_ALLOWED_ORIGIN=%s\n' "${deb_allowed_origin}" || true
+    local bev="${ACCESSD_CONNECTOR_BOOTSTRAP_ENV_URL:-${CONNECTOR_BOOTSTRAP_ENV_URL:-}}"
+    [[ -n "${bev}" ]] && printf 'ACCESSD_CONNECTOR_BOOTSTRAP_ENV_URL=%s\n' "${bev}" || true
+  } > "${deb_root}/usr/local/lib/accessd-connector/installer-defaults.env"
 
   local deb_name="accessd-connector-${VERSION}-linux-${goarch}.deb"
   local deb_path="${OUT_DIR}/${deb_name}"
@@ -613,6 +802,8 @@ build_linux_rpm() {
     rpm_arch="aarch64"
   fi
 
+  local rpm_allowed_origin="${ACCESSD_CONNECTOR_ALLOWED_ORIGIN:-${CONNECTOR_ALLOWED_ORIGIN:-}}"
+  local rpm_bev="${ACCESSD_CONNECTOR_BOOTSTRAP_ENV_URL:-${CONNECTOR_BOOTSTRAP_ENV_URL:-}}"
   local topdir="${TMP_DIR}/rpmbuild-${goarch}"
   local src_name="accessd-connector-${VERSION}-${goarch}"
   local src_root="${TMP_DIR}/${src_name}"
@@ -624,6 +815,11 @@ build_linux_rpm() {
   cp "${work_dir}/install.sh" "${src_root}/usr/local/lib/accessd-connector/"
   cp "${work_dir}/uninstall.sh" "${src_root}/usr/local/lib/accessd-connector/"
   cp "${work_dir}/release-files-sha256.txt" "${src_root}/usr/local/lib/accessd-connector/"
+  # Write baked-in defaults for the %post scriptlet to source
+  {
+    [[ -n "${rpm_allowed_origin}" ]] && printf 'ACCESSD_CONNECTOR_ALLOWED_ORIGIN=%s\n' "${rpm_allowed_origin}" || true
+    [[ -n "${rpm_bev}" ]] && printf 'ACCESSD_CONNECTOR_BOOTSTRAP_ENV_URL=%s\n' "${rpm_bev}" || true
+  } > "${src_root}/usr/local/lib/accessd-connector/installer-defaults.env"
 
   tar -C "${TMP_DIR}" -czf "${topdir}/SOURCES/${src_name}.tar.gz" "${src_name}"
 
@@ -650,16 +846,26 @@ cp -a usr/local/lib/accessd-connector/. %{buildroot}/usr/local/lib/accessd-conne
 
 %post
 bootstrap=/usr/local/lib/accessd-connector/install.sh
-if [ -x "$bootstrap" ]; then
-  if [ -n "$SUDO_USER" ] && [ "$SUDO_USER" != "root" ]; then
-    user_home=$(getent passwd "$SUDO_USER" | cut -d: -f6)
-    if [ -z "$user_home" ]; then
-      user_home="/home/$SUDO_USER"
-    fi
-    /usr/bin/sudo -u "$SUDO_USER" env HOME="$user_home" "$bootstrap" || true
-  else
-    "$bootstrap" || true
+if [ ! -x "\$bootstrap" ]; then
+  exit 0
+fi
+# Source installer defaults (origin baked in at build time)
+defaults_file=/usr/local/lib/accessd-connector/installer-defaults.env
+if [ -f "\$defaults_file" ]; then
+  . "\$defaults_file"
+  export ACCESSD_CONNECTOR_ALLOWED_ORIGIN ACCESSD_CONNECTOR_BOOTSTRAP_ENV_URL 2>/dev/null || true
+fi
+if [ -n "\${SUDO_USER:-}" ] && [ "\${SUDO_USER}" != "root" ]; then
+  user_home=\$(getent passwd "\$SUDO_USER" | cut -d: -f6)
+  if [ -z "\$user_home" ]; then
+    user_home="/home/\$SUDO_USER"
   fi
+  env_args=""
+  [ -n "\${ACCESSD_CONNECTOR_ALLOWED_ORIGIN:-}" ] && env_args="\$env_args ACCESSD_CONNECTOR_ALLOWED_ORIGIN=\${ACCESSD_CONNECTOR_ALLOWED_ORIGIN}"
+  [ -n "\${ACCESSD_CONNECTOR_BOOTSTRAP_ENV_URL:-}" ] && env_args="\$env_args ACCESSD_CONNECTOR_BOOTSTRAP_ENV_URL=\${ACCESSD_CONNECTOR_BOOTSTRAP_ENV_URL}"
+  /usr/bin/sudo -u "\$SUDO_USER" env HOME="\$user_home" \$env_args "\$bootstrap" || true
+else
+  "\$bootstrap" || true
 fi
 
 %files

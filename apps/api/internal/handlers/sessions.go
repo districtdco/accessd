@@ -499,8 +499,15 @@ func (h *SessionsHandler) Launch(w http.ResponseWriter, r *http.Request) {
 	if asset.Type == assets.TypeLinuxVM && (req.Action == access.ActionShell || req.Action == access.ActionSFTP) {
 		cred, err := h.credentialsService.ResolveForAsset(r.Context(), asset.ID, credentials.TypePassword)
 		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to resolve linux credential"})
-			return
+			if !errors.Is(err, credentials.ErrCredentialNotFound) {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to resolve linux credential"})
+				return
+			}
+			cred, err = h.credentialsService.ResolveForAsset(r.Context(), asset.ID, credentials.TypeSSHKey)
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to resolve linux credential"})
+				return
+			}
 		}
 		upstreamUsername := strings.TrimSpace(cred.Username)
 		if req.Action == access.ActionShell {

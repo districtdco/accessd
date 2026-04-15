@@ -570,15 +570,29 @@ fi
 
 if command -v security >/dev/null 2>&1; then
   trust_ok="0"
-  if command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1; then
-    if sudo security add-trusted-cert -d -r trustAsRoot -k /Library/Keychains/System.keychain "${cert_file}" >/dev/null 2>&1; then
+  # System keychain is accessible to Chrome's sandboxed processes; login keychain is not.
+  # Always attempt System keychain via sudo (will prompt for sudo password if needed).
+  if command -v sudo >/dev/null 2>&1; then
+    echo "[accessd-connector] Trusting server TLS cert in System keychain (sudo required)..."
+    if sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain "${cert_file}" 2>/dev/null; then
       trust_ok="1"
+      echo "[accessd-connector] Server TLS cert trusted in System keychain."
+      echo "[accessd-connector] IMPORTANT: Restart Chrome for the cert trust to take effect."
     fi
-  elif security add-trusted-cert -d -r trustRoot -k "${HOME}/Library/Keychains/login.keychain-db" "${cert_file}" >/dev/null 2>&1; then
-    trust_ok="1"
+  fi
+  if [[ "${trust_ok}" == "0" ]]; then
+    echo "[accessd-connector] Falling back to login keychain (Chrome may still reject it on newer macOS)..."
+    if security add-trusted-cert -d -r trustRoot -k "${HOME}/Library/Keychains/login.keychain-db" "${cert_file}" 2>/dev/null; then
+      trust_ok="1"
+      echo "[accessd-connector] Server TLS cert added to login keychain."
+    fi
   fi
   if [[ "${trust_ok}" == "1" && -n "${cert_hash}" ]]; then
     printf '%s' "${cert_hash}" > "${cert_state}"
+  fi
+  if [[ "${trust_ok}" == "0" ]]; then
+    echo "[accessd-connector] WARNING: Could not trust server TLS cert: ${cert_file}"
+    echo "[accessd-connector]   Run manually: sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain \"${cert_file}\""
   fi
 fi
 TRUST
@@ -599,7 +613,23 @@ trust_local_connector_tls_cert() {
   cert_file="$("${TARGET_BIN}" ensure-local-tls 2>/dev/null || true)"
   cert_file="$(trim "${cert_file}")"
   [[ -f "${cert_file}" ]] || return 0
-  security add-trusted-cert -d -r trustRoot -k "${HOME}/Library/Keychains/login.keychain-db" "${cert_file}" >/dev/null 2>&1 || true
+  echo "[accessd-connector] Trusting local connector TLS certificate..."
+  echo "[accessd-connector] NOTE: Chrome requires this in the System keychain (sudo required)."
+  echo "[accessd-connector] You will be prompted for your sudo password."
+  if sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain "${cert_file}" 2>/dev/null; then
+    echo "[accessd-connector] Local connector TLS certificate trusted in System keychain."
+    echo "[accessd-connector] IMPORTANT: Restart Chrome for the cert trust to take effect."
+  else
+    echo "[accessd-connector] WARNING: System keychain trust failed. Trying login keychain..."
+    if security add-trusted-cert -d -r trustRoot -k "${HOME}/Library/Keychains/login.keychain-db" "${cert_file}" 2>/dev/null; then
+      echo "[accessd-connector] Connector TLS cert added to login keychain (Chrome may still reject it)."
+      echo "[accessd-connector] If Chrome still shows SSL errors: sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain \"${cert_file}\""
+    else
+      echo "[accessd-connector] WARNING: Could not trust connector TLS cert automatically."
+      echo "[accessd-connector]   Run manually: sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain \"${cert_file}\""
+      echo "[accessd-connector]   Or open https://127.0.0.1:9494 in Chrome and click Advanced → Proceed."
+    fi
+  fi
 }
 
 is_connector_running() {

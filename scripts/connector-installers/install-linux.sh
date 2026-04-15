@@ -466,9 +466,9 @@ if [[ -n "${cert_hash}" && -f "${cert_state}" ]]; then
   fi
 fi
 
+trust_ok="0"
 if command -v update-ca-certificates >/dev/null 2>&1; then
   target="/usr/local/share/ca-certificates/accessd-${host}.crt"
-  trust_ok="0"
   if [[ "$(id -u)" -eq 0 ]]; then
     if cp "${cert_file}" "${target}" && update-ca-certificates >/dev/null 2>&1; then
       trust_ok="1"
@@ -478,9 +478,24 @@ if command -v update-ca-certificates >/dev/null 2>&1; then
       trust_ok="1"
     fi
   fi
-  if [[ "${trust_ok}" == "1" && -n "${cert_hash}" ]]; then
-    printf '%s' "${cert_hash}" > "${cert_state}"
+fi
+
+# Trust in Chrome's NSS database (certutil from libnss3-tools)
+if command -v certutil >/dev/null 2>&1; then
+  nss_db="${HOME}/.pki/nssdb"
+  if [[ ! -d "${nss_db}" ]]; then
+    mkdir -p "${nss_db}"
+    certutil -d "sql:${nss_db}" -N --empty-password 2>/dev/null || true
   fi
+  if certutil -d "sql:${nss_db}" -A -t "C,," -n "AccessD Server (${host})" -i "${cert_file}" 2>/dev/null; then
+    echo "[accessd-connector] Trusted AccessD server cert in Chrome NSS database."
+    echo "[accessd-connector] IMPORTANT: Restart Chrome for the cert trust to take effect."
+    trust_ok="1"
+  fi
+fi
+
+if [[ "${trust_ok}" == "1" && -n "${cert_hash}" ]]; then
+  printf '%s' "${cert_hash}" > "${cert_state}"
 fi
 TRUST
   chmod 0755 "${TRUST_SCRIPT}"
@@ -490,6 +505,21 @@ trust_accessd_server_cert() {
   if [[ -x "${TRUST_SCRIPT}" ]]; then
     "${TRUST_SCRIPT}" || true
   fi
+}
+
+trust_cert_in_nss_db() {
+  local cert_file="$1"
+  local nick="$2"
+  [[ -f "${cert_file}" ]] || return 0
+  command -v certutil >/dev/null 2>&1 || return 0
+  local nss_db="${HOME}/.pki/nssdb"
+  if [[ ! -d "${nss_db}" ]]; then
+    mkdir -p "${nss_db}"
+    certutil -d "sql:${nss_db}" -N --empty-password 2>/dev/null || true
+  fi
+  certutil -d "sql:${nss_db}" -A -t "C,," -n "${nick}" -i "${cert_file}" 2>/dev/null || true
+  echo "[accessd-connector] Trusted '${nick}' in Chrome NSS database (${nss_db})."
+  echo "[accessd-connector] IMPORTANT: Restart Chrome for the cert trust to take effect."
 }
 
 trust_local_connector_tls_cert() {
@@ -508,6 +538,8 @@ trust_local_connector_tls_cert() {
       sudo cp "${cert_file}" "${target}" && sudo update-ca-certificates >/dev/null 2>&1 || true
     fi
   fi
+  # Trust in Chrome's NSS database (certutil from libnss3-tools)
+  trust_cert_in_nss_db "${cert_file}" "AccessD Connector Local TLS"
 }
 
 is_connector_running() {

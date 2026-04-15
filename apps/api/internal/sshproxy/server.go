@@ -389,22 +389,41 @@ func (s *Server) handleConn(rawConn net.Conn, cfg *ssh.ServerConfig) {
 }
 
 func (s *Server) connectUpstream(ctx context.Context, launch sessions.LaunchContext) (*ssh.Client, *ssh.Session, string, error) {
+	credType := credentials.TypePassword
 	cred, err := s.credSvc.ResolveForAsset(ctx, launch.AssetID, credentials.TypePassword)
 	if err != nil {
-		return nil, nil, "", fmt.Errorf("resolve password credential: %w", err)
+		if !errors.Is(err, credentials.ErrCredentialNotFound) {
+			return nil, nil, "", fmt.Errorf("resolve password credential: %w", err)
+		}
+		cred, err = s.credSvc.ResolveForAsset(ctx, launch.AssetID, credentials.TypeSSHKey)
+		if err != nil {
+			return nil, nil, "", fmt.Errorf("resolve ssh credential: %w", err)
+		}
+		credType = credentials.TypeSSHKey
 	}
 	launch.UpstreamUsername = strings.TrimSpace(cred.Username)
-	if err := s.sessionsSvc.RecordCredentialUsage(ctx, launch, credentials.TypePassword, "proxy_upstream_auth", launch.RequestID); err != nil {
+	if err := s.sessionsSvc.RecordCredentialUsage(ctx, launch, credType, "proxy_upstream_auth", launch.RequestID); err != nil {
 		s.logger.Warn("failed to write credential usage audit", "session_id", launch.SessionID, "request_id", launch.RequestID, "error", err)
 	}
 	if strings.TrimSpace(cred.Username) == "" {
 		return nil, nil, "", fmt.Errorf("credential username is required for ssh")
 	}
 
+	var authMethod ssh.AuthMethod
+	if credType == credentials.TypeSSHKey {
+		signer, parseErr := ssh.ParsePrivateKey([]byte(cred.Secret))
+		if parseErr != nil {
+			return nil, nil, "", fmt.Errorf("parse ssh private key: %w", parseErr)
+		}
+		authMethod = ssh.PublicKeys(signer)
+	} else {
+		authMethod = ssh.Password(cred.Secret)
+	}
+
 	clientCfg := &ssh.ClientConfig{
 		User: cred.Username,
 		Auth: []ssh.AuthMethod{
-			ssh.Password(cred.Secret),
+			authMethod,
 		},
 		HostKeyCallback: s.hostKeyCallback,
 		Timeout:         10 * time.Second,
