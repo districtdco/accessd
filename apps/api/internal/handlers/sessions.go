@@ -19,6 +19,7 @@ import (
 	"github.com/districtdco/accessd/api/internal/assets"
 	"github.com/districtdco/accessd/api/internal/auth"
 	"github.com/districtdco/accessd/api/internal/credentials"
+	"github.com/districtdco/accessd/api/internal/mongoproxy"
 	"github.com/districtdco/accessd/api/internal/mssqlproxy"
 	"github.com/districtdco/accessd/api/internal/mysqlproxy"
 	"github.com/districtdco/accessd/api/internal/pgproxy"
@@ -35,6 +36,7 @@ type SessionsHandler struct {
 	pgProxyService     *pgproxy.Service
 	mysqlProxyService  *mysqlproxy.Service
 	mssqlProxyService  *mssqlproxy.Service
+	mongoProxyService  *mongoproxy.Service
 	redisProxyService  *redisproxy.Service
 }
 
@@ -288,6 +290,7 @@ func NewSessionsHandler(
 	pgProxyService *pgproxy.Service,
 	mysqlProxyService *mysqlproxy.Service,
 	mssqlProxyService *mssqlproxy.Service,
+	mongoProxyService *mongoproxy.Service,
 	redisProxyService *redisproxy.Service,
 ) *SessionsHandler {
 	return &SessionsHandler{
@@ -298,6 +301,7 @@ func NewSessionsHandler(
 		pgProxyService:     pgProxyService,
 		mysqlProxyService:  mysqlProxyService,
 		mssqlProxyService:  mssqlProxyService,
+		mongoProxyService:  mongoProxyService,
 		redisProxyService:  redisProxyService,
 	}
 }
@@ -435,10 +439,27 @@ func (h *SessionsHandler) Launch(w http.ResponseWriter, r *http.Request) {
 				RequestID:    requestctx.FromContext(r.Context()),
 			})
 		case "mongo", "mongodb":
-			// Secure mode: never hand upstream Mongo credentials to the client.
-			// A managed Mongo proxy path is required before Mongo launches are enabled.
-			writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "mongo launch requires managed proxy support and is not available yet"})
-			return
+			if h.mongoProxyService == nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "mongo proxy is not configured"})
+				return
+			}
+			// Keep upstream Mongo credentials server-side.
+			// Client connects without DB password; proxy authenticates upstream using
+			// vault-stored credentials before forwarding traffic.
+			clientUsername = ""
+			clientPassword = ""
+			proxyHost, proxyPort, err = h.mongoProxyService.RegisterSession(mongoproxy.SessionRegistration{
+				SessionID:    launch.SessionID,
+				UserID:       currentUser.ID,
+				AssetID:      asset.ID,
+				AssetName:    strings.TrimSpace(asset.Name),
+				Engine:       meta.Engine,
+				Database:     meta.Database,
+				SSLMode:      meta.SSLMode,
+				UpstreamHost: asset.Host,
+				UpstreamPort: asset.Port,
+				RequestID:    requestctx.FromContext(r.Context()),
+			})
 		default:
 			if h.pgProxyService == nil {
 				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "database proxy is not configured"})

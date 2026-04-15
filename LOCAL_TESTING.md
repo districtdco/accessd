@@ -37,6 +37,7 @@ Target test services started by `dev_up.sh --with-targets`:
 - PostgreSQL target: `127.0.0.1:15432` (`app_user` / `app_password`, db `app`)
 - MySQL target: `127.0.0.1:13306` (`app_user` / `app_password`, db `appdb`)
 - Redis target: `127.0.0.1:16379` (password `app_password`)
+- MongoDB target: `127.0.0.1:17017` (`app_user` / `app_password`, auth db `admin`)
 - MSSQL target (optional): `127.0.0.1:11433` (`sa` / `YourStrong!Passw0rd`, db `appdb`)
 
 ## Startup Sequence
@@ -138,6 +139,15 @@ Use seeded assets from `dev_seed.sh`.
 - Verify:
   - session creation and launch lifecycle always work
   - full connectivity depends on TLS mode requirements (see known limitations)
+
+### MongoDB (`accessd-local-mongo` + `dbeaver`/`Robo 3T`)
+
+- Launch `DBeaver` from Access page (connector routes mongo engine to Robo 3T where available).
+- Run a simple check (for example list databases / collections).
+- Verify:
+  - session created and visible
+  - session lifecycle transitions through connector/proxy/upstream events
+  - admin audit includes launch/session lifecycle events
 
 ### Redis (`accessd-local-redis` + `redis`)
 

@@ -26,6 +26,7 @@ type Config struct {
 	PGProxy     PGProxyConfig
 	MySQLProxy  MySQLProxyConfig
 	MSSQLProxy  MSSQLProxyConfig
+	MongoProxy  MongoProxyConfig
 	RedisProxy  RedisProxyConfig
 	DB          DBConfig
 }
@@ -159,6 +160,14 @@ type MSSQLProxyConfig struct {
 	ConnectTimeout time.Duration
 	QueryLogQueue  int
 	QueryMaxBytes  int
+	IdleTimeout    time.Duration
+	MaxSessionAge  time.Duration
+}
+
+type MongoProxyConfig struct {
+	BindHost       string
+	PublicHost     string
+	ConnectTimeout time.Duration
 	IdleTimeout    time.Duration
 	MaxSessionAge  time.Duration
 }
@@ -307,6 +316,13 @@ func Load() (Config, error) {
 		QueryMaxBytes:  getIntEnv("ACCESSD_MSSQL_PROXY_QUERY_MAX_BYTES", 16384),
 		IdleTimeout:    getDurationEnv("ACCESSD_MSSQL_PROXY_IDLE_TIMEOUT", 5*time.Minute),
 		MaxSessionAge:  getDurationEnv("ACCESSD_MSSQL_PROXY_MAX_SESSION_DURATION", 8*time.Hour),
+	}
+	cfg.MongoProxy = MongoProxyConfig{
+		BindHost:       getEnv("ACCESSD_MONGO_PROXY_BIND_HOST", "127.0.0.1"),
+		PublicHost:     getEnv("ACCESSD_MONGO_PROXY_PUBLIC_HOST", "127.0.0.1"),
+		ConnectTimeout: getDurationEnv("ACCESSD_MONGO_PROXY_CONNECT_TIMEOUT", 10*time.Second),
+		IdleTimeout:    getDurationEnv("ACCESSD_MONGO_PROXY_IDLE_TIMEOUT", 5*time.Minute),
+		MaxSessionAge:  getDurationEnv("ACCESSD_MONGO_PROXY_MAX_SESSION_DURATION", 8*time.Hour),
 	}
 	cfg.RedisProxy = RedisProxyConfig{
 		BindHost:        getEnv("ACCESSD_REDIS_PROXY_BIND_HOST", "127.0.0.1"),
@@ -481,6 +497,21 @@ func Load() (Config, error) {
 	}
 	if cfg.MSSQLProxy.MaxSessionAge <= 0 {
 		return Config{}, fmt.Errorf("ACCESSD_MSSQL_PROXY_MAX_SESSION_DURATION must be > 0")
+	}
+	if strings.TrimSpace(cfg.MongoProxy.BindHost) == "" {
+		return Config{}, fmt.Errorf("ACCESSD_MONGO_PROXY_BIND_HOST cannot be empty")
+	}
+	if strings.TrimSpace(cfg.MongoProxy.PublicHost) == "" {
+		return Config{}, fmt.Errorf("ACCESSD_MONGO_PROXY_PUBLIC_HOST cannot be empty")
+	}
+	if cfg.MongoProxy.ConnectTimeout <= 0 {
+		return Config{}, fmt.Errorf("ACCESSD_MONGO_PROXY_CONNECT_TIMEOUT must be > 0")
+	}
+	if cfg.MongoProxy.IdleTimeout <= 0 {
+		return Config{}, fmt.Errorf("ACCESSD_MONGO_PROXY_IDLE_TIMEOUT must be > 0")
+	}
+	if cfg.MongoProxy.MaxSessionAge <= 0 {
+		return Config{}, fmt.Errorf("ACCESSD_MONGO_PROXY_MAX_SESSION_DURATION must be > 0")
 	}
 	if strings.TrimSpace(cfg.RedisProxy.BindHost) == "" {
 		return Config{}, fmt.Errorf("ACCESSD_REDIS_PROXY_BIND_HOST cannot be empty")

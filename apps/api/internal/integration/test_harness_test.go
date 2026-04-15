@@ -144,7 +144,7 @@ func (h *testHarness) newRouter(logger *slog.Logger) http.Handler {
 		Version:  handlers.NewVersionHandler(config.VersionInfo{Service: "pam-api", Version: "test", Commit: "test", BuiltAt: "test"}),
 		Auth:     handlers.NewAuthHandler(h.authSvc),
 		Access:   handlers.NewAccessHandler(h.access),
-		Sessions: handlers.NewSessionsHandler(h.assets, h.access, credentialsSvc, sessionsSvc, nil, nil, nil, nil),
+		Sessions: handlers.NewSessionsHandler(h.assets, h.access, credentialsSvc, sessionsSvc, nil, nil, nil, nil, nil),
 		Admin:    handlers.NewAdminHandler(adminSvc, h.assets, credentialsSvc),
 		AuthSvc:  h.authSvc,
 	})

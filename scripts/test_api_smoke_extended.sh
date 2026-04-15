@@ -60,12 +60,14 @@ pg_id="$(find_asset_id 'accessd-local-postgres')"
 mysql_id="$(find_asset_id 'accessd-local-mysql')"
 mssql_id="$(find_asset_id 'accessd-local-mssql')"
 redis_id="$(find_asset_id 'accessd-local-redis')"
+mongo_id="$(find_asset_id 'accessd-local-mongo')"
 
 launch_session "SSH shell" "$linux_id" "shell"
 launch_session "SFTP" "$linux_id" "sftp"
 launch_session "PostgreSQL DBeaver" "$pg_id" "dbeaver"
 launch_session "MySQL DBeaver" "$mysql_id" "dbeaver"
 launch_session "MSSQL DBeaver" "$mssql_id" "dbeaver"
+launch_session "MongoDB Robo 3T" "$mongo_id" "dbeaver"
 launch_session "Redis CLI" "$redis_id" "redis"
 
 echo

@@ -57,6 +57,9 @@ func main() {
 		"mssql_proxy_public_host", cfg.MSSQLProxy.PublicHost,
 		"mssql_proxy_idle_timeout", cfg.MSSQLProxy.IdleTimeout.String(),
 		"mssql_proxy_max_session_duration", cfg.MSSQLProxy.MaxSessionAge.String(),
+		"mongo_proxy_public_host", cfg.MongoProxy.PublicHost,
+		"mongo_proxy_idle_timeout", cfg.MongoProxy.IdleTimeout.String(),
+		"mongo_proxy_max_session_duration", cfg.MongoProxy.MaxSessionAge.String(),
 		"redis_proxy_public_host", cfg.RedisProxy.PublicHost,
 		"redis_proxy_idle_timeout", cfg.RedisProxy.IdleTimeout.String(),
 		"redis_proxy_max_session_duration", cfg.RedisProxy.MaxSessionAge.String(),
@@ -180,6 +183,9 @@ func runServer(a *app.App) error {
 	}
 	if err := a.MSSQLProxyServer.Shutdown(shutdownCtx); err != nil {
 		return fmt.Errorf("mssql proxy shutdown failed: %w", err)
+	}
+	if err := a.MongoProxyServer.Shutdown(shutdownCtx); err != nil {
+		return fmt.Errorf("mongo proxy shutdown failed: %w", err)
 	}
 	if err := a.RedisProxyServer.Shutdown(shutdownCtx); err != nil {
 		return fmt.Errorf("redis proxy shutdown failed: %w", err)

@@ -25,6 +25,8 @@ MSSQL_TARGET_HOST="${ACCESSD_SEED_MSSQL_HOST:-127.0.0.1}"
 MSSQL_TARGET_PORT="${ACCESSD_SEED_MSSQL_PORT:-11433}"
 REDIS_TARGET_HOST="${ACCESSD_SEED_REDIS_HOST:-127.0.0.1}"
 REDIS_TARGET_PORT="${ACCESSD_SEED_REDIS_PORT:-16379}"
+MONGO_TARGET_HOST="${ACCESSD_SEED_MONGO_HOST:-127.0.0.1}"
+MONGO_TARGET_PORT="${ACCESSD_SEED_MONGO_PORT:-17017}"
 
 COOKIE_JAR="$(mktemp -t accessd-dev-seed-cookie.XXXXXX)"
 trap 'rm -f "$COOKIE_JAR"' EXIT
@@ -100,12 +102,14 @@ pg_id="$(upsert_asset "accessd-local-postgres" "pam-local-postgres" "database" "
 mysql_id="$(upsert_asset "accessd-local-mysql" "pam-local-mysql" "database" "$MYSQL_TARGET_HOST" "$MYSQL_TARGET_PORT" '{"engine":"mysql","database":"appdb","ssl_mode":"disable","env":"local"}')"
 mssql_id="$(upsert_asset "accessd-local-mssql" "pam-local-mssql" "database" "$MSSQL_TARGET_HOST" "$MSSQL_TARGET_PORT" '{"engine":"mssql","database":"appdb","ssl_mode":"disable","env":"local"}')"
 redis_id="$(upsert_asset "accessd-local-redis" "pam-local-redis" "redis" "$REDIS_TARGET_HOST" "$REDIS_TARGET_PORT" '{"engine":"redis","database":0,"tls":false,"env":"local"}')"
+mongo_id="$(upsert_asset "accessd-local-mongo" "pam-local-mongo" "database" "$MONGO_TARGET_HOST" "$MONGO_TARGET_PORT" '{"engine":"mongo","database":"admin","ssl_mode":"disable","env":"local"}')"
 
 echo "[dev_seed] upserting local test credentials"
 upsert_credential "$linux_id" "password" "pam" "pam_dev_password" '{"seed":"dev_seed.sh"}'
 upsert_credential "$pg_id" "db_password" "app_user" "app_password" '{"seed":"dev_seed.sh"}'
 upsert_credential "$mysql_id" "db_password" "app_user" "app_password" '{"seed":"dev_seed.sh"}'
 upsert_credential "$mssql_id" "db_password" "sa" "YourStrong!Passw0rd" '{"seed":"dev_seed.sh"}'
+upsert_credential "$mongo_id" "db_password" "app_user" "app_password" '{"seed":"dev_seed.sh"}'
 upsert_credential "$redis_id" "password" "default" "app_password" '{"seed":"dev_seed.sh"}'
 
 echo "[dev_seed] ensuring direct grants for admin user"
@@ -114,6 +118,7 @@ grant_user_action "$admin_user_id" "$linux_id" "sftp"
 grant_user_action "$admin_user_id" "$pg_id" "dbeaver"
 grant_user_action "$admin_user_id" "$mysql_id" "dbeaver"
 grant_user_action "$admin_user_id" "$mssql_id" "dbeaver"
+grant_user_action "$admin_user_id" "$mongo_id" "dbeaver"
 grant_user_action "$admin_user_id" "$redis_id" "redis"
 
 echo
@@ -122,4 +127,5 @@ echo "  - accessd-local-linux      ($linux_id)"
 echo "  - accessd-local-postgres   ($pg_id)"
 echo "  - accessd-local-mysql      ($mysql_id)"
 echo "  - accessd-local-mssql      ($mssql_id)"
+echo "  - accessd-local-mongo      ($mongo_id)"
 echo "  - accessd-local-redis      ($redis_id)"

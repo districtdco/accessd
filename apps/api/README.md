@@ -128,6 +128,11 @@ Optional:
 - `ACCESSD_MSSQL_PROXY_QUERY_MAX_BYTES` (default: `16384`)
 - `ACCESSD_MSSQL_PROXY_IDLE_TIMEOUT` (default: `5m`)
 - `ACCESSD_MSSQL_PROXY_MAX_SESSION_DURATION` (default: `8h`)
+- `ACCESSD_MONGO_PROXY_BIND_HOST` (default: `127.0.0.1`)
+- `ACCESSD_MONGO_PROXY_PUBLIC_HOST` (default: `127.0.0.1`)
+- `ACCESSD_MONGO_PROXY_CONNECT_TIMEOUT` (default: `10s`)
+- `ACCESSD_MONGO_PROXY_IDLE_TIMEOUT` (default: `5m`)
+- `ACCESSD_MONGO_PROXY_MAX_SESSION_DURATION` (default: `8h`)
 - `ACCESSD_REDIS_PROXY_BIND_HOST` (default: `127.0.0.1`)
 - `ACCESSD_REDIS_PROXY_PUBLIC_HOST` (default: `127.0.0.1`)
 - `ACCESSD_REDIS_PROXY_CONNECT_TIMEOUT` (default: `10s`)
@@ -262,7 +267,7 @@ Paste launch token when prompted. Password auth also works as first-pass fallbac
 ## Current Limitations (First Pass)
 
 - Supports `linux_vm + shell`, `linux_vm + sftp`, `database + dbeaver`, and `redis + redis` launch creation in this slice.
-- DBeaver path now launches through an engine-specific AccessD DB proxy endpoint (`postgres`, `mysql`, `mssql`) with query capture into `session_events` (`event_type=db_query`).
+- DBeaver path now launches through an engine-specific AccessD DB proxy endpoint (`postgres`, `mysql`, `mssql`, `mongo`) with query capture into `session_events` (`event_type=db_query`) where supported.
 - Redis launch now targets a session-scoped AccessD RESP proxy endpoint and captures commands into `session_events` (`event_type=redis_command`).
 - Redis command audit payload uses argument summaries with value/script redaction for sensitive patterns (`AUTH`, `SET`/`MSET`/`HMSET`, `CONFIG SET`, `EVAL`, `ACL SETUSER`).
 - SFTP path now launches through AccessD SSH/SFTP relay using session launch token authentication and logs file operations (`event_type=file_operation`) in `session_events`.

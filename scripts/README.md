@@ -10,7 +10,7 @@ Dev tooling and helper scripts for local bring-up, seeding, and test flow.
 - `dev_up.sh`
   - Starts local docker dependencies.
   - Default services: AccessD postgres + LDAP.
-  - Optional target stack: `--with-targets` (SSH/SFTP, PostgreSQL, MySQL, Redis) and `--with-mssql`.
+  - Optional target stack: `--with-targets` (SSH/SFTP, PostgreSQL, MySQL, MongoDB, Redis) and `--with-mssql`.
 
 - `dev_api.sh`
   - Runs API with practical local defaults.
@@ -66,11 +66,12 @@ Dev tooling and helper scripts for local bring-up, seeding, and test flow.
     - `accessd-local-postgres` (dbeaver)
     - `accessd-local-mysql` (dbeaver)
     - `accessd-local-mssql` (dbeaver)
+    - `accessd-local-mongo` (dbeaver/robo3t)
     - `accessd-local-redis` (redis)
 
 - `test_api_smoke_extended.sh`
   - API-level launch matrix smoke for all seeded flows.
-  - Verifies launch responses for SSH, SFTP, PostgreSQL, MySQL, MSSQL, Redis.
+  - Verifies launch responses for SSH, SFTP, PostgreSQL, MySQL, MSSQL, MongoDB, Redis.
 
 - `test_matrix.sh`
   - Runs API launch matrix smoke and prints guided manual UI verification checklist.

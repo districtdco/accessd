@@ -17,6 +17,7 @@ import (
 	"github.com/districtdco/accessd/api/internal/handlers"
 	"github.com/districtdco/accessd/api/internal/httpserver"
 	"github.com/districtdco/accessd/api/internal/migrate"
+	"github.com/districtdco/accessd/api/internal/mongoproxy"
 	"github.com/districtdco/accessd/api/internal/mssqlproxy"
 	"github.com/districtdco/accessd/api/internal/mysqlproxy"
 	"github.com/districtdco/accessd/api/internal/pgproxy"
@@ -44,6 +45,7 @@ type App struct {
 	PGProxyServer      *pgproxy.Service
 	MySQLProxyServer   *mysqlproxy.Service
 	MSSQLProxyServer   *mssqlproxy.Service
+	MongoProxyServer   *mongoproxy.Service
 	RedisProxyServer   *redisproxy.Service
 }
 
@@ -124,6 +126,16 @@ func New(_ context.Context, cfg config.Config, logger *slog.Logger, pool *pgxpoo
 	if err != nil {
 		return nil, fmt.Errorf("initialize mssql proxy server: %w", err)
 	}
+	mongoProxyServer, err := mongoproxy.New(mongoproxy.Config{
+		BindHost:       cfg.MongoProxy.BindHost,
+		PublicHost:     cfg.MongoProxy.PublicHost,
+		ConnectTimeout: cfg.MongoProxy.ConnectTimeout,
+		IdleTimeout:    cfg.MongoProxy.IdleTimeout,
+		MaxSessionAge:  cfg.MongoProxy.MaxSessionAge,
+	}, sessionsService, credentialsService, logger)
+	if err != nil {
+		return nil, fmt.Errorf("initialize mongo proxy server: %w", err)
+	}
 	redisProxyServer, err := redisproxy.New(redisproxy.Config{
 		BindHost:       cfg.RedisProxy.BindHost,
 		PublicHost:     cfg.RedisProxy.PublicHost,
@@ -143,7 +155,7 @@ func New(_ context.Context, cfg config.Config, logger *slog.Logger, pool *pgxpoo
 		Connector: handlers.NewConnectorReleasesHandler(cfg.Connector),
 		Auth:      handlers.NewAuthHandler(authService),
 		Access:    handlers.NewAccessHandler(accessService),
-		Sessions:  handlers.NewSessionsHandler(assetsService, accessService, credentialsService, sessionsService, pgProxyServer, mysqlProxyServer, mssqlProxyServer, redisProxyServer),
+		Sessions:  handlers.NewSessionsHandler(assetsService, accessService, credentialsService, sessionsService, pgProxyServer, mysqlProxyServer, mssqlProxyServer, mongoProxyServer, redisProxyServer),
 		Admin:     handlers.NewAdminHandler(adminService, assetsService, credentialsService),
 		AuthSvc:   authService,
 	})
@@ -170,6 +182,7 @@ func New(_ context.Context, cfg config.Config, logger *slog.Logger, pool *pgxpoo
 		PGProxyServer:      pgProxyServer,
 		MySQLProxyServer:   mysqlProxyServer,
 		MSSQLProxyServer:   mssqlProxyServer,
+		MongoProxyServer:   mongoProxyServer,
 		RedisProxyServer:   redisProxyServer,
 	}, nil
 }
@@ -287,6 +300,17 @@ func (a *App) bootstrapDevAccess(ctx context.Context) error {
 			metadata:  `{"engine":"mssql","database":"appdb","ssl_mode":"disable","env":"dev"}`,
 			username:  "app_user",
 			secret:    "accessd-dev-mssql-password",
+			credType:  credentials.TypeDBPassword,
+			actions:   []string{access.ActionDBeaver},
+		},
+		{
+			name:      "mongo-app",
+			assetType: assets.TypeDatabase,
+			host:      "10.0.20.24",
+			port:      27017,
+			metadata:  `{"engine":"mongo","database":"admin","ssl_mode":"disable","env":"dev"}`,
+			username:  "app_user",
+			secret:    "accessd-dev-mongo-password",
 			credType:  credentials.TypeDBPassword,
 			actions:   []string{access.ActionDBeaver},
 		},
