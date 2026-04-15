@@ -601,25 +601,33 @@ export function AccessPage() {
         message.includes('network/CORS')
         || message.toLowerCase().includes('network connection was lost')
         || message.includes('Load failed')
+      const recoverableConnectorInternalError =
+        connectorError?.status === 500
+        || connectorError?.code === 'internal_error'
 
-      if (sessionID && ambiguousConnectorTransportError) {
+      if (sessionID && (ambiguousConnectorTransportError || recoverableConnectorInternalError)) {
         const materialized = await waitForLaunchMaterialization(sessionID)
         if (materialized) {
           setLaunchMessageKind('success')
+          const recoveryHint = recoverableConnectorInternalError
+            ? 'Recovered after a transient local connector handoff error.'
+            : 'Recovered from a transient local connector response drop.'
           if (action === 'shell') {
-            setLaunchMessage(`Shell launch started for ${item.asset_name}. Recovered from a transient local connector response drop.`)
+            setLaunchMessage(`Shell launch started for ${item.asset_name}. ${recoveryHint}`)
           } else if (action === 'sftp') {
-            setLaunchMessage(`SFTP launch requested for ${item.asset_name}. Recovered from a transient local connector response drop.`)
+            setLaunchMessage(`SFTP launch requested for ${item.asset_name}. ${recoveryHint}`)
           } else if (action === 'dbeaver') {
-            setLaunchMessage(`DBeaver launch requested for ${item.asset_name}. Recovered from a transient local connector response drop.`)
+            setLaunchMessage(`DBeaver launch requested for ${item.asset_name}. ${recoveryHint}`)
           } else {
-            setLaunchMessage(`Redis CLI launch requested for ${item.asset_name}. Recovered from a transient local connector response drop.`)
+            setLaunchMessage(`Redis CLI launch requested for ${item.asset_name}. ${recoveryHint}`)
           }
           try {
             await recordSessionEvent(sessionID, 'connector_launch_succeeded', {
               connector_action: action,
               recovered_after_handoff_error: true,
               observed_error: message,
+              observed_status: connectorError?.status,
+              observed_code: connectorError?.code,
             })
           } catch {
             // Keep success UX even if metadata write fails.
