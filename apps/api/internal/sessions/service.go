@@ -588,7 +588,10 @@ LIMIT 1;`
 	} else if lctx.AssetType != assets.TypeLinuxVM {
 		return LaunchContext{}, ErrUnauthorizedLaunch
 	}
-	if isRedisLaunch {
+	// Connector launch success can mark a session active before the client
+	// actually establishes SSH/SFTP auth (more noticeable on Windows PuTTY/FileZilla).
+	// Accept both pending and active to avoid this status-race false rejection.
+	if isRedisLaunch || isShellLaunch || isSFTPLaunch {
 		if lctx.Status != StatusPending && lctx.Status != StatusActive {
 			return LaunchContext{}, ErrUnauthorizedLaunch
 		}
