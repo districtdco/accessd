@@ -8,13 +8,17 @@ Minimal React + Vite frontend for integrated shell + SFTP + DBeaver + Redis brok
 |------|---------|
 | `/login` | Local dev login (`POST /auth/login`) |
 | `/` | Auth-protected My Access table (`GET /me`, `GET /access/my`) for non-read-only users |
+| `/account` | Auth-protected account page (profile + password update) |
 | `/sessions` | My session history (`GET /sessions/my`) |
 | `/sessions/:sessionID` | Session detail/review (metadata + timeline + shell transcript/replay helper) |
+| `/connector/versions` | Connector release/version compatibility page |
 | `/admin/dashboard` | Admin/auditor recap view |
 | `/admin/users` | Admin user list |
 | `/admin/users/:userID` | Admin user detail (roles + grants) |
 | `/admin/assets` | Admin asset list/create |
 | `/admin/assets/:assetID` | Admin asset detail + credential write-only update |
+| `/admin/access` | Admin grant management view (user/asset/action) |
+| `/admin/directory` | Admin LDAP settings + test/sync view |
 | `/admin/sessions` | Admin/auditor session history |
 | `/admin/audit/events` | Admin/auditor audit search/filter page |
 | `/admin/audit/events/:eventID` | Admin/auditor audit event detail view |
@@ -30,7 +34,7 @@ Minimal React + Vite frontend for integrated shell + SFTP + DBeaver + Redis brok
 - `SFTP` button is shown only for `linux_vm` assets with `sftp` action.
 - `DBeaver` button is shown only for `database` assets with `dbeaver` action.
 - `Redis CLI` button is shown only for `redis` assets with `redis` action.
-- Launch flow (both actions):
+- Launch flow:
   1. `POST /sessions/launch` with `asset_id` and `action` (`shell`, `sftp`, `dbeaver`, or `redis`)
   2. `POST /sessions/{session_id}/events` with `connector_launch_requested`
   3. Forward launch payload to connector:

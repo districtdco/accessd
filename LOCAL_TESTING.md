@@ -95,8 +95,8 @@ Use seeded assets from `dev_seed.sh`.
 ### SSH (`accessd-local-linux` + `shell`)
 
 - Launch from Access page using `Shell`.
-- Expect connector to open terminal and run `ssh` to AccessD proxy.
-- At prompt, paste launch token shown in terminal banner.
+- Expect connector to open terminal and run connector-managed `bridge-shell` auth flow to the AccessD proxy.
+- No manual token paste is required in normal connector flow.
 - If terminal/PuTTY is missing or misconfigured, launch should fail immediately with explicit connector error details.
 - Verify:
   - session appears in `/sessions`
@@ -140,9 +140,10 @@ Use seeded assets from `dev_seed.sh`.
   - session creation and launch lifecycle always work
   - full connectivity depends on TLS mode requirements (see known limitations)
 
-### MongoDB (`accessd-local-mongo` + `dbeaver`/`Robo 3T`)
+### MongoDB (`accessd-local-mongo` + `dbeaver`)
 
-- Launch `DBeaver` from Access page (connector routes mongo engine to Robo 3T where available).
+- Launch `DBeaver` from Access page.
+- If configured, connector can route Mongo launches to Robo 3T as a fallback launcher.
 - Run a simple check (for example list databases / collections).
 - Verify:
   - session created and visible

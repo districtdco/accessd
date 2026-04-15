@@ -16,28 +16,14 @@ Shared API contract definitions used by the backend (apps/api), frontend (apps/u
 3. Frontend generates or updates TypeScript types from the spec
 4. Connector uses the same endpoint contracts
 
-## Planned Endpoint Groups
+## Current Endpoint Groups
 
-- `GET /health/live` — liveness
-- `GET /health/ready` — readiness
-- `GET /version` — build/version metadata
-- `POST /auth/login` — Authentication (provider-backed: `local`, `ldap`, `hybrid`)
-- `POST /auth/refresh` — Token refresh
-- `POST /auth/logout` — Logout
-- `GET /me` — Current authenticated user (session cookie)
-- `GET /access/my` — Current user's resolved access points and actions
-- `GET /users`, `POST /users`, etc. — User management
-- `GET /groups`, `POST /groups`, etc. — Group management
-- `GET /assets`, `GET /assets/mine` — Asset inventory
-- `GET /policies`, `POST /policies` — Access policy management
-- `POST /sessions/launch` — Session launch (returns launch payload)
-- `GET /sessions/my` — Current-user session history
-- `GET /sessions/{id}` — Session detail + lifecycle summary
-- `GET /sessions/{id}/events` — Ordered event timeline
-- `GET /sessions/{id}/replay` — First-pass normalized shell replay chunks
-- `GET /sessions/{id}/export/summary` — Session recap JSON export
-- `GET /sessions/{id}/export/transcript` — Shell transcript text export
-- `GET /admin/sessions/export` — Filtered session history CSV export
-- `GET /admin/audit/events` — Filterable audit search for admin/auditor
-- `GET /admin/audit/events/{event_id}` — Audit event detail + correlation metadata
-- `GET /audit/events` — Audit event log
+- Health/version: `GET /health/live`, `GET /health/ready`, `GET /version`
+- Auth/account: `POST /auth/login`, `POST /auth/logout`, `PUT /auth/password`, `GET /me`, `GET /auth/ping`
+- Access/session launch: `GET /access/my`, `POST /sessions/launch`, `POST /sessions/{id}/events`
+- Session review/export: `GET /sessions/my`, `GET /sessions/{id}`, `GET /sessions/{id}/events`, `GET /sessions/{id}/replay`, `GET /sessions/{id}/export/summary`, `GET /sessions/{id}/export/transcript`
+- Connector integration: `GET /connector/releases/latest`, `GET /connector/releases`, `POST /connector/token/verify`, `POST /connector/bootstrap/verify`, `POST /connector/bootstrap/issue`
+- Admin users/roles/groups: `/admin/users*`, `/admin/roles`, `/admin/groups*`
+- Admin assets/grants: `/admin/assets*`, `/admin/users/{id}/grants*`, `/admin/users/{id}/effective-access`
+- Admin LDAP: `/admin/ldap/settings`, `/admin/ldap/test`, `/admin/ldap/sync`, `/admin/ldap/sync-runs`
+- Admin sessions/audit/summary: `/admin/sessions*`, `/admin/audit/*`, `/admin/summary`

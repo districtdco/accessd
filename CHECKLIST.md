@@ -3,7 +3,7 @@
 ## Current Status
 
 - Phase: hardening + local test-readiness consolidation
-- Last updated: 2026-04-07
+- Last updated: 2026-04-15
 - Source of truth docs:
   - `LOCAL_TESTING.md` (local runbook)
   - `REMAINING_BLOCKERS.md` (real blockers only)

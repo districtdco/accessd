@@ -88,7 +88,10 @@ Runtime configuration defaults:
 
 - First startup auto-creates `~/.accessd-connector/config.yaml` with commented override examples.
 - Build-time env variables are not required for launch behavior; runtime env is optional and used only for non-default overrides.
-- Required runtime secret for production trust is `ACCESSD_CONNECTOR_SECRET` (must match API). Other connector env vars are optional.
+- API-side `ACCESSD_CONNECTOR_SECRET` remains required for signing connector launch tokens.
+- Connector-side verification can use either:
+  - online backend verification (`ACCESSD_CONNECTOR_BACKEND_VERIFY_URL`, recommended), or
+  - local HMAC verification (`ACCESSD_CONNECTOR_SECRET`, legacy fallback).
 
 This model avoids persistent background daemons for initial OSS rollout, while keeping an upgrade path to optional autostart agents.
 

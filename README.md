@@ -244,6 +244,8 @@ All configuration is via environment variables or a flat `KEY=VALUE` file at `AC
 
 Generate secrets: `openssl rand -base64 32`
 
+Connector runtime note: operator machines can verify launches via `ACCESSD_CONNECTOR_BACKEND_VERIFY_URL` (recommended) without distributing `ACCESSD_CONNECTOR_SECRET` to each connector host.
+
 See [deploy/env/accessd.env.example](deploy/env/accessd.env.example) for the full configuration reference.
 
 > Use `ACCESSD_*` environment variables only.

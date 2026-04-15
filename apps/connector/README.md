@@ -19,11 +19,14 @@ Recommended mode (no operator-side shared secret):
 Legacy mode:
 - If `ACCESSD_CONNECTOR_SECRET` is set, connector can verify token signature locally (HMAC)
 
-When not set, verification is skipped (suitable for development only).
+Hard requirement:
+- Connector requires at least one verification mode (`ACCESSD_CONNECTOR_BACKEND_VERIFY_URL` or `ACCESSD_CONNECTOR_SECRET`).
+- Verification is disabled only when `ACCESSD_CONNECTOR_ALLOW_INSECURE_NO_TOKEN=true` (development-only escape hatch).
 
 ## Local HTTP API (this slice)
 
 - `GET /healthz` → connector liveness
+- `GET /version` → connector build/version metadata
 - `GET /info` → runtime diagnostics (effective config + missing required env)
 - `POST /launch/shell` → receive shell launch payload and spawn local client
 - `POST /launch/dbeaver` → receive DBeaver launch payload and spawn local DBeaver process

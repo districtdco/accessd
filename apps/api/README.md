@@ -160,8 +160,14 @@ Deployment note:
 - `GET /health/live`
 - `GET /health/ready`
 - `GET /version`
+- `GET /connector/releases/latest`
+- `GET /connector/releases`
+- `POST /connector/token/verify`
+- `POST /connector/bootstrap/verify`
+- `POST /connector/bootstrap/issue` (authenticated)
 - `POST /auth/login`
 - `POST /auth/logout`
+- `PUT /auth/password` (authenticated)
 - `GET /me`
 - `GET /auth/ping` (authenticated)
 - `GET /access/my` (authenticated; denied to read-only auditors)
@@ -174,6 +180,35 @@ Deployment note:
 - `POST /sessions/launch` (authenticated; denied to read-only auditors)
 - `POST /sessions/{sessionID}/events` (authenticated; denied to read-only auditors)
 - `GET /admin/ping` (admin only)
+- `GET /admin/users` (admin)
+- `POST /admin/users` (admin)
+- `GET /admin/users/{userID}` (admin)
+- `PUT /admin/users/{userID}` (admin)
+- `PUT /admin/users/{userID}/active` (admin)
+- `PUT /admin/users/{userID}/password` (admin)
+- `GET /admin/users/{userID}/effective-access` (admin)
+- `GET /admin/users/{userID}/grants` (admin)
+- `POST /admin/users/{userID}/grants` (admin)
+- `DELETE /admin/users/{userID}/grants/{assetID}/{action}` (admin)
+- `POST /admin/users/{userID}/roles` (admin)
+- `DELETE /admin/users/{userID}/roles/{roleName}` (admin)
+- `GET /admin/roles` (admin)
+- `GET /admin/groups` (admin)
+- `GET /admin/groups/{groupID}/members` (admin)
+- `GET /admin/groups/{groupID}/grants` (admin)
+- `GET /admin/assets` (admin)
+- `POST /admin/assets` (admin)
+- `GET /admin/assets/{assetID}` (admin)
+- `PUT /admin/assets/{assetID}` (admin)
+- `DELETE /admin/assets/{assetID}` (admin)
+- `GET /admin/assets/{assetID}/credentials` (admin)
+- `PUT /admin/assets/{assetID}/credentials/{credentialType}` (admin)
+- `GET /admin/assets/{assetID}/grants` (admin)
+- `GET /admin/ldap/settings` (admin)
+- `PUT /admin/ldap/settings` (admin)
+- `POST /admin/ldap/test` (admin)
+- `POST /admin/ldap/sync` (admin)
+- `GET /admin/ldap/sync-runs` (admin)
 - `GET /admin/sessions` (admin/auditor)
 - `GET /admin/sessions/export` (admin/auditor; CSV export)
 - `GET /admin/sessions/active` (admin/auditor)
@@ -348,7 +383,5 @@ Configure these in Admin UI (`Admin -> Directory & LDAP`):
 
 - Full LDAP sync/reconciliation jobs
 - LDAP group membership removal/reconciliation (current group mapping is additive-only)
-- proxy behavior beyond first SSH shell path
-- Connector launch behavior
-- TailAdmin/UI integration
-- admin CRUD APIs for assets/credentials/access grants
+- MSSQL full client<->proxy TLS tunnel mode (`REMAINING_BLOCKERS.md`)
+- Redis client-leg TLS to AccessD Redis proxy (`REMAINING_BLOCKERS.md`)

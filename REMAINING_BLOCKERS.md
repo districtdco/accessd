@@ -1,4 +1,4 @@
-# Remaining Blockers (Reconciled 2026-04-07)
+# Remaining Blockers (Reconciled 2026-04-15)
 
 Only active, real blockers are listed below.
 
@@ -14,12 +14,12 @@ Only active, real blockers are listed below.
 - Next action:
   - Implement full bidirectional TDS TLS tunnel support in MSSQL proxy and add integration validation with strict TLS-required MSSQL targets.
 
-## 2) Redis client-leg TLS to PAM Redis proxy is not implemented
+## 2) Redis client-leg TLS to AccessD Redis proxy is not implemented
 - Severity: `production blocker`
 - Scope: does **not** block local testing in current loopback trust model.
 - Exact impact:
   - Connector/API launch payloads currently operate with plaintext local client leg (`redis_tls=false` in effective flow).
-  - Environments requiring TLS from local client to PAM Redis proxy endpoint cannot satisfy that requirement yet.
+  - Environments requiring TLS from local client to AccessD Redis proxy endpoint cannot satisfy that requirement yet.
 - Evidence in code/docs:
   - Launch payload handling supports `redis_tls`, but current flow remains non-TLS for client leg in this slice.
   - Documented in `apps/connector/README.md` and local-testing limitations.

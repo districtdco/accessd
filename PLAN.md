@@ -1,5 +1,7 @@
 # PAM System — v1 Plan
 
+> Status note (2026-04-15): this file is a historical planning document and no longer reflects the live implementation details in several areas (naming, auth/session model, and route surface). For current behavior, use `README.md`, `apps/api/README.md`, `apps/ui/README.md`, `LOCAL_TESTING.md`, `CHECKLIST.md`, and `REMAINING_BLOCKERS.md`.
+
 ## 1. Executive Summary
 
 We are building a lean Privileged Access Management (PAM) system that centralizes access to infrastructure assets (Linux servers, databases, Redis, file transfer endpoints). Users authenticate into PAM, which brokers all connections — users never receive raw credentials. Every session is audited. The system ships as a modular monolith: Go backend, React+TailAdmin UI, and a desktop connector/launcher.
