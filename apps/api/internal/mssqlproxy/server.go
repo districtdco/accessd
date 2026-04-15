@@ -324,36 +324,12 @@ func (s *Service) runProxyFlow(reg SessionRegistration, client net.Conn) error {
 		return fmt.Errorf("client requested required tls; mssql proxy currently supports non-tls client connections only")
 	}
 
-	// First pass: explicit plaintext client-proxy path for practical query visibility.
-	// TDS pre-login responses are emitted as server response packets.
-	// Returning ENCRYPT_OFF keeps plaintext mode explicit for this proxy slice.
-	proxyPreloginResp := buildPreloginMessage(tdsEncryptOff)
-	if err := writeTDSPayload(client, tdsPacketResponse, proxyPreloginResp); err != nil {
-		return fmt.Errorf("write prelogin response: %w", err)
-	}
-
-	clientLogin, err := readTDSMessage(client)
-	if err != nil {
-		return fmt.Errorf("read client login7: %w", err)
-	}
-	if clientLogin.PacketType != tdsPacketLogin7 {
-		return fmt.Errorf("expected login7 packet, got 0x%02x", clientLogin.PacketType)
-	}
-
-	cred, err := s.credSvc.ResolveForAsset(context.Background(), reg.AssetID, credentials.TypeDBPassword)
-	if err != nil {
-		return fmt.Errorf("resolve db credential: %w", err)
-	}
-	if err := s.sessionsSvc.RecordCredentialUsage(context.Background(), lctx, credentials.TypeDBPassword, "proxy_upstream_auth", reg.RequestID); err != nil {
-		s.logger.Warn("failed to write credential usage audit", "session_id", reg.SessionID, "request_id", reg.RequestID, "error", err)
-	}
-
-	upstream, err := net.DialTimeout("tcp", net.JoinHostPort(reg.UpstreamHost, strconv.Itoa(reg.UpstreamPort)), s.cfg.ConnectTimeout)
+	upstreamConn, err := net.DialTimeout("tcp", net.JoinHostPort(reg.UpstreamHost, strconv.Itoa(reg.UpstreamPort)), s.cfg.ConnectTimeout)
 	if err != nil {
 		return fmt.Errorf("dial upstream: %w", err)
 	}
-	upstream = connutil.WrapIdleTimeout(upstream, s.cfg.IdleTimeout)
-	defer upstream.Close()
+	upstreamConn = connutil.WrapIdleTimeout(upstreamConn, s.cfg.IdleTimeout)
+	defer upstreamConn.Close()
 	s.logger.Info("mssql upstream connected", "session_id", reg.SessionID, "upstream", net.JoinHostPort(reg.UpstreamHost, strconv.Itoa(reg.UpstreamPort)))
 	if err := s.sessionsSvc.MarkUpstreamConnected(context.Background(), sessions.LaunchContext{
 		SessionID:        reg.SessionID,
@@ -371,13 +347,47 @@ func (s *Service) runProxyFlow(reg SessionRegistration, client net.Conn) error {
 		s.logger.Warn("failed to record mssql upstream connected", "session_id", reg.SessionID, "error", err)
 	}
 
-	upstreamEnc, err := s.negotiateUpstreamPrelogin(reg, upstream)
+	upstreamEnc, upstreamPrelogin, err := s.negotiateUpstreamPrelogin(reg, upstreamConn)
 	if err != nil {
 		s.logger.Warn("mssql upstream prelogin failed", "session_id", reg.SessionID, "error", err)
 		return err
 	}
-	if upstreamEnc == tdsEncryptOn || upstreamEnc == tdsEncryptRequire {
-		return fmt.Errorf("upstream requested tls encryption; mssql proxy tls tunnel mode is not yet implemented")
+	upstream := net.Conn(upstreamConn)
+	sslCfg := classifySSLMode(reg.SSLMode)
+	upstreamNeedsTLS := upstreamEnc == tdsEncryptOn || upstreamEnc == tdsEncryptRequire || sslCfg.RequireTLS
+	if upstreamNeedsTLS {
+		tlsCfg := &tls.Config{
+			MinVersion: tls.VersionTLS12,
+			ServerName: reg.UpstreamHost,
+		}
+		if !sslCfg.VerifyCert {
+			tlsCfg.InsecureSkipVerify = true
+		}
+		tlsUpstream := tls.Client(upstream, tlsCfg)
+		if err := tlsUpstream.Handshake(); err != nil {
+			return fmt.Errorf("upstream tls handshake failed: %w", err)
+		}
+		upstream = connutil.WrapIdleTimeout(tlsUpstream, s.cfg.IdleTimeout)
+	}
+	proxyPreloginResp := preloginPayloadForClient(upstreamPrelogin)
+	if len(proxyPreloginResp) == 0 {
+		proxyPreloginResp = buildPreloginMessage(tdsEncryptNotSup)
+	}
+	if err := writeTDSPayload(client, tdsPacketResponse, proxyPreloginResp); err != nil {
+		return fmt.Errorf("write prelogin response: %w", err)
+	}
+
+	clientLogin, err := readClientLoginAfterPrelogin(client, proxyPreloginResp)
+	if err != nil {
+		return err
+	}
+
+	cred, err := s.credSvc.ResolveForAsset(context.Background(), reg.AssetID, credentials.TypeDBPassword)
+	if err != nil {
+		return fmt.Errorf("resolve db credential: %w", err)
+	}
+	if err := s.sessionsSvc.RecordCredentialUsage(context.Background(), lctx, credentials.TypeDBPassword, "proxy_upstream_auth", reg.RequestID); err != nil {
+		s.logger.Warn("failed to write credential usage audit", "session_id", reg.SessionID, "request_id", reg.RequestID, "error", err)
 	}
 
 	database := strings.TrimSpace(reg.Database)
@@ -429,32 +439,32 @@ func (s *Service) runProxyFlow(reg SessionRegistration, client net.Conn) error {
 	}
 }
 
-func (s *Service) negotiateUpstreamPrelogin(reg SessionRegistration, upstream net.Conn) (byte, error) {
+func (s *Service) negotiateUpstreamPrelogin(reg SessionRegistration, upstream net.Conn) (byte, []byte, error) {
 	sslCfg := classifySSLMode(reg.SSLMode)
+	encReq := tdsEncryptNotSup
 	if sslCfg.RequireTLS {
-		return 0, fmt.Errorf("ssl_mode=%s requires tls, which is not yet implemented for mssql proxy", reg.SSLMode)
-	}
-
-	encReq := tdsEncryptOff
-	if sslCfg.AttemptTLS {
-		// Explicitly request non-encrypted upstream login in this first pass.
-		encReq = tdsEncryptOff
+		encReq = tdsEncryptRequire
+	} else if sslCfg.AttemptTLS {
+		encReq = tdsEncryptOn
 	}
 	if err := writeTDSPayload(upstream, tdsPacketPreLogin, buildPreloginMessage(encReq)); err != nil {
-		return 0, fmt.Errorf("write upstream prelogin: %w", err)
+		return 0, nil, fmt.Errorf("write upstream prelogin: %w", err)
 	}
 
 	resp, err := readTDSMessage(upstream)
 	if err != nil {
-		return 0, fmt.Errorf("read upstream prelogin response: %w", err)
+		return 0, nil, fmt.Errorf("read upstream prelogin response: %w", err)
 	}
 	// Real SQL Server instances commonly answer pre-login with response packets.
 	// Accept both to stay interoperable across server builds/proxies.
 	if resp.PacketType != tdsPacketPreLogin && resp.PacketType != tdsPacketResponse {
-		return 0, fmt.Errorf("unexpected upstream prelogin response type: 0x%02x", resp.PacketType)
+		return 0, nil, fmt.Errorf("unexpected upstream prelogin response type: 0x%02x", resp.PacketType)
 	}
 	enc, _ := parsePreloginEncryption(resp.Payload)
-	return enc, nil
+	if sslCfg.RequireTLS && !(enc == tdsEncryptOn || enc == tdsEncryptRequire) {
+		return 0, nil, fmt.Errorf("upstream did not negotiate tls while ssl_mode requires it")
+	}
+	return enc, append([]byte(nil), resp.Payload...), nil
 }
 
 func (s *Service) forwardClientMessages(reg SessionRegistration, client io.Reader, upstream io.Writer, state *connectionPreparedState) error {
@@ -727,7 +737,9 @@ func writeTDSPayload(w io.Writer, packetType byte, payload []byte) error {
 }
 
 func buildPreloginMessage(encryption byte) []byte {
-	version := []byte{0x00, 0x00, 0x00, 0x00, 0x00, 0x00}
+	// VERSION token (6 bytes): major, minor, build(2), subbuild(2).
+	// Avoid advertising version 0, which causes strict JDBC drivers to reject.
+	version := []byte{0x10, 0x00, 0x00, 0x00, 0x00, 0x00}
 	mars := []byte{0x00}
 	enc := []byte{encryption}
 
@@ -774,6 +786,57 @@ func parsePreloginEncryption(payload []byte) (byte, bool) {
 		pos += 5
 	}
 	return 0, false
+}
+
+func preloginPayloadForClient(upstreamPayload []byte) []byte {
+	if len(upstreamPayload) == 0 {
+		return nil
+	}
+	out := append([]byte(nil), upstreamPayload...)
+	pos := 0
+	for pos < len(out) {
+		tok := out[pos]
+		if tok == preloginOptTerminator {
+			return out
+		}
+		if pos+5 > len(out) {
+			return nil
+		}
+		offset := int(binary.BigEndian.Uint16(out[pos+1 : pos+3]))
+		length := int(binary.BigEndian.Uint16(out[pos+3 : pos+5]))
+		if offset < 0 || length <= 0 || offset+length > len(out) {
+			return nil
+		}
+		if tok == preloginOptEncryption {
+			// Force plaintext client leg to avoid client-side login-packet TLS
+			// round-trips that require full TDS-wrapped TLS termination.
+			out[offset] = tdsEncryptNotSup
+			return out
+		}
+		pos += 5
+	}
+	return out
+}
+
+func readClientLoginAfterPrelogin(client net.Conn, preloginResp []byte) (tdsMessage, error) {
+	const maxPreloginRounds = 6
+	for i := 0; i < maxPreloginRounds; i++ {
+		msg, err := readTDSMessage(client)
+		if err != nil {
+			return tdsMessage{}, fmt.Errorf("read client login7: %w", err)
+		}
+		if msg.PacketType == tdsPacketLogin7 {
+			return msg, nil
+		}
+		if msg.PacketType == tdsPacketPreLogin {
+			if err := writeTDSPayload(client, tdsPacketResponse, preloginResp); err != nil {
+				return tdsMessage{}, fmt.Errorf("write prelogin response: %w", err)
+			}
+			continue
+		}
+		return tdsMessage{}, fmt.Errorf("expected login7 packet, got 0x%02x", msg.PacketType)
+	}
+	return tdsMessage{}, fmt.Errorf("too many client prelogin rounds before login7")
 }
 
 func relayLoginResponse(upstream io.Reader, client io.Writer) (string, error) {
@@ -828,66 +891,70 @@ func rewriteLogin7WithManagedCreds(payload []byte, username, password, database 
 	if len(payload) < login7FixedLen {
 		return nil, fmt.Errorf("login7 payload too short")
 	}
-	out := make([]byte, login7FixedLen)
-	copy(out, payload[:login7FixedLen])
+	out := append([]byte(nil), payload...)
 
 	// Force SQL auth mode (disable integrated security bit in OptionFlags2).
 	out[25] &^= 0x80
 
-	fields := parseLogin7Fields(payload)
-	if fields == nil {
-		return nil, fmt.Errorf("invalid login7 field offsets")
+	setUTF16Field := func(offsetPos int, raw []byte, chars int) error {
+		off := int(binary.LittleEndian.Uint16(out[offsetPos : offsetPos+2]))
+		ln := int(binary.LittleEndian.Uint16(out[offsetPos+2 : offsetPos+4]))
+		byteLen := ln * 2
+		if ln < 0 || off < 0 || off > len(out) || off+byteLen > len(out) {
+			return fmt.Errorf("invalid login7 field at %d", offsetPos)
+		}
+		if len(raw) > byteLen {
+			return fmt.Errorf("replacement field at %d too long (%d > %d)", offsetPos, len(raw), byteLen)
+		}
+		copy(out[off:off+len(raw)], raw)
+		for i := off + len(raw); i < off+byteLen; i++ {
+			out[i] = 0
+		}
+		binary.LittleEndian.PutUint16(out[offsetPos+2:offsetPos+4], uint16(chars))
+		return nil
 	}
 
-	fields[1].raw = encodeUTF16LE(username)
-	fields[1].chars = len([]rune(username))
-	fields[2].raw = obfuscateTDSPassword(password)
-	fields[2].chars = len([]rune(password))
+	if err := setUTF16Field(40, encodeUTF16LE(username), len([]rune(username))); err != nil {
+		return nil, err
+	}
+	if err := setUTF16Field(44, obfuscateTDSPassword(password), len([]rune(password))); err != nil {
+		return nil, err
+	}
 	if strings.TrimSpace(database) != "" {
-		fields[8].raw = encodeUTF16LE(database)
-		fields[8].chars = len([]rune(database))
+		if err := setUTF16Field(68, encodeUTF16LE(database), len([]rune(database))); err != nil {
+			return nil, err
+		}
 	}
-	// Clear SSPI payload for SQL authentication path.
-	fields[9].raw = nil
-	fields[9].chars = 0
-
-	varBuf := make([]byte, 0, len(payload))
-	appendField := func(f *loginField) {
-		off := login7FixedLen + len(varBuf)
-		binary.LittleEndian.PutUint16(out[f.offsetPos:f.offsetPos+2], uint16(off))
-		binary.LittleEndian.PutUint16(out[f.offsetPos+2:f.offsetPos+4], uint16(f.chars))
-		varBuf = append(varBuf, f.raw...)
-	}
-	for i := range fields {
-		appendField(&fields[i])
-	}
-
-	full := append(out, varBuf...)
-	binary.LittleEndian.PutUint32(full[0:4], uint32(len(full)))
-	return full, nil
+	binary.LittleEndian.PutUint32(out[0:4], uint32(len(out)))
+	return out, nil
 }
 
 type loginField struct {
 	offsetPos int
 	chars     int
+	wireLen   int
 	raw       []byte
-	isSSPI    bool
+	byteLen   bool
 }
 
 func parseLogin7Fields(payload []byte) []loginField {
 	if len(payload) < login7FixedLen {
 		return nil
 	}
+	isRequiredField := func(pos int) bool {
+		// UserName + Password must be parseable for managed rewrite.
+		return pos == 40 || pos == 44
+	}
 	positions := []struct {
-		pos    int
-		isSSPI bool
+		pos     int
+		byteLen bool
 	}{
 		{36, false}, // HostName
 		{40, false}, // UserName
 		{44, false}, // Password
 		{48, false}, // AppName
 		{52, false}, // ServerName
-		{56, false}, // Unused
+		{56, true},  // Extension/Unused
 		{60, false}, // CltIntName
 		{64, false}, // Language
 		{68, false}, // Database
@@ -900,17 +967,41 @@ func parseLogin7Fields(payload []byte) []loginField {
 		off := int(binary.LittleEndian.Uint16(payload[p.pos : p.pos+2]))
 		ln := int(binary.LittleEndian.Uint16(payload[p.pos+2 : p.pos+4]))
 		byteLen := ln * 2
-		if p.isSSPI {
+		if p.byteLen {
 			byteLen = ln
+			// Be tolerant to client variants that encode byte-length fields
+			// as UTF-16 char counts.
+			if off >= 0 && off <= len(payload) && off+byteLen > len(payload) {
+				alt := ln * 2
+				if off+alt <= len(payload) {
+					byteLen = alt
+				}
+			}
 		}
 		if off < 0 || off > len(payload) || off+byteLen > len(payload) {
-			return nil
+			if isRequiredField(p.pos) {
+				return nil
+			}
+			fields = append(fields, loginField{
+				offsetPos: p.pos,
+				chars:     0,
+				wireLen:   0,
+				raw:       nil,
+				byteLen:   p.byteLen,
+			})
+			continue
 		}
 		raw := make([]byte, 0)
 		if byteLen > 0 {
 			raw = append(raw, payload[off:off+byteLen]...)
 		}
-		fields = append(fields, loginField{offsetPos: p.pos, chars: ln, raw: raw, isSSPI: p.isSSPI})
+		fields = append(fields, loginField{
+			offsetPos: p.pos,
+			chars:     ln,
+			wireLen:   ln,
+			raw:       raw,
+			byteLen:   p.byteLen,
+		})
 	}
 	return fields
 }

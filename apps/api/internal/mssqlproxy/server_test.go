@@ -8,6 +8,7 @@ import (
 	"net"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestSQLBatchQueryCapture(t *testing.T) {
@@ -102,7 +103,7 @@ func TestRegisterSessionValidation(t *testing.T) {
 
 func TestRewriteLogin7WithManagedCreds(t *testing.T) {
 	orig := buildLogin7ForTest("client_user", "client_pw", "db1")
-	out, err := rewriteLogin7WithManagedCreds(orig, "pam_user", "pam_secret", "db2")
+	out, err := rewriteLogin7WithManagedCreds(orig, "pam_user", "pam_pw", "db2")
 	if err != nil {
 		t.Fatalf("rewriteLogin7WithManagedCreds: %v", err)
 	}
@@ -119,8 +120,45 @@ func TestRewriteLogin7WithManagedCreds(t *testing.T) {
 	if db != "db2" {
 		t.Fatalf("database = %q, want db2", db)
 	}
-	if len(fields[9].raw) != 0 || fields[9].chars != 0 {
-		t.Fatalf("expected SSPI to be cleared for SQL auth")
+}
+
+func TestRewriteLogin7WithManagedCreds_PreservesFeatureExtAndSSPI(t *testing.T) {
+	feature := []byte{0x01, 0x00, 0x00, 0x00, 0xff}
+	sspi := []byte{0xde, 0xad, 0xbe, 0xef}
+	orig := buildLogin7ForTestWithFeatureExtAndSSPI("client_user", "client_pw", "db1", feature, sspi)
+
+	out, err := rewriteLogin7WithManagedCreds(orig, "pam_user", "pam_pw", "db2")
+	if err != nil {
+		t.Fatalf("rewriteLogin7WithManagedCreds: %v", err)
+	}
+
+	fields := parseLogin7Fields(out)
+	if fields == nil {
+		t.Fatalf("expected valid login7 fields")
+	}
+	if !bytes.Equal(fields[5].raw, feature) {
+		t.Fatalf("expected extension preserved, got=%v want=%v", fields[5].raw, feature)
+	}
+	if !bytes.Equal(fields[9].raw, sspi) {
+		t.Fatalf("expected SSPI preserved, got=%v want=%v", fields[9].raw, sspi)
+	}
+}
+
+func TestParseLogin7Fields_ByteLenFallbackForExtension(t *testing.T) {
+	feature := []byte{0x01, 0x00, 0x00, 0x00}
+	orig := buildLogin7ForTestWithFeatureExt("client_user", "client_pw", "db1", feature)
+
+	// Simulate client variant that stores extension length as UTF-16 chars.
+	off := binary.LittleEndian.Uint16(orig[56:58])
+	binary.LittleEndian.PutUint16(orig[58:60], uint16(len(feature)/2))
+	binary.LittleEndian.PutUint16(orig[56:58], off)
+
+	fields := parseLogin7Fields(orig)
+	if fields == nil {
+		t.Fatalf("expected non-nil parsed fields")
+	}
+	if len(fields[5].raw) == 0 || fields[5].raw[0] != feature[0] {
+		t.Fatalf("expected extension to remain parseable, got=%v", fields[5].raw)
 	}
 }
 
@@ -144,6 +182,102 @@ func TestPreloginResponsePacketTypeCompatibility(t *testing.T) {
 	if enc != tdsEncryptOff {
 		t.Fatalf("encryption = 0x%02x, want 0x%02x", enc, tdsEncryptOff)
 	}
+	ver, ok := preloginToken(msg.Payload, preloginOptVersion)
+	if !ok || len(ver) != 6 {
+		t.Fatalf("expected version token length 6, got len=%d ok=%v", len(ver), ok)
+	}
+	if ver[0] == 0x00 {
+		t.Fatalf("expected non-zero major version in prelogin token, got %v", ver)
+	}
+}
+
+func TestPreloginPayloadForClient_PreservesVersionAndForcesEncryptNotSup(t *testing.T) {
+	upstream := buildPreloginMessage(tdsEncryptRequire)
+	clientPayload := preloginPayloadForClient(upstream)
+	if len(clientPayload) == 0 {
+		t.Fatalf("expected non-empty adapted payload")
+	}
+	enc, ok := parsePreloginEncryption(clientPayload)
+	if !ok {
+		t.Fatalf("expected encryption token in adapted payload")
+	}
+	if enc != tdsEncryptNotSup {
+		t.Fatalf("expected encryption NOT_SUP in adapted payload, got 0x%02x", enc)
+	}
+
+	upVer, ok := preloginToken(upstream, preloginOptVersion)
+	if !ok {
+		t.Fatalf("expected upstream version token")
+	}
+	clientVer, ok := preloginToken(clientPayload, preloginOptVersion)
+	if !ok {
+		t.Fatalf("expected client version token")
+	}
+	if !bytes.Equal(upVer, clientVer) {
+		t.Fatalf("expected version token preserved, got upstream=%v client=%v", upVer, clientVer)
+	}
+}
+
+func TestReadClientLoginAfterPrelogin_AllowsExtraPreloginRound(t *testing.T) {
+	var clientWire bytes.Buffer
+	pre := buildPreloginMessage(tdsEncryptOff)
+	writeTDSMessageForTest(&clientWire, tdsPacketPreLogin, pre)
+	login := buildLogin7ForTest("user", "pw", "db")
+	writeTDSMessageForTest(&clientWire, tdsPacketLogin7, login)
+
+	var serverWrite bytes.Buffer
+	client := &readWriteConnForTest{Reader: &clientWire, Writer: &serverWrite}
+	msg, err := readClientLoginAfterPrelogin(client, pre)
+	if err != nil {
+		t.Fatalf("readClientLoginAfterPrelogin: %v", err)
+	}
+	if msg.PacketType != tdsPacketLogin7 {
+		t.Fatalf("packet type = 0x%02x, want login7", msg.PacketType)
+	}
+	written, err := readTDSMessage(&serverWrite)
+	if err != nil {
+		t.Fatalf("read server write: %v", err)
+	}
+	if written.PacketType != tdsPacketResponse {
+		t.Fatalf("expected response packet for repeated prelogin, got 0x%02x", written.PacketType)
+	}
+}
+
+type readWriteConnForTest struct {
+	io.Reader
+	io.Writer
+}
+
+func (c *readWriteConnForTest) Close() error                       { return nil }
+func (c *readWriteConnForTest) LocalAddr() net.Addr                { return nil }
+func (c *readWriteConnForTest) RemoteAddr() net.Addr               { return nil }
+func (c *readWriteConnForTest) SetDeadline(_ time.Time) error      { return nil }
+func (c *readWriteConnForTest) SetReadDeadline(_ time.Time) error  { return nil }
+func (c *readWriteConnForTest) SetWriteDeadline(_ time.Time) error { return nil }
+
+func preloginToken(payload []byte, want byte) ([]byte, bool) {
+	pos := 0
+	for pos < len(payload) {
+		tok := payload[pos]
+		if tok == preloginOptTerminator {
+			return nil, false
+		}
+		if pos+5 > len(payload) {
+			return nil, false
+		}
+		offset := int(binary.BigEndian.Uint16(payload[pos+1 : pos+3]))
+		length := int(binary.BigEndian.Uint16(payload[pos+3 : pos+5]))
+		if offset < 0 || length <= 0 || offset+length > len(payload) {
+			return nil, false
+		}
+		if tok == want {
+			out := make([]byte, length)
+			copy(out, payload[offset:offset+length])
+			return out, true
+		}
+		pos += 5
+	}
+	return nil, false
 }
 
 func collectEvents(ch <-chan queryLogEvent) []queryLogEvent {
@@ -176,6 +310,14 @@ func buildRPCPayload(procName string, args ...string) []byte {
 }
 
 func buildLogin7ForTest(username, password, database string) []byte {
+	return buildLogin7ForTestWithFeatureExtAndSSPI(username, password, database, nil, nil)
+}
+
+func buildLogin7ForTestWithFeatureExt(username, password, database string, featureExt []byte) []byte {
+	return buildLogin7ForTestWithFeatureExtAndSSPI(username, password, database, featureExt, nil)
+}
+
+func buildLogin7ForTestWithFeatureExtAndSSPI(username, password, database string, featureExt, sspi []byte) []byte {
 	fixed := make([]byte, login7FixedLen)
 	binary.LittleEndian.PutUint32(fixed[0:4], uint32(login7FixedLen))
 	binary.LittleEndian.PutUint32(fixed[4:8], 0x74000004) // tds version
@@ -187,13 +329,16 @@ func buildLogin7ForTest(username, password, database string) []byte {
 		{offsetPos: 44, chars: len([]rune(password)), raw: obfuscateTDSPassword(password)},
 		{offsetPos: 48, chars: 0, raw: nil},
 		{offsetPos: 52, chars: 0, raw: nil},
-		{offsetPos: 56, chars: 0, raw: nil},
+		{offsetPos: 56, chars: len(featureExt), raw: featureExt, byteLen: true},
 		{offsetPos: 60, chars: 0, raw: nil},
 		{offsetPos: 64, chars: 0, raw: nil},
 		{offsetPos: 68, chars: len([]rune(database)), raw: encodeUTF16LE(database)},
-		{offsetPos: 78, chars: 0, raw: nil, isSSPI: true},
+		{offsetPos: 78, chars: len(sspi), raw: sspi, byteLen: true},
 		{offsetPos: 82, chars: 0, raw: nil},
 		{offsetPos: 86, chars: 0, raw: nil},
+	}
+	if len(featureExt) > 0 {
+		fixed[27] |= 0x10 // OptionFlags3.fExtension
 	}
 	varBuf := make([]byte, 0)
 	for i := range fields {

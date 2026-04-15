@@ -185,6 +185,38 @@ func TestDBeaverConnectionSpecWithNameSuffix_AppendsRepairSuffix(t *testing.T) {
 	}
 }
 
+func TestDBeaverConnectionSpec_SQLServerSetsProxySafeJDBCProps(t *testing.T) {
+	req := DBeaverRequest{
+		SessionID: "cf79f0d8-0e0c-4e8f-9305-590f2f6c4b6f",
+		AssetName: "accessd-local-mssql",
+		Launch: DBeaverPayload{
+			Engine:   "mssql",
+			Host:     "127.0.0.1",
+			Port:     34017,
+			Database: "master",
+			Username: "sa",
+			SSLMode:  "require",
+		},
+	}
+
+	spec := dbeaverConnectionSpec(req)
+	for _, want := range []string{
+		"driver=microsoft",
+		"prop.encrypt=false",
+		"prop.trustServerCertificate=true",
+	} {
+		if !strings.Contains(spec, want) {
+			t.Fatalf("expected %q in sqlserver spec, got %q", want, spec)
+		}
+	}
+	if strings.Contains(spec, "prop.authentication=") {
+		t.Fatalf("did not expect authentication override in sqlserver spec, got %q", spec)
+	}
+	if strings.Contains(spec, "sslMode=") {
+		t.Fatalf("did not expect generic sslMode in sqlserver spec, got %q", spec)
+	}
+}
+
 func TestRedisCLICommandPreview_AutoInsecureFromEnv(t *testing.T) {
 	prev := os.Getenv("ACCESSD_CONNECTOR_REDIS_TLS_AUTO_INSECURE")
 	if err := os.Setenv("ACCESSD_CONNECTOR_REDIS_TLS_AUTO_INSECURE", "true"); err != nil {

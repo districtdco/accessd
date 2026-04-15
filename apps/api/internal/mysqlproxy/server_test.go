@@ -461,6 +461,160 @@ func TestIgnoreLegacyQueryCacheSet(t *testing.T) {
 	}
 }
 
+func TestStartupSelectVariableProbeReturnsSyntheticResult(t *testing.T) {
+	svc := &Service{
+		cfg:        Config{QueryMaxBytes: 4096},
+		logger:     discardLogger(),
+		queryLogCh: make(chan queryLogEvent, 8),
+	}
+
+	var clientRead bytes.Buffer
+	writeTestPacket(&clientRead, []byte{comQuery, 'S', 'E', 'L', 'E', 'C', 'T', ' ', '@', '@', 's', 'e', 's', 's', 'i', 'o', 'n', '.', 'n', 'o', 't', '_', 'a', '_', 'r', 'e', 'a', 'l', '_', 'v', 'a', 'r'}, 0)
+	writeTestPacket(&clientRead, []byte{comQuit}, 0)
+
+	var clientWrite bytes.Buffer
+	var upstreamWrite bytes.Buffer
+	client := &readWriter{Reader: &clientRead, Writer: &clientWrite}
+	upstream := &readWriter{Reader: bytes.NewBuffer(nil), Writer: &upstreamWrite}
+
+	reg := SessionRegistration{SessionID: "s-legacy-select", UserID: "u1", AssetID: "a1", Engine: "mysql"}
+	if err := svc.forwardCommands(reg, client, upstream); err != nil {
+		t.Fatalf("forwardCommands: %v", err)
+	}
+
+	// Only COM_QUIT should be forwarded upstream.
+	var forwarded [][]byte
+	for upstreamWrite.Len() > 0 {
+		p, _, err := readPacket(&upstreamWrite)
+		if err != nil {
+			t.Fatalf("read forwarded packet: %v", err)
+		}
+		forwarded = append(forwarded, p)
+	}
+	if len(forwarded) != 1 {
+		t.Fatalf("expected 1 forwarded packet (quit only), got %d", len(forwarded))
+	}
+	if len(forwarded[0]) == 0 || forwarded[0][0] != comQuit {
+		t.Fatalf("expected forwarded COM_QUIT, got %v", forwarded[0])
+	}
+
+	// Synthetic result set should include: count, coldef, eof, row("0"), eof.
+	p1, _, err := readPacket(&clientWrite)
+	if err != nil {
+		t.Fatalf("read packet 1: %v", err)
+	}
+	if len(p1) == 0 || p1[0] != 0x01 {
+		t.Fatalf("expected column count packet, got %v", p1)
+	}
+	p2, _, err := readPacket(&clientWrite)
+	if err != nil {
+		t.Fatalf("read packet 2: %v", err)
+	}
+	if len(p2) == 0 {
+		t.Fatalf("expected non-empty column definition packet")
+	}
+	_, _, err = readPacket(&clientWrite) // eof
+	if err != nil {
+		t.Fatalf("read packet 3: %v", err)
+	}
+	p4, _, err := readPacket(&clientWrite) // row
+	if err != nil {
+		t.Fatalf("read packet 4: %v", err)
+	}
+	if len(p4) == 0 {
+		t.Fatalf("expected row packet, got empty")
+	}
+	// NULL row marker (0xfb) is expected for unknown variable probes.
+	if p4[0] != 0xfb {
+		t.Fatalf("expected NULL probe value marker 0xfb, got %v", p4)
+	}
+	_, _, err = readPacket(&clientWrite) // eof
+	if err != nil {
+		t.Fatalf("read packet 5: %v", err)
+	}
+
+	close(svc.queryLogCh)
+	if evt, ok := <-svc.queryLogCh; ok {
+		t.Fatalf("expected no logged query for local legacy probe handling, got %+v", evt)
+	}
+}
+
+func TestStartupSetVariableProbeIsHandledLocally(t *testing.T) {
+	svc := &Service{
+		cfg:        Config{QueryMaxBytes: 4096},
+		logger:     discardLogger(),
+		queryLogCh: make(chan queryLogEvent, 8),
+	}
+
+	var clientRead bytes.Buffer
+	writeTestPacket(&clientRead, []byte{comQuery, 'S', 'E', 'T', ' ', '@', '@', 's', 'e', 's', 's', 'i', 'o', 'n', '.', 's', 'o', 'm', 'e', '_', 'n', 'e', 'w', '_', 'v', 'a', 'r', '=', '1'}, 0)
+	writeTestPacket(&clientRead, []byte{comQuit}, 0)
+
+	var clientWrite bytes.Buffer
+	var upstreamWrite bytes.Buffer
+	client := &readWriter{Reader: &clientRead, Writer: &clientWrite}
+	upstream := &readWriter{Reader: bytes.NewBuffer(nil), Writer: &upstreamWrite}
+
+	reg := SessionRegistration{SessionID: "s-startup-set", UserID: "u1", AssetID: "a1", Engine: "mysql"}
+	if err := svc.forwardCommands(reg, client, upstream); err != nil {
+		t.Fatalf("forwardCommands: %v", err)
+	}
+
+	var forwarded [][]byte
+	for upstreamWrite.Len() > 0 {
+		p, _, err := readPacket(&upstreamWrite)
+		if err != nil {
+			t.Fatalf("read forwarded packet: %v", err)
+		}
+		forwarded = append(forwarded, p)
+	}
+	if len(forwarded) != 1 || len(forwarded[0]) == 0 || forwarded[0][0] != comQuit {
+		t.Fatalf("expected only quit forwarded upstream, got %#v", forwarded)
+	}
+
+	okPayload, _, err := readPacket(&clientWrite)
+	if err != nil {
+		t.Fatalf("read synthetic ok: %v", err)
+	}
+	if len(okPayload) == 0 || okPayload[0] != iOK {
+		t.Fatalf("expected synthetic ok, got %v", okPayload)
+	}
+}
+
+func TestCommentWrappedQueryCacheSizeProbeHandledLocally(t *testing.T) {
+	svc := &Service{
+		cfg:        Config{QueryMaxBytes: 4096},
+		logger:     discardLogger(),
+		queryLogCh: make(chan queryLogEvent, 8),
+	}
+
+	var clientRead bytes.Buffer
+	writeTestPacket(&clientRead, append([]byte{comQuery}, []byte("/* dbeaver */ SET @@session.query_cache_size=0")...), 0)
+	writeTestPacket(&clientRead, []byte{comQuit}, 0)
+
+	var clientWrite bytes.Buffer
+	var upstreamWrite bytes.Buffer
+	client := &readWriter{Reader: &clientRead, Writer: &clientWrite}
+	upstream := &readWriter{Reader: bytes.NewBuffer(nil), Writer: &upstreamWrite}
+
+	reg := SessionRegistration{SessionID: "s-comment-probe", UserID: "u1", AssetID: "a1", Engine: "mysql"}
+	if err := svc.forwardCommands(reg, client, upstream); err != nil {
+		t.Fatalf("forwardCommands: %v", err)
+	}
+
+	var forwarded [][]byte
+	for upstreamWrite.Len() > 0 {
+		p, _, err := readPacket(&upstreamWrite)
+		if err != nil {
+			t.Fatalf("read forwarded packet: %v", err)
+		}
+		forwarded = append(forwarded, p)
+	}
+	if len(forwarded) != 1 || len(forwarded[0]) == 0 || forwarded[0][0] != comQuit {
+		t.Fatalf("expected only quit forwarded upstream, got %#v", forwarded)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Prepared statement capture
 // ---------------------------------------------------------------------------

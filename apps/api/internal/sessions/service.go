@@ -651,7 +651,7 @@ SET status = $2,
     started_at = COALESCE(started_at, NOW())
 WHERE id = $1
   AND status = $3;`
-		if _, err := s.pool.Exec(ctx, lctx.SessionID, StatusActive, StatusPending); err != nil {
+		if _, err := s.pool.Exec(ctx, query, lctx.SessionID, StatusActive, StatusPending); err != nil {
 			return fmt.Errorf("mark connector-launched session active: %w", err)
 		}
 	}

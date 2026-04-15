@@ -334,3 +334,38 @@ func TestSessionEventMutation_AuditorDenied(t *testing.T) {
 		t.Fatalf("expected auditor record event 403, got %d: %s", resp.Code, resp.Body.String())
 	}
 }
+
+func TestSessionEventMutation_ConnectorSuccessMarksSessionActive(t *testing.T) {
+	h := newTestHarness(t)
+
+	operatorCookie := h.login(h.seed.operatorName, h.seed.operatorPass)
+
+	launchResp := h.requestJSON(http.MethodPost, "/sessions/launch", map[string]any{
+		"asset_id": h.seed.allowedAssetID,
+		"action":   "shell",
+	}, operatorCookie)
+	if launchResp.Code != http.StatusOK {
+		t.Fatalf("expected launch 200, got %d: %s", launchResp.Code, launchResp.Body.String())
+	}
+	launchPayload := h.responseJSON(t, launchResp)
+	sessionID := asString(launchPayload["session_id"])
+
+	eventResp := h.requestJSON(http.MethodPost, "/sessions/"+sessionID+"/events", map[string]any{
+		"event_type": "connector_launch_succeeded",
+		"metadata": map[string]any{
+			"source": "integration_test",
+		},
+	}, operatorCookie)
+	if eventResp.Code != http.StatusAccepted {
+		t.Fatalf("expected connector success event 202, got %d: %s", eventResp.Code, eventResp.Body.String())
+	}
+
+	detailResp := h.requestJSON(http.MethodGet, "/sessions/"+sessionID, nil, operatorCookie)
+	if detailResp.Code != http.StatusOK {
+		t.Fatalf("expected session detail 200, got %d: %s", detailResp.Code, detailResp.Body.String())
+	}
+	detailPayload := h.responseJSON(t, detailResp)
+	if got := asString(detailPayload["status"]); got != "active" {
+		t.Fatalf("expected session status active after connector success, got %q", got)
+	}
+}

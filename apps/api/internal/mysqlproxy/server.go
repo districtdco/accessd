@@ -576,6 +576,9 @@ func (s *Service) negotiateClient(client net.Conn) (net.Conn, error) {
 // avoids concurrency between the two directions.
 func (s *Service) forwardCommands(reg SessionRegistration, client io.ReadWriter, upstream io.ReadWriter) error {
 	cache := newPreparedStmtCache()
+	startupProbeLimit := 24
+	startupProbeCount := 0
+	startupPhase := true
 
 	for {
 		payload, seq, err := readPacket(client)
@@ -599,16 +602,27 @@ func (s *Service) forwardCommands(reg SessionRegistration, client io.ReadWriter,
 		case comQuery:
 			query := strings.TrimRight(string(payload[1:]), "\x00")
 			if q := strings.TrimSpace(query); q != "" {
-				// MySQL 8 removed query cache variables, but some JDBC clients still
-				// send SET query_cache_size=... as an init query. Treat it as no-op
-				// so login succeeds without weakening other query handling.
-				if shouldIgnoreLegacyQueryCacheSet(q) {
-					s.logger.Debug("ignoring legacy mysql init variable", "session_id", reg.SessionID, "query", q)
-					okPayload := buildOKPacket(0, 0, 0x0002, 0)
-					if err := writePacket(client, okPayload, seq+1); err != nil {
+				if strings.Contains(strings.ToLower(stripLeadingSQLComments(q)), "query_cache_size") {
+					probeType := classifyMySQLStartupProbe(q)
+					if probeType == mysqlStartupProbeNone {
+						probeType = mysqlStartupProbeSelectVar
+					}
+					if err := writeMySQLStartupProbeResponse(client, seq, probeType); err != nil {
 						return err
 					}
 					continue
+				}
+				if startupPhase {
+					probeType := classifyMySQLStartupProbe(q)
+					if probeType != mysqlStartupProbeNone && startupProbeCount < startupProbeLimit {
+						startupProbeCount++
+						s.logger.Debug("handling mysql startup probe locally", "session_id", reg.SessionID, "query", q, "probe_type", string(probeType))
+						if err := writeMySQLStartupProbeResponse(client, seq, probeType); err != nil {
+							return err
+						}
+						continue
+					}
+					startupPhase = false
 				}
 				s.enqueueQueryLog(queryLogEvent{
 					SessionID:    reg.SessionID,
@@ -629,6 +643,7 @@ func (s *Service) forwardCommands(reg SessionRegistration, client io.ReadWriter,
 			}
 
 		case comStmtPrepare:
+			startupPhase = false
 			query := strings.TrimSpace(strings.TrimRight(string(payload[1:]), "\x00"))
 			if err := writePacket(upstream, payload, seq); err != nil {
 				return err
@@ -638,6 +653,7 @@ func (s *Service) forwardCommands(reg SessionRegistration, client io.ReadWriter,
 			}
 
 		case comStmtExecute:
+			startupPhase = false
 			if len(payload) >= 5 {
 				stmtID := binary.LittleEndian.Uint32(payload[1:5])
 				if q, ok := cache.Lookup(stmtID); ok {
@@ -665,6 +681,7 @@ func (s *Service) forwardCommands(reg SessionRegistration, client io.ReadWriter,
 			}
 
 		case comStmtClose:
+			startupPhase = false
 			if len(payload) >= 5 {
 				stmtID := binary.LittleEndian.Uint32(payload[1:5])
 				cache.Delete(stmtID)
@@ -677,12 +694,14 @@ func (s *Service) forwardCommands(reg SessionRegistration, client io.ReadWriter,
 			}
 
 		case comStmtSendLongData:
+			startupPhase = false
 			// COM_STMT_SEND_LONG_DATA has no server response.
 			if err := writePacket(upstream, payload, seq); err != nil {
 				return err
 			}
 
 		case comFieldList:
+			startupPhase = false
 			// Deprecated but DBeaver may use it. Response: column defs until EOF/ERR.
 			if err := writePacket(upstream, payload, seq); err != nil {
 				return err
@@ -692,6 +711,7 @@ func (s *Service) forwardCommands(reg SessionRegistration, client io.ReadWriter,
 			}
 
 		default:
+			startupPhase = false
 			if err := writePacket(upstream, payload, seq); err != nil {
 				return err
 			}
@@ -1378,18 +1398,138 @@ func truncate(v string, max int) string {
 	return v[:max]
 }
 
-func shouldIgnoreLegacyQueryCacheSet(query string) bool {
-	q := strings.ToLower(strings.TrimSpace(query))
-	if q == "" || !strings.HasPrefix(q, "set") {
-		return false
-	}
-	// Handle common variants:
-	//   SET query_cache_size=...
-	//   SET SESSION query_cache_size=...
-	//   SET @@session.query_cache_size=...
-	//   SET @@query_cache_size=...
+type mysqlStartupProbeType string
+
+const (
+	mysqlStartupProbeNone      mysqlStartupProbeType = ""
+	mysqlStartupProbeSet       mysqlStartupProbeType = "set"
+	mysqlStartupProbeSelectVar mysqlStartupProbeType = "select_var"
+	mysqlStartupProbeShowVar   mysqlStartupProbeType = "show_var"
+)
+
+func classifyMySQLStartupProbe(query string) mysqlStartupProbeType {
+	q := strings.ToLower(strings.TrimSpace(strings.TrimSuffix(stripLeadingSQLComments(query), ";")))
 	q = strings.ReplaceAll(q, "`", "")
-	return strings.Contains(q, "query_cache_size")
+	if strings.HasPrefix(q, "set ") {
+		return mysqlStartupProbeSet
+	}
+	if strings.HasPrefix(q, "select @@") {
+		return mysqlStartupProbeSelectVar
+	}
+	if strings.HasPrefix(q, "show variables like") || strings.HasPrefix(q, "show session variables like") || strings.HasPrefix(q, "show global variables like") {
+		return mysqlStartupProbeShowVar
+	}
+	return mysqlStartupProbeNone
+}
+
+func stripLeadingSQLComments(query string) string {
+	s := strings.TrimSpace(query)
+	for {
+		switch {
+		case strings.HasPrefix(s, "/*"):
+			end := strings.Index(s, "*/")
+			if end < 0 {
+				return s
+			}
+			s = strings.TrimSpace(s[end+2:])
+		case strings.HasPrefix(s, "--"):
+			nl := strings.IndexByte(s, '\n')
+			if nl < 0 {
+				return s
+			}
+			s = strings.TrimSpace(s[nl+1:])
+		case strings.HasPrefix(s, "#"):
+			nl := strings.IndexByte(s, '\n')
+			if nl < 0 {
+				return s
+			}
+			s = strings.TrimSpace(s[nl+1:])
+		default:
+			return s
+		}
+	}
+}
+
+func writeMySQLStartupProbeResponse(client io.Writer, seq uint8, probeType mysqlStartupProbeType) error {
+	switch probeType {
+	case mysqlStartupProbeSet:
+		return writePacket(client, buildOKPacket(0, 0, 0x0002, 0), seq+1)
+	case mysqlStartupProbeShowVar:
+		// SHOW ... LIKE for unknown variables naturally returns empty set.
+		return writeSyntheticTextResult(client, seq, []string{"Variable_name", "Value"}, nil)
+	case mysqlStartupProbeSelectVar:
+		return writeSyntheticTextResult(client, seq, []string{"value"}, [][]*string{{nil}})
+	default:
+		return writePacket(client, buildOKPacket(0, 0, 0x0002, 0), seq+1)
+	}
+}
+
+func writeSyntheticTextResult(client io.Writer, seq uint8, columns []string, rows [][]*string) error {
+	if len(columns) == 0 {
+		columns = []string{"value"}
+	}
+	if err := writePacket(client, []byte{byte(len(columns))}, seq+1); err != nil {
+		return err
+	}
+	curSeq := seq + 2
+	for _, name := range columns {
+		if err := writePacket(client, buildSimpleTextColumnDef(name), curSeq); err != nil {
+			return err
+		}
+		curSeq++
+	}
+	eof := []byte{0xfe, 0x00, 0x00, 0x02, 0x00}
+	if err := writePacket(client, eof, curSeq); err != nil {
+		return err
+	}
+	curSeq++
+	for _, row := range rows {
+		payload := make([]byte, 0, 32)
+		for i := 0; i < len(columns); i++ {
+			if i >= len(row) || row[i] == nil {
+				payload = append(payload, 0xfb) // NULL
+				continue
+			}
+			val := *row[i]
+			if len(val) < 251 {
+				payload = append(payload, byte(len(val)))
+				payload = append(payload, []byte(val)...)
+				continue
+			}
+			payload = append(payload, 0xfb)
+		}
+		if err := writePacket(client, payload, curSeq); err != nil {
+			return err
+		}
+		curSeq++
+	}
+	return writePacket(client, eof, curSeq)
+}
+
+func buildSimpleTextColumnDef(name string) []byte {
+	n := strings.TrimSpace(name)
+	if n == "" {
+		n = "value"
+	}
+	if len(n) > 250 {
+		n = n[:250]
+	}
+	payload := make([]byte, 0, 64+len(n))
+	payload = append(payload, 0x03, 'd', 'e', 'f') // catalog
+	payload = append(payload, 0x00)                // schema
+	payload = append(payload, 0x00)                // table
+	payload = append(payload, 0x00)                // org_table
+	payload = append(payload, byte(len(n)))
+	payload = append(payload, []byte(n)...)
+	payload = append(payload, 0x00) // org_name
+	payload = append(payload, 0x0c) // fixed-length fields size
+	payload = append(payload, 0x21, 0x00)
+	payload = append(payload, 0x00, 0x01, 0x00, 0x00) // column length
+	payload = append(payload, 0xfd)                   // MYSQL_TYPE_VAR_STRING
+	payload = append(payload, 0x00, 0x00)             // flags
+	payload = append(payload, 0x00)                   // decimals
+	payload = append(payload, 0x00, 0x00)             // filler
+	return payload
 }
 
 type sslModeConfig struct {

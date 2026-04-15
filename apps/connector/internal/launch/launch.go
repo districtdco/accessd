@@ -2110,7 +2110,15 @@ func dbeaverConnectionSpecWithNameSuffix(req DBeaverRequest, suffix string) stri
 	if db := strings.TrimSpace(req.Launch.Database); db != "" {
 		parts = append(parts, "database="+specValue(db))
 	}
-	if sslMode := strings.TrimSpace(req.Launch.SSLMode); sslMode != "" {
+	// SQL Server over AccessD proxy currently uses plaintext on client leg.
+	// Force stable JDBC properties to avoid TLS ambiguity/default shifts.
+	// Use prop.* keys so DBeaver forwards them as driver properties.
+	if engine == "microsoft" || engine == "mssql" || engine == "sqlserver" {
+		parts = append(parts,
+			"prop.encrypt=false",
+			"prop.trustServerCertificate=true",
+		)
+	} else if sslMode := strings.TrimSpace(req.Launch.SSLMode); sslMode != "" {
 		parts = append(parts, "sslMode="+specValue(sslMode))
 	}
 	displayName := strings.TrimSpace(req.Launch.TargetAssetName)
@@ -2216,8 +2224,10 @@ func normalizeEngine(engine string) string {
 		return "mysql"
 	case "mariadb":
 		return "mariadb"
-	case "sqlserver", "mssql":
-		return "sqlserver"
+	case "sqlserver", "mssql", "microsoft":
+		// Target Microsoft SQL Server JDBC driver id for DBeaver CLI.
+		// "mssql" may map to legacy jTDS profiles on some installs.
+		return "microsoft"
 	case "mongo", "mongodb":
 		return "mongodb"
 	default:
