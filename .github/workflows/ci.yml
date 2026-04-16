@@ -42,7 +42,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version-file: apps/api/go.mod
+          go-version: '1.24.x'
           cache-dependency-path: apps/api/go.sum
 
       - name: Download dependencies
@@ -71,7 +71,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version-file: apps/connector/go.mod
+          go-version: '1.24.x'
           cache-dependency-path: apps/connector/go.sum
 
       - name: Download dependencies
