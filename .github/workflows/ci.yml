@@ -4,6 +4,14 @@ on:
   push:
     branches: ["**"]
   pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   contracts:
@@ -13,7 +21,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Node
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
@@ -21,9 +29,12 @@ jobs:
       - name: Validate OpenAPI contract
         run: npx --yes @apidevtools/swagger-cli validate packages/contracts/api.yaml
 
-  go:
-    name: Go Test + Build
+  go_api:
+    name: Go API Test + Build
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/api
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -32,47 +43,67 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version-file: apps/api/go.mod
+          cache-dependency-path: apps/api/go.sum
+
+      - name: Download dependencies
+        run: go mod download
 
       - name: Test API
-        run: |
-          cd apps/api
-          go test ./...
+        run: go test ./...
 
       - name: Build API
         run: |
-          cd apps/api
-          go build -ldflags "-X main.version=${GITHUB_SHA} -X main.commit=${GITHUB_SHA} -X main.builtAt=$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o bin/pam-server ./cmd/server
+          mkdir -p bin
+          go build -trimpath \
+            -ldflags "-X main.version=${GITHUB_SHA} -X main.commit=${GITHUB_SHA} -X main.builtAt=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            -o bin/accessd ./cmd/server
 
-      - name: Test Connector
-        run: |
-          cd apps/connector
-          go test ./...
-
-      - name: Build Connector
-        run: |
-          cd apps/connector
-          go build -o bin/pam-connector ./cmd/connector
-
-  ui:
-    name: UI Install + Build
+  go_connector:
+    name: Go Connector Test + Build
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/connector
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Node
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: apps/connector/go.mod
+          cache-dependency-path: apps/connector/go.sum
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Test Connector
+        run: go test ./...
+
+      - name: Build Connector
+        run: |
+          mkdir -p bin
+          go build -trimpath -o bin/accessd-connector ./cmd/connector
+
+  ui:
+    name: UI Install + Build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/ui
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
           cache: 'npm'
           cache-dependency-path: apps/ui/package-lock.json
 
-      - name: Install UI deps
-        run: |
-          cd apps/ui
-          npm ci
+      - name: Install UI dependencies
+        run: npm ci
 
       - name: Build UI
-        run: |
-          cd apps/ui
-          npm run build
+        run: npm run build

@@ -1,0 +1,48 @@
+name: Feature request
+description: Propose an enhancement for AccessD
+labels: ["enhancement", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for suggesting an improvement.
+        Clear context helps Districtd and contributors evaluate and prioritize proposals.
+
+  - type: input
+    id: summary
+    attributes:
+      label: Summary
+      placeholder: Add session replay search by command text
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem statement
+      description: What user or operator problem does this solve?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Describe your preferred approach
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+    validations:
+      required: false
+
+  - type: textarea
+    id: impact
+    attributes:
+      label: Impact
+      description: Security, operational, UX, or compatibility considerations
+    validations:
+      required: false

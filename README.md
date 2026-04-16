@@ -2,7 +2,24 @@
 
 **Infrastructure Access Gateway**
 
+[![CI](https://github.com/districtdco/accessd/actions/workflows/ci.yml/badge.svg)](https://github.com/districtdco/accessd/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![Go](https://img.shields.io/badge/Go-1.22+-00ADD8?logo=go)](https://go.dev/)
+[![Node.js](https://img.shields.io/badge/Node.js-20+-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
+[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
+
 AccessD is an open-source infrastructure access gateway that provides secure, audited access to servers, databases, and services — without giving operators raw credentials.
+
+Developed and maintained by **Districtd**.
+
+---
+
+## Quick Links
+
+- [Contributing Guide](CONTRIBUTING.md)
+- [Security Policy](SECURITY.md)
+- [Code of Conduct](CODE_OF_CONDUCT.md)
+- [Deployment Guide](DEPLOY.md)
 
 ---
 
@@ -295,6 +312,13 @@ See [DEPLOY.md §15](DEPLOY.md#15-security-hardening-and-operational-safeguards)
 
 ---
 
+## Built by Districtd
+
+AccessD is developed and maintained by Districtd.
+For responsible disclosure, contact `security@districtd.co`.
+
+---
+
 ## Contributing
 
 Contributions are welcome. Please:
@@ -337,4 +361,22 @@ MIT. See [LICENSE](LICENSE).
 
 ---
 
-*AccessD — Infrastructure Access Gateway*
+## Community
+
+We welcome contributions from the community and engineering teams:
+
+- [Code of Conduct](CODE_OF_CONDUCT.md)
+- [Contributing Guide](CONTRIBUTING.md)
+- [Security Policy](SECURITY.md)
+
+---
+
+## Suggested GitHub Topics
+
+Set these in repository settings for better discoverability:
+
+`access-management`, `privileged-access-management`, `infrastructure-security`, `ssh-proxy`, `database-proxy`, `audit-logging`, `session-recording`, `rbac`, `ldap`, `zero-trust`, `devsecops`, `golang`, `react`, `postgresql`, `self-hosted`
+
+---
+
+*AccessD — Infrastructure Access Gateway by Districtd*
